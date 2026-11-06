@@ -50,11 +50,16 @@
 //! assert_eq!(greeter.greet(), "hello");
 //! ```
 
+mod events;
 mod fiber;
 mod registry;
 mod scope;
 mod service;
 
+pub use events::{
+    Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, Next, Order, Parallel, Serial,
+    Terminal, Waterfall,
+};
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
 pub use registry::{Registry, RegistryContext, RegistryError};
 pub use scope::{BoxDisposer, BoxFut, Scope};
