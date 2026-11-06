@@ -7,80 +7,29 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: early development.** Only the plugin registry exists so far. Nothing here is usable as
-> an agent yet, and the API will change without notice.
+> **Status: planning.** No implementation yet. The repository currently holds the
+> [migration plan](docs/migration-plan.md) and nothing executable.
 
-## Design
+## Why this repository starts with a plan
 
-The upstream harness is built on *everything is a plugin*: every capability — the model client, the
-shell executor, the session store — is contributed by a plugin, and plugins reach each other by
-resolving services from a shared context instead of importing concrete implementations.
+The upstream harness is roughly 272,000 lines of host TypeScript across 2,453 files, built on a
+plugin framework whose central mechanism — reading services as dynamic properties of a shared
+context — has no Rust equivalent. A rewrite can absorb that cost, but only if the plan names
+which mechanisms translate, which degrade, and which are abandoned before any code is written.
 
-`girder-core` is the seed of that model:
+The [migration plan](docs/migration-plan.md) does that. It is split into three parts:
 
-- **`Service`** — a capability a plugin publishes under a stable string id such as `llm.provider`.
-  Ids are strings rather than type ids so separately compiled crates agree on the key.
-- **`Plugin`** — a unit of contribution, applied once at startup.
-- **`Registry`** — owns the applied plugin set and resolves published services. A second provider
-  claiming the same id is a registration error, never a silent replacement.
+- **判断** — what Rust implements, what it cannot, and why. Every claim is backed by a compile or
+  runtime check, listed in the appendix.
+- **计划** — eight phases with acceptance criteria, and a decision point after the fourth.
+- **执行** — what to do first, the fixed per-phase workflow, and explicit stop conditions.
 
-## Quick start
+## Where the risk is
 
-```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
-
-```rust
-use std::sync::Arc;
-use girder_core::{Plugin, PluginContext, PluginError, Registry, Service, ServiceId};
-
-struct Greeter;
-
-impl Service for Greeter {
-    fn id(&self) -> ServiceId {
-        ServiceId::new("greeter")
-    }
-}
-
-struct GreeterPlugin;
-
-impl Plugin for GreeterPlugin {
-    fn name(&self) -> &'static str {
-        "greeter"
-    }
-
-    fn apply(&self, ctx: &PluginContext) -> Result<(), PluginError> {
-        ctx.register(Greeter)
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut registry = Registry::new();
-    registry.apply(Arc::new(GreeterPlugin))?;
-
-    let service = registry.service(&ServiceId::new("greeter"))?;
-    assert!(service.downcast_ref::<Greeter>().is_some());
-    Ok(())
-}
-```
-
-## Layout
-
-```
-crates/
-  girder-core/   service ids, plugin lifecycle, registry
-```
-
-## Roadmap
-
-- [x] Plugin registry and typed service resolution
-- [ ] Service lifecycle and dependency-ordered teardown
-- [ ] LLM provider seam
-- [ ] Shell execution seam
-- [ ] Session persistence
-- [ ] Agent loop
-- [ ] CLI and Web front ends
+The plan's central finding is that feasibility is not the constraint — the upstream is a
+developer preview whose API changes continuously. The plan therefore front-loads a vertical slice
+(model call, session log, tool call, agent loop) and treats finishing it as the point to decide
+whether the rest is worth doing.
 
 ## License
 

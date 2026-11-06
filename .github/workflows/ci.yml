@@ -13,13 +13,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The repository holds only planning documents until the first crate lands.
+      # Keep the job green rather than failing on a missing manifest.
+      - name: Check for a manifest
+        id: manifest
+        run: if [ -f Cargo.toml ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.manifest.outputs.found == 'true'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: steps.manifest.outputs.found == 'true'
       - name: Format
+        if: steps.manifest.outputs.found == 'true'
         run: cargo fmt --all --check
       - name: Clippy
+        if: steps.manifest.outputs.found == 'true'
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
+        if: steps.manifest.outputs.found == 'true'
         run: cargo test --all-features
