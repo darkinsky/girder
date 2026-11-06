@@ -194,7 +194,11 @@ type Base<T> = dyn for<'a> Fn(T) -> BoxFut<'a, T> + Send + Sync;
    }
    ```
 
-   存储用 `Mutex<HashMap<&'static str, Arc<dyn Any + Send + Sync>>>`，读写都是强类型。
+   存储用 `Mutex<BTreeMap<&'static str, Entry>>`，读写都是强类型。
+
+   实现时发现一处必须偏离本节草案：`Arc<dyn Trait>` 无法直接 coerce 成 `Arc<dyn Any>`
+   （Rust 不允许跨无关 trait 的 upcast），所以表里存的是 `Arc<ArcHolder<S>>`，`ArcHolder`
+   只是 `struct ArcHolder<S: ?Sized>(Arc<S>)`。解析时多一层解包，代价是一次指针间接。
 
 3. **effect 作用域与逆序回收**
 
@@ -216,6 +220,25 @@ type Base<T> = dyn for<'a> Fn(T) -> BoxFut<'a, T> + Send + Sync;
 ### 风险
 
 无。这一步是纯实现。
+
+### 完成记录（§3.2 第 5 步）
+
+2026-11 完成。实际与计划的差异：
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 表结构 | `HashMap` | `BTreeMap` | 需要按 id 有序遍历做诊断输出 |
+| 类型擦除 | `Arc<dyn Any>` 直接存 | `Arc<ArcHolder<S>>` 包一层 | `Arc<dyn Trait>` 无法 upcast 到 `Arc<dyn Any>` |
+| 按值发布 | `provide(service: K::Service)` | 只保留 `register(Arc<K::Service>)` | `K::Service` 是 `dyn Trait`，按值传不进去；`CoerceUnsized` 不稳定 |
+| 拆除时的服务可见性 | 未规定 | 先跑 disposer，再清表 | 对齐上游 fiber：插件拆除时依赖图仍完整 |
+
+验收三条全部满足，见 `crates/girder-core/tests/registry.rs`（12 个集成测试 + 3 个文档测试）。
+`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test` 均通过。
+
+**留给阶段 1 的已知缺口**：`Scope::dispose` 一次性排空 disposer 列表，因此 disposer 在
+拆除过程中新注册的 effect 不会被本轮执行（`an_effect_registered_during_disposal_still_runs`
+记录了这个行为）。上游 fiber 会因为插件拆除确实注册新 effect 而需要每轮重查，阶段 1 必须
+补上。
 
 ## 2.3 阶段 0 结束前必须定的三个决策
 
@@ -278,6 +301,46 @@ while ([...this.provisions].some(impl => impl.dependents.size)) {
 
 `Send` 传染在这里第一次暴露。如果某个 seam 本质单线程，需要提前设计隔离方案。
 
+### 完成记录（§3.2 第 5 步）
+
+完成。三条验收均有测试覆盖，见 `crates/girder-core/tests/fiber.rs`（13 个）与
+`tests/fiber_drain.rs`（1 个并发压力测试）。
+
+实际与计划的差异：
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 依赖等待机制 | `tokio::sync::watch` 或依赖计数 + `Notify` | `Notify` + 先注册兴趣再检查条件 | `watch` 携带值是多余的；只需要"变了"这个信号 |
+| 插件体签名 | 未规定 | `Fn() -> BoxFut<Result<Disposer, BodyError>>` | 依赖变化要重跑 callback（对应上游 reload），所以不能是 `FnOnce` |
+| 状态观察 | 事件总线 `internal/status` | `Fiber::subscribe()` 返回 channel | 事件总线属于阶段 2，现在开接口会锁死它的形状 |
+| 配置处理 | fiber 拥有 config | 完全不做 | 配置层属于阶段 3 |
+| 插件体返回值 | 未规定 | `Result<Disposer, BodyError>` | 需要表达"插件启动失败"，否则 `Failed` 状态永远用不上 |
+
+**两处踩到的坑，值得记下来：**
+
+1. `MutexGuard` 跨 `.await`。第一版在 `start` 里持锁调用 `dispose().await`，编译报
+   `not Send`。后来 `clippy::await_holding_lock` 又在 `observe_services` 里抓到一处。
+   规则记牢：**先定夺、后 await**，判断在锁内，动作在锁外。
+
+2. 依赖消失时不能只改状态。第一版把 `state` 直接置回 `Pending`，结果 `unload` 走
+   `!is_active()` 分支提前返回，**插件的 disposer 从未执行——资源泄漏**。正确做法是
+   依赖消失时驱动完整拆除流程（`unload_inner`），disposer 跑完再落到 `Pending`。
+   这个 bug 是测试 `a_provider_waits_for_every_dependent_before_releasing` 抓出来的。
+
+3. `Failed` 状态一开始是死代码。插件体签名原本返回 `Disposer`，失败无从表达，状态机里
+   的 `Failed` 分支永远不会被走到。改成返回 `Result` 后补了两个测试
+   （`a_failing_body_reports_failed_and_surfaces_the_error`、
+   `a_failed_fiber_can_be_retried`），确认失败可上报、且可以重试。**教训：状态枚举里
+   有分支却没有任何路径到达它，说明接口缺了一个返回值。**
+
+**关于 `Notify` 的竞态**：`notify_waiters` 在 `enable()` 之后、`await` 之前发出会丢失。
+实现里先 `notified()` 再 `enable()` 再检查条件，`fiber_drain.rs` 用 200 轮 × 16 并发
+dependent 反复冲击这个窗口，靠超时而非断言失败来暴露挂起。
+
+**`Send` 传染的第一次实测结论**：阶段 1 没有遇到必须单线程的 seam。`PluginBody` 要求
+`Send + Sync`，但插件体内部是异步 future，天然可以跨线程。这个风险要等阶段 4 接
+浏览器 / PTY 时才真正暴露。
+
 ## 2.5 阶段 2：事件总线
 
 **目标**：实现 5 种 dispatch 模式 + 事件类型体系。
@@ -332,6 +395,43 @@ while ([...this.provisions].some(impl => impl.dependents.size)) {
 - serial/bail 遇第一个 bail 值停止
 - 监听器随 fiber 卸载自动移除
 
+### 完成记录（§3.2 第 5 步）
+
+完成。前置工作「事件清单」见 [event-inventory.md](event-inventory.md)，实测**97 个事件**
+（不是计划估的 179 处——那 179 处里多数扩展的是 `Context` 而非 `Events`），
+模式分布 emit 68 / waterfall 17 / parallel 6 / bail 4 / serial 2，收敛为 46 个 trait。
+
+测试见 `crates/girder-core/tests/events.rs`（16 个），四条验收全部覆盖。
+
+实际与计划的差异：
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| `Chain` 存储 | `Arc<[Arc<dyn Waterfall<T>>]>` | `Arc<[Layer]>` + `usize` 游标 + 独立 terminal | 与原设计一致；`terminal` 独立成字段消除了空列表分支 |
+| `Next` 容器 | 未规定 | `Box<dyn FnOnce>` | `Arc<dyn FnOnce>` **无法调用**——调它要把值移出 `Arc`。这是实测踩到的坑 |
+| 事件参数约束 | `Send + 'static` | `Send + Sync + Clone` | `next` 在层的 future 里跨 `await` 持有，必须 `Sync`；每个监听器各拿一份，必须 `Clone` |
+| 监听器存储 | `HashMap<String, Vec<...>>` | 每事件一个 `Mutex<Slots<L>>`，整体 `Any` 擦除 | 按事件类型分别存储，派发时只 downcast 一次而非每个监听器一次 |
+| 删除方式 | — | `RemoveById` 擦除句柄与存储分离 | 按 id 删除不该需要知道监听器类型 |
+
+**踩到的坑：**
+
+1. `Arc<dyn FnOnce>` 不能调用。第一版把 `Next` 写成 `Arc<dyn FnOnce ...>`，编译器报
+   `cannot move out of an Arc`。`FnOnce` 意味着消费自身，而 `Arc` 只给共享借用，两者
+   不兼容。改成 `Box` 后正常——续接体本来就只归一层所有。
+
+2. `Sync` 约束是推出来的，不是猜的。先按 `Send` 写，编译报 `A cannot be shared between
+   threads safely`；加 `Sync` 后 pass。原因写在对应的 trait 文档里：`next()` 在层的
+   future 中被跨 `await` 持有。
+
+3. `EventBus::parallel` 的聚合错误没做完。上游用 `Promise.allSettled` +
+   `AggregateError` 收集全部失败；Rust 侧当前用 `join_all` 等全部结束，但**只**在
+   监听器 panic 时才向上传播，`DispatchError::Listeners` 从未被构造。这是真实缺口，
+   等阶段 4 有真实并行监听器（如 `session/flush`）时补。
+
+**`Send` 传染第二次实测**：`EventBus` 整体要求 `Send + Sync`，所有事件参数与监听器
+都被传染。没有遇到必须单线程的事件，但 `Parallel` 和 `Serial` 的 future 都要求 `Send`，
+这会在阶段 4 接 LLM 流式响应时成为约束（流必须 `Send`）。
+
 ## 2.6 阶段 3：配置层
 
 **目标**：用真实的 `cordis.patch.yml` 验证配置能解析。
@@ -351,6 +451,55 @@ while ([...this.provisions].some(impl => impl.dependents.size)) {
 - 能解析 `packages/bundle/base/cordis.patch.yml`
 - 层叠顺序正确：后面的 patch 覆盖前面的同 id 行
 - 未知字段报错，错误信息指出行号和字段名
+
+### 完成记录（§3.2 第 5 步）
+
+完成。测试见 `crates/girder-core/tests/config.rs`（36 个），样本是**未修改的上游**
+`packages/bundle/base/cordis.patch.yml`（548 行）与其转换版。
+
+**第一条验收有一个必须说清的转折**：上游原文件**不能**被解析，因为它含 16 处 `!!js`。
+所以「能解析 `base/cordis.patch.yml`」这条验收，实际成立了两次：
+一次是**拒绝**原文件（`the_real_bundle_patch_is_rejected_because_it_embeds_javascript`），
+一次是**解析**其转换版（`the_converted_bundle_patch_parses`，99 行 insert）。
+这两条都必须在，因为拒绝才是本阶段的核心决定——如果只测转换版能过，就等于假装
+`!!js` 问题不存在。
+
+### `!!js` 的四种形态与替代
+
+扫描全部 bundle 的 61 处 `!!js`，只有四种形态，无第五种：
+
+| 上游 | 出现次数 | Rust 替代 |
+|---|---|---|
+| `!ctx.get('profileContext')` | 5 | `when: { not_service: profileContext }` |
+| `process.platform === 'win32'` / `!== ...` | 4 | `when: { platform: linux }` / `{ not_platform: windows }` |
+| `process.env.X ?? 'default'` | 5 | `"${env.X:-default}"` 插值 |
+| `(env.X ?? 'y') === 'z' ? a : b` | 1 | `when: { env: X, equals: z }` + 插值 |
+
+另有 `process.cwd()`、`dshHomePath('x')`、`'${platform}'` 等取值形态，对应 `${cwd}`、
+`${home}`、`${platform}`。
+
+### 实际与计划的差异
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| `!!js` 替代 | 固定插值语法 | 插值 + 结构化 `when` 条件 | 只靠插值表达不了布尔条件；`when` 是数据而非表达式，可静态校验 |
+| 配置校验 | `serde` + `schemars` | `serde` + `deny_unknown_fields` | `schemars` 用于生成 JSON Schema（阶段 6 RPC 契约），本阶段不需要 |
+| patch 层叠 | 「按 row id 替换」 | 替换 + 同名守卫 + 未命中告警 | 上游 `PatchOptions.name` 是安全阀，漏了它会让 patch 打到错误插件上 |
+| 未知字段报错 | 指出行号和字段名 | `serde` 报字段名；**行号由 YAML 解析器给出，不在我们控制内** | 见下 |
+
+**一处没有做到计划要求的地方**：「未知字段报错，错误信息指出行号和字段名」。当前
+`serde_norway` 的错误信息包含字段名与列号，但**测试只断言了字段名**，没有断言行号。
+原因是 serde 的行号信息依赖解析器实现，没有稳定保证。这条验收算部分满足，已记在这里
+而不是绕过。
+
+**踩到的坑：**
+
+1. `Entry.config` 既要能装 group 的子条目列表，又要能装任意插件配置。第一版用
+   `serde_json::Value` 统装，结果 group 子条目丢失了类型。现在按形状区分：数组元素
+   全是带 `id`/`name` 的对象才当条目列表，否则当普通 JSON——和上游的判断方式一致。
+
+2. `when.env` 最初只判断变量存在与否，语义太弱。原表达式是
+   `(env ?? 'x') === 'y'`，需要比较值。补了 `equals` 字段后语义才等价。
 
 ## 2.7 阶段 4：垂直切片（决策点）
 
@@ -399,6 +548,103 @@ $ girder "列出当前目录的文件"
 
 **通过才继续，不通过就止损。**
 
+### 完成记录（§3.2 第 5 步）——决策点评估
+
+接口草图见 [phase4-interfaces.md](phase4-interfaces.md)，测试见 `crates/girder-core/tests/slice.rs`
+（18 个），验收命令是 `crates/girder-cli`。
+
+**验收状态：通过，但有一处必须说清的限定。**
+
+`girder "列出当前目录的文件"` 跑通了完整路径：
+
+```
+$ cargo run -q -p girder-cli -- "list files" --verbose
+[tool] list
+[tool] done
+Here is what I found in the current directory.
+{"type":"user/message",...}
+{"type":"turn/start","turn":1}
+{"type":"assistant/message","content":[{"type":"tool-call",...}]}
+{"type":"tool/call",...}
+{"type":"tool/result","content":[{"type":"text","text":".github\ndocs\n..."}]}
+{"type":"turn/end","turn":1,"reason":"tool-calls"}
+{"type":"turn/start","turn":2}
+{"type":"assistant/message","content":[{"type":"text","text":"Here is what I found..."}]}
+{"type":"turn/end","turn":2,"reason":"stop"}
+```
+
+**限定**：provider 是离线的（`OfflineProvider`），不是真实 DeepSeek API。理由写在这个
+crate 的模块文档里——真实 provider 需要 API key 与网络，而一个动不了的验收命令没有价值。
+所以这次验证的是**机制**（流式、工具分发、会话落盘、turns 循环），不是**模型质量**。
+接入真实 HTTP provider 是阶段 5-6 的事。
+
+### 决策点三问的实测答案
+
+**问题一：`Send` 约束是否可接受？有没有 seam 必须单线程**
+
+**可接受，且没有发现必须单线程的 seam。** 但有代价，具体三处：
+
+| 地方 | 约束 | 代价 |
+|---|---|---|
+| `LlmProvider::stream` 返回的 `Stream` | 必须 `Send` | provider 内部状态必须 `Send`；未来接浏览器/PTY 时会是问题 |
+| `PluginBody` | `Send + Sync` | 插件体是 async future，天然满足 |
+| `EventBus` 全部监听器 | `Send + Sync` | 事件参数与监听器全被传染 |
+
+阶段 4 本身没遇到障碍，因为 DeepSeek provider 是纯 HTTP。**但这个结论只对阶段 4 成立**：
+阶段 5 接 PTY（`portable-pty` 的 handle 非 `Send`）时，计划 §2.8 预判的隔离方案会真正被用到。
+不能把这里的「可接受」外推到阶段 5。
+
+**问题二：`BoxFut` 的 clone 开销是否可接受**
+
+**没有出现可测量的开销**，原因是设计上 `BoxFut` 只在 seam 边界出现：
+
+- seam 内部（如 `AssistantMessage::from_chunks` 折 chunk）用具体类型，不走 `BoxFut`
+- `ToolBody` 是 `Arc<dyn Fn> -> BoxFut`，每次调用一次 `Arc::clone` + 一次 `Box`
+- 事件监听器注册时 `Arc` 一次，派发时 clone `Arc`
+
+工具调用是每次一个 `Box` 分配，量级在「每次工具调用」而非「每个 token」。
+**没有实测出性能问题，也没有做基准测试**——计划要求的「是否可接受」目前只有定性判断，
+没有数字。标为未完成的验证项。
+
+**问题三：上游 API 变动是否已让部分设计过时**
+
+**没有。** 阶段 0-4 的四个 seam 全部基于我在 `vendor/cordis` 与 `packages/*/src` 读到的实现，
+没有依赖任何「可能会变」的接口。真正的变动风险在于：上游 `session` 有 60+ 事件变体，
+我只实现了 6 个；如果上游继续加变体，我这边是**补枚举变体**而非重构，成本线性。
+
+### 与计划的差异
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 循环接口 | `run() -> BoxFut<Result<()>>` | `run() -> impl Stream<Item = LoopStep>` | 草图阶段就发现「一个 future 藏住全部中间态」无法测试也无法流式打印 |
+| 事件变体 | 6 个最小集 | 6 个，完全一致 | — |
+| `ContentBlock` | 上游 7 个变体 | 5 个（去掉 `tool-addition`/`tool-removal`） | 动态工具增删属于阶段 7，切片不需要 |
+| 真实 provider | 计划隐含要求 | 离线 provider + 真实 HTTP 留待阶段 5 | 见上方限定 |
+
+### 踩到的坑
+
+1. **`BlockStart` 会吞掉累积文本。** 第一版在 `block-start` 时往 slot 里放一个空的
+   `Text { text: "" }`，结果 `block-end` 没来时，`or_else` 看到 slot 已是 `Some`，
+   累积的文本被丢弃，组装出空消息。改成只记录**类型**，内容一律从 delta 累积。
+   这个 bug 会让「流式输出」静默变成空字符串，是切片验收里最危险的一类。
+
+2. **`rename_all = "kebab-case"` 生成 `turn-start`，而上游是 `turn/start`。** 会话日志的
+   tag 是线上格式，写错等于和所有已有日志不兼容。改成每个变体显式 `#[serde(rename)]`。
+
+3. **clippy 抓出 `run` 有 142 行。** 拆成 `run` + `turn_stream` + `tool_calls` 三个函数后
+   都是 100 行以内。这个阈值在这类状态机上是有效的信号。
+
+### 止损判断
+
+计划 §3.5 的三个止损条件：
+
+1. **阶段 4 跑不通** → 跑通了
+2. **上游 API 变动导致设计过时两次以上** → 零次
+3. **Typert 无法重建** → 未到阶段 6
+
+**结论：不触发止损，可以进入阶段 5。** 但上述「问题二」缺基准数字、「问题一」的结论
+不能外推到阶段 5，这两点必须在阶段 5 开始时重新验证。
+
 ## 2.8 阶段 5：执行层
 
 **目标**：bash / 文件 / 沙箱能力完整可用。
@@ -416,6 +662,81 @@ $ girder "列出当前目录的文件"
 - 超时能杀掉整个进程组
 - 沙箱拒绝越权写操作
 - 无僵尸进程残留
+
+### 完成记录（§3.2 第 5 步）
+
+完成。`crates/girder-core/src/exec.rs`，测试见 `crates/girder-core/tests/exec.rs`（21 个）。
+
+四条验收全部有测试，且都是**真的验证而非空断言**：
+
+| 验收 | 测试 | 验证方式 |
+|---|---|---|
+| 带管道的命令能跑 | `a_command_with_a_pipe_runs`、`a_multi_stage_pipeline_runs` | `echo hello &#124; tr a-z A-Z` 断言输出 `HELLO` |
+| 超时杀掉整个进程组 | `a_timeout_kills_the_whole_process_group` | **断言孙进程已死**，不是只断言 shell 退出 |
+| 沙箱拒绝越权写 | `a_declared_write_outside_the_scope_is_refused_before_spawning`、`traversal_out_of_the_scope_is_refused` | 越权路径在 spawn 前被拒；`..` 逃逸被解析后拒绝 |
+| 无僵尸进程 | `a_completed_command_leaves_no_zombie`、`a_killed_command_leaves_no_zombie` | 读 `/proc/<pid>/stat` 统计本进程的 `Z` 状态子进程 |
+
+### 验收命令实测
+
+```bash
+$ cargo run -q -p girder-cli -- "list files" --tool bash
+[tool] bash
+[tool] done (call-1)
+Here is what I found in the current directory.
+```
+
+会话日志显示真实执行了 `ls -1 | head -5`，返回 5 行文件列表。**这是带管道的真实 shell 命令**，
+不是模拟。
+
+### 关键实现决定
+
+**1. 进程组必须用 `pre_exec`，代价是 `unsafe`。**
+
+`sh -c "sleep 30 & wait"` 会启动孙进程。只杀 `sh` 的 pid，孙进程会变成孤儿并继续持有管道。
+唯一可移植的解法是在 `exec` 前调用 `setpgid(0,0)` 让子进程成为组长，然后 `kill(-pgid, SIG)`。
+
+这需要 `CommandExt::pre_exec`，而它是 `unsafe` 的。工作区的 `unsafe_code = "forbid"`
+因此改成 `"deny"`：`forbid` 无法在局部豁免，`deny` 可以，且每处豁免必须带 `reason`。
+这是本阶段唯一的 `unsafe`，共两处（`run_shell` 和 `run_bash`）。
+
+**2. 必须先 SIGTERM 再 SIGKILL。**
+
+只发 SIGTERM 时，忽略该信号的 shell 会存活到超时之后。代码里 SIGTERM 后等 50ms 再 SIGKILL。
+
+**3. 管道必须与 wait 并发读取。**
+
+如果先 `wait` 再读 pipe，输出超过 64KB 就会填满缓冲区，子进程阻塞在写，父进程阻塞在 wait——
+死锁。测试 `large_output_does_not_deadlock` 用 20,000 行输出专门验证这一点。
+
+### 与计划的差异
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 沙箱 | seccomp/landlock（Linux）、seatbelt（macOS） | **路径策略 + spawn 前声明检查** | 内核级隔离未实现，见下方缺口 |
+| `unsafe_code` lint | `forbid` | `deny` + 两处带 reason 的豁免 | `pre_exec` 是设进程组的唯一办法 |
+| 平台 | 未限定 | 仅 POSIX | Windows 进程树需要 `taskkill /T /F`，未实现 |
+
+### 明确未做到的（重要）
+
+**沙箱不是内核级隔离。** 当前的 `PathPolicy` 只检查**声明**的写路径，且检查发生在进程创建**之前**。
+一个不声明就直接写的命令**不会被阻止**。这意味着：
+
+> 用 `--tool bash` 跑这个 CLI **不是**对模型的安全隔离。它只在开发环境成立。
+
+计划 §2.8 要求的 seccomp/landlock 没有实现。正确形状是定义一个 `Sandbox` trait，其 `spawn`
+在 `exec` 前应用 landlock，`PathPolicy` 作为它的配置。现在只写了配置侧，没有内核侧。
+
+这条缺口必须写在这里而不是绕过，因为「沙箱拒绝越权写」这条验收**字面上通过了**
+（拒绝声明越权的写），但**安全语义上没有达到计划意图**。
+
+### `Send` 传染的第二次实测
+
+**结论修正了阶段 4 的判断。** 阶段 4 说「没有发现必须单线程的 seam」，那是因为 llm 是纯 HTTP。
+阶段 5 实测：`std::process::Child` 和 `tokio::process::Child` 都是 `Send`，所以**执行层也没有**
+引入非 `Send` 的 seam。
+
+真正会出问题的仍是计划预判的 PTY（`portable-pty` 的 `MasterPty` 非 `Send`）与浏览器自动化。
+本阶段没有做 PTY，所以那个风险**依然未被验证**。
 
 ## 2.9 阶段 6：RPC 与前端对接
 
@@ -447,6 +768,89 @@ $ girder "列出当前目录的文件"
 
 Typert（3 万行）是 TS 编译器驱动的类型投影，Rust 侧要**重新设计整个类型安全 RPC 生成链路**。这部分**没有现成方案**，是阶段 6 的最大风险。
 
+### 完成记录（§3.2 第 5 步）
+
+范围先定了，见 [phase6-scope.md](phase6-scope.md)。实现是 `crates/girder-rpc`，测试 20 个
+（9 个协议单测 + 11 个传输集成测试）。
+
+### 查清的事实（计划里没有的）
+
+读 `packages/api/gateway/src` 后确认了三件事：
+
+1. **传输是一条 WebSocket 多路复用端点** `/api/remote.mux`，所有逻辑流共用。
+2. **四种下行帧**：`ready` / `emit` / `waterfall` / `cancel`，`{ type }` 判别联合。
+3. **`InvokeRemoteRequest.args` 是 `Record<string, unknown>`**——**线路上完全没有类型信息**。
+   类型安全全部来自 Typert 在**编译期**生成的描述符。
+
+第 3 点是最关键的发现：它意味着**Rust 可以实现这个协议而不需要复刻 Typert 的生成链路**，
+因为线上本来就是无类型 JSON。计划说「要重新设计整个类型安全 RPC 生成链路」，更准确的说法是
+「要实现协议很容易，要拿回编译期保证很难」。
+
+### 实际做了什么
+
+| 项 | 状态 |
+|---|---|
+| `/api/remote.mux` WebSocket 端点 | ✅ 实测 HTTP 101 + `ready` 帧 |
+| 四种下行帧 + 一种上行结果 | ✅ 字段名与上游一致（`clientId`/`eventId`/`agentId`） |
+| waterfall 下发与结果关联 | ✅ `ClientHandle::ask` + `PendingWaterfalls` |
+| 断线重连 | ✅ 新 generation、旧 pending 被 drain、陈旧结果被忽略 |
+| JSON Schema 导出 | ✅ `girder schema` 输出，含全部四种消息类型 |
+| Typert 描述符生成 | ❌ 未做 |
+| `Remote` 方法命名空间 | ❌ 未做 |
+| 认证 / `PeerScope` 校验 | ❌ 未做，仅透传 |
+
+实测握手：
+
+```
+$ girder serve --bind 127.0.0.1:8791
+girder rpc listening on ws://127.0.0.1:8791/api/remote.mux
+
+HTTP/1.1 101 Switching Protocols
+FRAME: {"type":"ready","clientId":"gen-1","host":{"home":"/data/home/jacksonyhe"}}
+```
+
+### 必须说清的限定
+
+**「阶段 6 完成」不等于「Web GUI 能用了」。**
+
+计划 §2.9 的验收写的是「Web GUI 能列出 session、发消息、看流式回复」。本次达成的是
+**协议层连通**（端点、帧、重连语义），不是**功能可用**。一个真实的 DSH 客户端调用的是
+Typert 生成的 `remote.session.list()` 这类方法，本 crate 没有实现这些命名空间。
+
+所以本轮验收是：
+- ✅ 连接建立、`ready` 帧、帧往返、重连语义一致
+- ❌ 真实 GUI 列出 session
+- ❌ 真实 GUI 发消息看流式回复
+
+这条差别写在这里而不是只在 README，因为「GUI 能用」是计划里这一阶段存在的理由。
+
+### 与计划的差异
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 范围 | 完整 GUI 对接 | 协议层连通 | 完整对接需要 Typert 生成链路，计划自己说「没有现成方案」 |
+| 类型安全 | 重建生成链路 | `schemars` 导出 schema，两侧对照 | 先证明连接成立，再决定类型安全投入 |
+| 前端 | 保留 | **未改动** | 见下方风险 |
+
+### 踩到的坑
+
+1. **`pending` 状态写成了两份。** 第一版 `SessionState` 有 `pending` 字段，`ClientHandle`
+   又用 `Arc::new(Mutex::clone(...))` 造了一份新的——断线时 drain 的是其中一份，
+   另一份仍认为有未完成 waterfall。改成单一 `Arc<Mutex<...>>` 共享。
+
+2. **`rename_all` 会把 `clientId` 变成 `client_id`。** 上游协议用 camelCase，Rust 惯用
+   snake_case。必须逐字段 `#[serde(rename)]`。测试 `a_waterfall_frame_has_the_upstream_field_names`
+   专门钉住这一点——写错的话真实客户端会直接解析失败。
+
+3. **`pkill -f "girder-cli.*serve"` 把自己的 shell 也杀了**（命令行里含同样字符串）。
+   这是操作失误，不是代码问题，但值得记：验证脚本里的进程匹配要更精确。
+
+### 未缓解的风险
+
+**前端字段改动不会被 Rust 端发现。** `schemars` 导出的 schema 是事后对照工具，
+不是编译期约束。若 TS 端把 `sessionId` 改成 `sessionID`，Rust 端只会收到一个陌生字段，
+不会报错。缓解需要 CI 里跑 schema diff，本阶段没有接。
+
 ## 2.10 阶段 7：补齐剩余 seam
 
 主路径稳定后，按需迁移：
@@ -461,7 +865,80 @@ Typert（3 万行）是 TS 编译器驱动的类型投影，Rust 侧要**重新�
 | 低 | `team`/`goal`/`schedule` | 协作与定时 |
 | 最后 | experimental | 逐个评估，部分直接放弃 |
 
-**experimental 里建议直接放弃的**：
+### 完成记录（§3.2 第 5 步）
+
+范围与实测见 [phase7-scope.md](phase7-scope.md)。测试 18 个，见
+`crates/girder-core/tests/delegation.rs`。
+
+**先于代码的一个实测发现**：这台机器**没有 Landlock**。
+
+```
+$ grep -i landlock /boot/config-$(uname -r)
+# CONFIG_SECURITY_LANDLOCK is not set
+
+$ syscall(444, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)
+landlock unavailable, errno=Function not implemented (os error 38)
+```
+
+内核 6.6.47，但编译时没开该选项。这一条决定了阶段 7 的做法：**内核级沙箱可以写，但不能声称验证过**。
+写一个测不了的安全机制比不写更危险。
+
+### 实际做了什么
+
+| 项 | 状态 |
+|---|---|
+| `subagent` 进程内驱动 + 深度限制 | ✅ 完成并测试 |
+| 深度到顶时从工具集中移除 `subagent` | ✅ 完成并测试 |
+| `Sandbox` trait + `Enforcement` 分级 | ✅ 接口完成 |
+| `landlock_abi()` 探测 | ✅ 完成（本机返回 `None`，如实报告） |
+| 内核级沙箱实现 | ❌ 未做（本机不可验证） |
+| 外部 CLI driver（claude-code / codex / acp） | ❌ 未做（需要那些 CLI） |
+| 子 agent 暂停/恢复控制协议 | ❌ 未做 |
+
+### 关键设计：深度限制是结构性的
+
+一个能派生 agent 的 `subagent` 工具是**无界递归**——每层都花 token，模型一直委托就一直花。
+所以：
+
+1. **深度在派生之前检查**，不是让子 agent 自己遵守。测试
+   `a_delegation_at_the_ceiling_is_refused_without_calling_the_model` 用了一个会 panic 的
+   provider，证明拒绝发生在任何模型调用之前。
+2. **到顶时把 `subagent` 从工具集中移除**（`DepthLimitedTools`），不是只在执行时拒绝。
+   模型无法调用一个没被提供的工具——它连名字都猜不出来，执行器会报 unknown tool。
+3. **深度来自调用方 context，不来自工具参数**。否则模型可以给自己加预算。
+
+### `Enforcement` 为什么是接口的一部分
+
+`AdvisorySandbox` 和未来的 `LandlockSandbox` 在类型上完全一样。唯一区别是
+`enforcement()` 的返回值。如果它只是文档里的一句话，调用方无从知道自己是否被保护。
+
+```rust
+pub enum Enforcement {
+    Advisory,                              // 只检查声明的路径，不阻止越权写
+    Kernel { mechanism: &'static str },    // 内核拒绝越权访问
+}
+```
+
+测试 `the_advisory_sandbox_says_it_is_advisory` 断言它报告 `Advisory` 且
+`describe()` 含 `not enforced`。
+
+### 与阶段 5 那个缺口的对照
+
+阶段 5 记录的缺口是「沙箱不是内核级隔离」。阶段 7 **没有补上这个缺口**，而是把它
+**变成了可检查的接口**：现在任何调用方都能问 `enforcement()` 并得到一个诚实答案。
+补上内核实现仍然需要一台支持 Landlock 的机器。
+
+### 踩到的坑
+
+1. **`ToolRegistry::register` 原本要 `&mut self`，但 subagent 工具需要 context，
+   context 需要工具集**——循环依赖写不出来。改成 `&self` + 内部 `Mutex`。
+   代价是每次注册加锁（不是每次查找）。
+
+2. **子 agent 的文本会被累加而不是替换。** 第一版把每个 turn 的 `TextDelta` 都
+   `push_str`，结果「最终回答」变成所有 turn 的拼接。正确做法是用最后一个
+   `AssistantMessage` 的文本替换。这类 bug 会让子 agent 的输出看起来包含思考过程。
+
+## experimental 里建议直接放弃的
 
 - `webworker-runtime`（23.8k）：把 harness 跑在浏览器 Worker 里，Rust 下基本失去意义
 - `liveshare`（55.9k）：涉及独立部署的服务器，仅在确实需要共享功能时才做
@@ -550,6 +1027,129 @@ Typert（3 万行）是 TS 编译器驱动的类型投影，Rust 侧要**重新�
 
 ---
 
+## 2.11 补充：真实 provider（原计划未列入，实施中补上）
+
+阶段 4 的验收用的是离线 provider，我在当时的记录里写明「验证的是机制，不是模型质量」。
+这一轮补上了真实 provider：`crates/girder-core/src/llm_deepseek.rs`。
+
+### 线格式来源
+
+读上游 `packages/llm/llm-deepseek` 确认，它用的是 **Anthropic Messages API 格式**，不是
+OpenAI chat-completions 格式：
+
+| 项 | 值 |
+|---|---|
+| 端点 | `{base}/messages`，默认 base 是 `https://api.deepseek.com/anthropic` |
+| 必需头 | `x-api-key`、`anthropic-version: 2023-06-01`、`accept: text/event-stream` |
+| 工具角色 | 没有 `tool` role，工具结果放进 `user` 轮的 `tool_result` 块 |
+| 工具定义 | `input_schema` 而非 `parameters` |
+| 流 | SSE，事件名 `message_start` / `content_block_start` / `content_block_delta` / `content_block_stop` / `message_delta` / `message_stop` |
+
+### 验证到什么程度
+
+**26 个测试**，用**本地 mock HTTP 服务器**验证：
+
+- 请求体形状（`messages` 数组、`role` 映射、`tool_use` 的 `input` 是解析后的对象而非字符串）
+- SSE 解析器（跨 chunk 分割、多字节字符在边界被切开、CRLF、注释行）
+- chunk 翻译（text / thinking / tool_use 三种块、`stop_reason` 映射）
+- 截断的流被报为错误而不是当成完整回答
+- HTTP 401 携带状态码与响应体
+- 取消的请求不上网
+
+**没有验证到的**：真实 API 调用。本环境没有 `DEEPSEEK_API_KEY`，所以「能对接 api.deepseek.com」
+是一个**未验证的声明**。代码写成只差一次 HTTP 调用，不是差一次重构。
+
+CLI 现在会如实报告：
+
+```
+$ girder "list files"
+[provider] offline (set DEEPSEEK_API_KEY to use a real model)
+```
+
+有 key 时打印 `[provider] live: <model>`。
+
+### 踩到的坑
+
+1. **`text_delta` 的字段是 `text`，`thinking_delta` 的字段是 `thinking`**——不是同一个键名。
+   按 `text` 读 thinking 会得到空字符串，推理内容静默消失。
+
+2. **`content_block_stop` 不能带累积后的完整块。** 第一版在 stop 时构造完整的
+   `ContentBlock`，结果和 `block-end` 的组装逻辑打架，文本重复。正确做法是发空块占位，
+   内容由 delta 累积。
+
+3. **`translate` 长到 123 行被 clippy 拦下。** 按事件类型拆成 7 个方法后每个都在 30 行内。
+   这次拆分不是为过 lint，是因为原来那个 `match` 分支确实该分开——每个事件的处理和
+   它用的字段都是独立的。
+
+## 2.12 补充：事件推送（修掉阶段 6 的一个错误形状）
+
+阶段 6 我写了 `forward_events`，用每 50ms 轮询 `active_events()` 的方式把事件告诉客户端。
+这一轮发现那是**错的形状，不只是低效**：
+
+`active_events()` 返回「哪些事件名当前有监听器」。它回答不了任何一个真实问题：
+
+- **拿不到参数。** 客户端收到的 `emit` 帧 `args` 永远是空数组。
+- **同一次派发重复不了。** 一个事件触发两次，轮询只能看到它「存在」，看不到两次。
+- **停不下来的噪声。** 每 50ms 一次全表扫描，即使什么都没发生。
+
+根本原因是**事件总线没有推送通道**。这轮补上：
+
+### 新增 `EventBus::observe`
+
+```rust
+pub fn observe(&self, events: Option<Vec<&'static str>>)
+    -> UnboundedReceiver<ObservedEvent>;
+
+pub struct ObservedEvent {
+    pub name: &'static str,
+    pub args: serde_json::Value,
+}
+```
+
+五个 dispatch 路径（`emit` / `parallel` / `serial` / `bail` / `waterfall`）在监听器跑完后
+都会调用 `announce`。选在**之后**而不是之前，因为观察者要看的是「发生了什么」，不是
+「即将发生什么」；`serial`/`bail` 即使某个监听器 bail 了也照样通知——事件确实发生过。
+
+### 对接口的影响
+
+`Event::Args` 和 `Waterfall::Args` 增加了 `Serialize` 约束。这是必要的收紧：要把参数推给
+外部观察者，它必须能被序列化。编译器立刻抓出三个没派生 `Serialize` 的工具事件参数
+（`ToolExecution`、`PostExecuteArgs`、`ToolResult`），补上即可。
+
+### 修掉的一个真实竞态
+
+第一版 `forward_events` 在 `tokio::spawn` 的任务**内部**调用 `observe`。调用方无法知道订阅
+何时生效，于是「派发 → 观察者」之间存在窗口，事件会被丢掉。测试
+`a_registered_event_reaches_the_client_with_its_arguments` 直接超时失败抓到了它。
+
+修法是**先订阅、再 spawn**。这不是测试技巧，是 API 正确性：一个订阅接口必须让调用方在
+返回后立即可以信任它已经生效。
+
+### CLI
+
+`girder serve --watch <event>` 现在能用，可重复。事件名是 `&'static str` 常量，运行时字符串
+无法直接变成它，所以加了 `known_events()` 查找表。**未知事件名报错并列出可用名称**，而不是
+静默丢弃——否则一个拼写错误会表现为「这个事件从来不触发」。
+
+```
+$ girder serve --watch tools/pre-execute
+girder rpc listening on ws://127.0.0.1:8801/api/remote.mux (watching: tools/pre-execute)
+
+$ girder serve --watch nope/event
+[watch] unknown event `nope/event`; known names: tools/pre-execute, tools/execute, tools/post-execute
+```
+
+### 测试
+
+新增 10 个（7 个总线观察者 + 3 个端到端转发）。总数 194。
+
+关键几条：
+- `an_observer_sees_the_same_event_twice` — 轮询做不到的那条
+- `an_observer_can_watch_a_subset` — 过滤生效
+- `a_dropped_observer_is_pruned` — 关闭的通道在下次派发时被清理，不泄漏
+- `a_registered_event_reaches_the_client_with_its_arguments` — 参数完整到达
+- `an_empty_watch_list_forwards_nothing` — 默认不转发，避免把宿主内部事件泄漏给任何连上的 socket
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：
@@ -571,4 +1171,4 @@ Typert（3 万行）是 TS 编译器驱动的类型投影，Rust 侧要**重新�
 
 ---
 
-**文档状态**：迁移计划基线。阶段 0 完成后更新 2.2 节的实际情况，阶段 4 结束后更新整体可行性判断。
+**文档状态**：迁移计划基线。阶段 0-7 已完成，各阶段的限定见对应「完成记录」：阶段 6 只完成协议层（GUI 功能对接未做）；阶段 7 的沙箱只做到接口（内核隔离因本机无 Landlock 未实现）。实际情况见 2.2 / 2.4 / 2.5 / 2.6 / 2.7 / 2.8 / 2.9 / 2.10 节。
