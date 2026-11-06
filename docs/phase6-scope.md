@@ -233,10 +233,36 @@ page {address:v2} → 10 条事件：
 
 即：RPC 发的 prompt 真的驱动了模型 → 调工具 → 结果写回 → 第二轮回答。
 
+### 后续四：session.cancel
+
+`AgentRuntime::cancel` 本来就有，这轮加上 RPC 方法，现在共 **6 个**。
+
+**`accepted: true` 是确认请求，不是确认完成。** 取消在下一个步骤边界生效，所以它返回
+`accepted` 而不是「已停止」；需要确认已停止的客户端应等 `turn-ended` 事件。
+
+**没有 turn 在跑时也返回 `accepted: true`。** 上游的契约是确认，而一个刚好在 turn 结束时
+发出取消的客户端不该因为「赢了这个竞态」而收到错误。
+
+### 端到端抓到的第二个 bug：turn 号会跳
+
+第一版用「日志里 `TurnStart` 的数量 + 1」算 turn 号。跑端到端时看到：
+
+```
+prompt 1 → turn: 2
+prompt 2 → turn: 4
+```
+
+原因：`agent_loop::run` 每个模型轮次也写一条 `TurnStart`，所以一个两轮的 turn 留下两条记录，
+下一次 prompt 就跳号了。
+
+**turn 的正确定义是「这是第几次对话」，也就是用户消息的数量**，而不是日志里
+`TurnStart` 出现多少次——那个数量包含了 loop 自己的内部轮次。
+
+修正为统计 `UserMessage`，并加测试 `turn_numbers_count_prompts_not_log_records`。
+修正后实测 `turn: 1 → 2 → 3`。
+
 ### 仍然没做到的
 
-- **流式推送**：事件发到总线了，但 `serve` 默认 `--watch` 为空，所以客户端看不到。
-  需要 `--watch agent/turn` 才能收。`known_events()` 目前只列工具事件，没列 `agent/turn`。
-- **`session.stream` / `observeEvent`**：上游用 `mode: 'stream'` 的专用通道，本 build 没有。
-- **`session.cancel`**：`AgentRuntime::cancel` 已实现，但没有对应的 RPC 方法。
+- **`session.stream` / `observeEvent`**：上游用 `mode: 'stream'` 的专用通道，本 build 靠总线
+  推送代替。需 `--watch agent/turn` 才能收到。
 - **模型选择**：`selectModel` / `modelCatalog` 仍未实现。

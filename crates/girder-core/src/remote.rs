@@ -421,6 +421,24 @@ pub struct SessionCreateRequest {
     pub agent_preset: Option<String>,
 }
 
+/// The request to `session.cancel`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionCancelRequest {
+    /// Session whose running turn is cancelled.
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+}
+
+/// What `session.cancel` returns.
+///
+/// `accepted` acknowledges the request, not its completion: cancellation lands at the next step
+/// boundary, so a client that needs to know the turn actually stopped watches for `turn-ended`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionCancelValue {
+    /// Always true; a refusal is an error, not a false.
+    pub accepted: bool,
+}
+
 /// What `session.create` returns.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionCreateValue {
@@ -593,7 +611,6 @@ pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn
             "fork",
             "attachment",
             "updateQueue",
-            "cancel",
             "projections",
             "stream",
             "resume",
@@ -770,6 +787,7 @@ pub fn registry_with_runtime(
     register_create(&mut registry, &catalog);
     register_history(&mut registry, &catalog);
     register_prompt_with_runtime(&mut registry, &catalog, &runtime);
+    register_cancel(&mut registry, &runtime);
 
     registry.declare_unimplemented(
         "session",
@@ -783,7 +801,6 @@ pub fn registry_with_runtime(
             "fork",
             "attachment",
             "updateQueue",
-            "cancel",
             "projections",
             "stream",
             "resume",
@@ -794,6 +811,35 @@ pub fn registry_with_runtime(
         ],
     );
     registry
+}
+
+/// Registers `session.cancel`.
+///
+/// Returns `accepted: true` even when no turn was running. Upstream's contract is an acknowledgement,
+/// and a client that cancelled a turn which had just finished should not see an error for winning
+/// the race.
+fn register_cancel(registry: &mut RemoteRegistry, runtime: &Arc<crate::runtime::AgentRuntime>) {
+    let runtime = Arc::clone(runtime);
+    registry.register("session", "cancel", move |call| {
+        let runtime = Arc::clone(&runtime);
+        Box::pin(async move {
+            let request: SessionCancelRequest = parse_args("session", "cancel", call.args)?;
+            if request.session_id.trim().is_empty() {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "cancel".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                });
+            }
+
+            // The boolean is intentionally dropped: "nothing was running" is not a failure. The
+            // alternative — reporting it — would make a client handle a race it cannot act on.
+            let _cancelled = runtime.cancel(&request.session_id);
+
+            serde_json::to_value(SessionCancelValue { accepted: true })
+                .map_err(|error| RemoteError::Failed(error.to_string()))
+        })
+    });
 }
 
 /// Registers `session.prompt` against a live runtime.

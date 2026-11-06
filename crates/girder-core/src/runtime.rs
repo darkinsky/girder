@@ -193,12 +193,15 @@ impl AgentRuntime {
             );
         }
 
-        // The turn number is the count of turns already started, so a second prompt continues the
-        // conversation rather than resetting it.
+        // The turn number counts *user messages*, not `TurnStart` records.
+        //
+        // Counting `TurnStart` looks equivalent and is not: the loop writes one per model round, so
+        // a two-round turn leaves two, and the next prompt would skip ahead. What a client means by
+        // "turn" is "which exchange is this", which is the number of prompts sent.
         let events = session.replay().await.unwrap_or_default();
         let turn = events
             .iter()
-            .filter(|event| matches!(event, SessionEvent::TurnStart { .. }))
+            .filter(|event| matches!(event, SessionEvent::UserMessage { .. }))
             .count() as u64
             + 1;
 

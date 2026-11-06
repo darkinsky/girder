@@ -1392,6 +1392,56 @@ WebSocket 收到 8 帧：
 `resolve_watched` / `session_catalog` / `resolve_provider`。这是我第四次被同一个阈值拦下，
 每次拆完都更清楚。
 
+## 2.16 补充：session.cancel 与一个跳号的 turn
+
+### session.cancel
+
+`AgentRuntime::cancel` 本来就有并有测试，这轮加上 RPC 方法，方法总数到 6 个。
+
+两条语义决定：
+
+**`accepted: true` 是确认请求，不是确认完成。** 取消在下一个步骤边界生效，所以返回
+`accepted`；需要确认已停止的客户端等 `turn-ended` 事件。
+
+**没有 turn 在跑时也返回 `accepted: true`。** 上游契约是确认。一个刚好在 turn 结束时发出
+取消的客户端不该因为「赢了这个竞态」而收到错误——那会让客户端去处理一个它无法处理的竞态。
+
+### 端到端抓到的第二个 bug：turn 号跳号
+
+第一版用「日志里 `TurnStart` 数量 + 1」算 turn 号。端到端实测：
+
+```
+prompt 1 → turn: 2
+prompt 2 → turn: 4
+prompt 3 → turn: 5
+```
+
+原因：`agent_loop::run` 每个模型轮次也写一条 `TurnStart`。一个两轮的 turn（先调工具再回答）
+留下两条记录，下一次 prompt 就跳过 2 个号。
+
+**turn 的正确定义是「这是第几次对话」**，即用户消息数量，不是 `TurnStart` 的条数——后者包含
+loop 自己的内部轮次。修正为统计 `UserMessage`，实测变成 `1 → 2 → 3`。
+
+测试 `turn_numbers_count_prompts_not_log_records` 钉住。
+
+**这个 bug 单元测试抓不到**，因为单元测试里一次 turn 通常只有一轮。只有端到端跑一个
+「调工具再回答」的两轮 turn，才会让 `TurnStart` 数量与 prompt 数量脱钩。
+
+### 一次误判
+
+上一轮端到端里我看到「第二个 prompt 返回 accepted 而没有被拒」，一度以为是 bug。重测后发现是
+**时序问题**：离线 provider 太快，500ms 时第一个 turn 已经跑完，根本没有并发。
+
+立即发送的第二个 prompt 确实被拒：
+
+```
+prompt 1: ok, turn 1
+prompt 2 (immediate): error "session `b` is already running a turn"
+```
+
+记这一条是因为**「测试通过」和「测试在测我以为的东西」是两件事**。差一点就把一个正确的
+实现改成错的。
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：

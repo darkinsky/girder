@@ -853,10 +853,9 @@ async fn a_prompt_actually_calls_the_model() {
         .expect("prompt must be accepted");
 
     assert_eq!(value["accepted"], true);
-    assert_eq!(
-        value["turn"], 2,
-        "the create wrote turn 1, so this is turn 2"
-    );
+    // Turn numbers count prompts, not log records. `create` writes no user message, so this is the
+    // session's first exchange.
+    assert_eq!(value["turn"], 1);
 
     // The model runs asynchronously; wait for the event rather than sleeping a fixed time.
     let mut saw_text = false;
@@ -1041,6 +1040,235 @@ async fn the_prompt_is_recorded_exactly_once() {
     assert_eq!(
         prompts, 1,
         "the prompt must appear once, got {prompts}: {events:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- session.cancel -----------------------------------------------------------------------------
+
+/// A provider that emits slowly, so a cancel has something to interrupt.
+struct SlowProvider {
+    started: std::sync::atomic::AtomicUsize,
+}
+
+impl LlmProvider for SlowProvider {
+    fn stream(
+        &self,
+        _request: LlmRequest,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> girder_core::BoxFut<Result<girder_core::ChunkStream, LlmError>> {
+        self.started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Ten chunks, 100 ms apart: long enough that a cancel lands mid-stream.
+        let stream = async_stream::stream! {
+            for index in 0..10 {
+                if cancel.is_cancelled() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                yield StreamChunk::TextDelta {
+                    index: 0,
+                    text: format!("{index}"),
+                };
+            }
+            yield StreamChunk::Finish {
+                reason: FinishReason::Stop,
+            };
+        };
+        Box::pin(async move { Ok(Box::pin(stream) as girder_core::ChunkStream) })
+    }
+}
+
+#[tokio::test]
+async fn cancel_stops_a_running_turn() {
+    let dir = std::env::temp_dir().join(format!("girder-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("c").await.unwrap();
+
+    let provider = Arc::new(SlowProvider {
+        started: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(
+        Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        Arc::new(EventBus::new()),
+    );
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "c", "text": "go"})),
+        )
+        .await
+        .unwrap();
+
+    // Let it start producing, then cancel.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(runtime.is_running("c"), "the turn must still be running");
+
+    let value = registry
+        .dispatch("session", "cancel", call(json!({"sessionId": "c"})))
+        .await
+        .expect("cancel must be accepted");
+    assert_eq!(value["accepted"], true);
+
+    // The turn must stop well before its natural end (ten 100 ms chunks).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while runtime.is_running("c") && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        !runtime.is_running("c"),
+        "the cancelled turn must release the session"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn cancel_with_nothing_running_is_accepted() {
+    // A client that cancels a turn which just finished should not see an error for winning a race.
+    let dir = std::env::temp_dir().join(format!("girder-cancel2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(catalog, runtime);
+
+    let value = registry
+        .dispatch("session", "cancel", call(json!({"sessionId": "idle"})))
+        .await
+        .expect("cancel of an idle session must be accepted");
+
+    assert_eq!(value["accepted"], true);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn cancel_requires_a_session_id() {
+    let dir = std::env::temp_dir().join(format!("girder-cancel3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(catalog, runtime);
+
+    let error = registry
+        .dispatch("session", "cancel", call(json!({})))
+        .await
+        .expect_err("cancel without a session cannot select one");
+
+    assert_eq!(error.code(), "INVALID_ARGUMENTS");
+    assert!(error.to_string().contains("sessionId"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_can_be_prompted_again() {
+    // Cancellation must not wedge the session: a client that stops a turn and retries expects to
+    // be able to.
+    let dir = std::env::temp_dir().join(format!("girder-cancel4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("r").await.unwrap();
+
+    let provider = Arc::new(SlowProvider {
+        started: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(
+        Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        Arc::new(EventBus::new()),
+    );
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "r", "text": "first"})),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    registry
+        .dispatch("session", "cancel", call(json!({"sessionId": "r"})))
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while runtime.is_running("r") && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let value = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "r", "text": "second"})),
+        )
+        .await
+        .expect("a cancelled session must accept a new prompt");
+    assert_eq!(value["accepted"], true);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn turn_numbers_count_prompts_not_log_records() {
+    // Counting `TurnStart` records would skip ahead: the loop writes one per model round, so a
+    // two-round turn leaves two and the next prompt would report turn 4 instead of 2.
+    let dir = std::env::temp_dir().join(format!("girder-turnnum-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("t").await.unwrap();
+
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    let first = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "t", "text": "one"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first["turn"], 1, "the first prompt is turn 1");
+
+    // Let the turn finish so its own TurnStart records land in the log.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_running("t") && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let second = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "t", "text": "two"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        second["turn"], 2,
+        "the second prompt is turn 2 regardless of how many model rounds the first ran"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
