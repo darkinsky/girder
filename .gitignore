@@ -1,0 +1,28 @@
+# Build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# Lockfiles for libraries are committed; uncomment if this becomes a binary-only crate
+# Cargo.lock
+
+# Environment and secrets
+.env
+.env.*
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Coverage and profiling output
+*.profraw
+*.profdata
+lcov.info
+/coverage
