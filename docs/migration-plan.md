@@ -1150,6 +1150,72 @@ $ girder serve --watch nope/event
 - `a_registered_event_reaches_the_client_with_its_arguments` — 参数完整到达
 - `an_empty_watch_list_forwards_nothing` — 默认不转发，避免把宿主内部事件泄漏给任何连上的 socket
 
+## 2.13 补充：Remote 方法表（半补阶段 6 的缺口）
+
+阶段 6 的记录写着「没有 `Remote` 方法命名空间，所以真实 GUI 连不上」。这轮补上了方法表。
+
+### 上游实际有多少
+
+扫 `packages/api/*/src/index.ts` 的 `@Remote(...)` 装饰器：
+
+| 命名空间 | 方法数 |
+|---|---|
+| `session` | 20 |
+| `workspace` | 11 |
+| `job` | 3 |
+| `terminal` / `account` | 各 2 |
+| `workspace-files` / `remote-access` | 各 1 |
+
+**共 40 个。** 全部实现是阶段 7 之后的事，这轮做其中**用户可见路径上最短的一段**：
+`session.list` 与 `session.prompt`。
+
+### 三个错误码，而不是一个
+
+这是本轮最主要的设计判断。客户端必须能分辨：
+
+| code | 含义 | 客户端该做什么 |
+|---|---|---|
+| `UNKNOWN_METHOD` | 名字打错了 | 改代码 |
+| `NOT_IMPLEMENTED` | 上游有，本 build 没做 | 降级或提示「此功能未实现」 |
+| `INVALID_ARGUMENTS` | 参数类型不对 | 修请求 |
+
+合并成一个错误会让**半成品客户端看起来像坏了**，而不是像没做完。而「叫什么名字才算存在」
+无法从查不到推断出来，所以 `declare_unimplemented` 维护一份显式清单。
+
+### 实测
+
+```
+$ girder serve --bind 127.0.0.1:8806
+girder rpc exposing 2 Remote method(s): session.list, session.prompt
+
+session.list   → {"status":"ok","value":{"items":[{"sessionId":"demo","blank":false,...}]}}
+session.search → code NOT_IMPLEMENTED
+session.lst    → code UNKNOWN_METHOD
+session.prompt → {"status":"ok","value":{"accepted":true,"turn":1}}
+```
+
+### `session.list` 是真实数据
+
+`DirectoryCatalog` 扫描会话目录，文件名当 id，mtime 当 `updatedAt`，事件内容读出来判断
+`blank`。实测：先跑一次 `girder "list files"` 生成 `demo.jsonl.zst`，再 `session.list`
+返回 `blank:false`（因为日志里确实有 user message）。
+
+### 诚实的边界
+
+**GUI 还是连不上。** 它调 `session.create` / `session.page` / `session.stream`，
+全部 `NOT_IMPLEMENTED`。差别是：之前「什么都不能调」，现在「能调两个、其余的会说缺什么」。
+后者对排查有用，对使用还不够。README 写的是「22 个方法里实现了 2 个」，不是「GUI 能用」。
+
+### 踩到的坑
+
+1. **`FixedCatalog` 不排序，但测试假设了排序。** `list_marks_a_session_without_messages_as_blank`
+   断言 `items[0]` 是某个特定会话，实际顺序由 catalog 决定。改成按 id 查找——
+   排序是 catalog 的职责，方法只保持顺序。
+
+2. **`Arc::clone` 在嵌套 `move` 闭包里类型推断失败。** 编译器报
+   `expected &Arc<_,_>, found Arc<dyn SessionCatalog>`。加显式类型标注解决，
+   不是靠猜。
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：

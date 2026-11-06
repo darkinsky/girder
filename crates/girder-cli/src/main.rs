@@ -135,7 +135,38 @@ async fn main() -> Result<()> {
                     std::process::exit(2);
                 }
             }
-            girder_rpc::serve_on(listener, bus, selected, CancellationToken::new()).await?;
+            // Sessions live under the user's home by default; a directory that does not exist lists
+            // as empty rather than erroring.
+            let sessions_root = std::env::var("GIRDER_SESSIONS").map_or_else(
+                |_| {
+                    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                        .join(".girder")
+                        .join("sessions")
+                },
+                std::path::PathBuf::from,
+            );
+            let catalog: Arc<dyn girder_core::SessionCatalog> =
+                Arc::new(girder_core::DirectoryCatalog::new(sessions_root));
+            let remote = Arc::new(girder_core::default_registry(catalog));
+            println!(
+                "girder rpc exposing {} Remote method(s): {}",
+                remote.len(),
+                remote
+                    .names()
+                    .iter()
+                    .map(|(ns, m)| format!("{ns}.{m}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+
+            girder_rpc::serve_with(
+                listener,
+                bus,
+                selected,
+                Some(remote),
+                CancellationToken::new(),
+            )
+            .await?;
             return Ok(());
         }
         Mode::Prompt(prompt) => run_prompt(cli, prompt).await,

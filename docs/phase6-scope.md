@@ -106,3 +106,54 @@ GUI 要求的是完整的 Typert 方法集。本阶段的验收是**协议层连
 一个协议测试客户端验证，而不是用真实 GUI。
 
 这个限定必须写进 README，否则「阶段 6 完成」会被误读为「GUI 能用了」。
+
+## 后续：Remote 方法表（补上第 3 点的一半）
+
+上面第 3 点说「没有 `Remote` 方法命名空间」。后来补上了，见
+`crates/girder-core/src/remote.rs`。
+
+### 实现了什么
+
+| 方法 | 状态 |
+|---|---|
+| `session.list` | ✅ 返回真实会话行 |
+| `session.prompt` | ✅ 接受并确认（本 build 没有 agent 注册表可挂） |
+| 其余 20 个 `session.*` 方法 | ❌ 声明为 `NOT_IMPLEMENTED` |
+| `workspace.*`（11 个） | ❌ 未注册 |
+
+### 三个错误码的区别为什么重要
+
+客户端必须能分辨三种失败，否则半成品客户端看起来像坏了，而不是像没做完：
+
+| code | 含义 |
+|---|---|
+| `UNKNOWN_METHOD` | 名字打错了 |
+| `NOT_IMPLEMENTED` | 方法存在（上游有），本 build 没做 |
+| `INVALID_ARGUMENTS` | 参数类型不对 |
+
+实现里 `declare_unimplemented` 维护一份**显式清单**，因为这个区别无法从「查不到」推断出来。
+
+### 实测
+
+```
+$ girder serve --bind 127.0.0.1:8806
+girder rpc exposing 2 Remote method(s): session.list, session.prompt
+
+POST /api/remote.invoke {"namespace":"session","method":"list","args":{},"peer":"p"}
+→ {"status":"ok","value":{"items":[{"sessionId":"demo","blank":false,"updatedAt":...}]}}
+
+POST ... {"method":"search"}
+→ {"status":"error","error":{"code":"NOT_IMPLEMENTED","message":"`session.search` is not implemented in this build"}}
+
+POST ... {"method":"lst"}
+→ {"status":"error","error":{"code":"UNKNOWN_METHOD","message":"unknown method `session.lst`"}}
+```
+
+### 仍然没做到的
+
+**真实 GUI 还是连不上。** 它调用 `session.create` / `session.page` / `session.stream` 等
+2 个之外的方法，全部返回 `NOT_IMPLEMENTED`。所以这条限定只补了一半：现在**能列出会话**，
+但**不能开新会话、不能流转**。
+
+差别在于：之前是「什么都不能调」，现在是「能调两个、其余的会说缺什么」。后者对排查有用，
+对使用还不够。

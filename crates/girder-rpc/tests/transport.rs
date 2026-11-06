@@ -17,6 +17,7 @@ use girder_rpc::{
     RemoteEventRejection, RemoteEventResult, RpcServer, SessionState, TransportError,
     decode_downlink, encode_downlink,
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 
@@ -452,4 +453,150 @@ async fn an_empty_watch_list_forwards_nothing() {
     forwarder.abort();
     cancel.cancel();
     let _ = socket.close(None).await;
+}
+
+// ---- unary Remote calls over HTTP ---------------------------------------------------------------
+
+/// A catalog with one session, for the invoke tests.
+struct OneSession;
+
+impl girder_core::SessionCatalog for OneSession {
+    fn list(&self) -> girder_core::BoxFut<Vec<girder_core::SessionRecord>> {
+        Box::pin(async {
+            vec![girder_core::SessionRecord {
+                id: "s1".to_owned(),
+                updated_at: 7,
+                events: vec![girder_core::SessionEvent::UserMessage {
+                    content: vec![girder_core::ContentBlock::Text {
+                        text: "hi".to_owned(),
+                    }],
+                }],
+            }]
+        })
+    }
+}
+
+/// Starts a server exposing the session methods.
+async fn start_server_with_remote() -> (String, CancellationToken) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let cancel = CancellationToken::new();
+    let bus = Arc::new(EventBus::new());
+
+    let remote = Arc::new(girder_core::default_registry(Arc::new(OneSession)));
+    let token = cancel.clone();
+    tokio::spawn(async move {
+        let server = girder_rpc::RpcServer::new(bus).with_remote(remote);
+        axum::serve(listener, server.router())
+            .with_graceful_shutdown(async move { token.cancelled().await })
+            .await
+            .ok();
+    });
+
+    (
+        format!("http://{addr}{}", girder_rpc::server::INVOKE_PATH),
+        cancel,
+    )
+}
+
+/// Posts one invoke request, returning the decoded response.
+async fn invoke(url: &str, body: serde_json::Value) -> serde_json::Value {
+    // A hand-rolled HTTP POST keeps the test free of a client dependency.
+    let rest = url.strip_prefix("http://").expect("http url");
+    let (authority, path) = rest.split_once('/').expect("path");
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    let payload = body.to_string();
+    let request = format!(
+        "POST /{path} HTTP/1.1\r\nHost: {authority}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let text = String::from_utf8_lossy(&response);
+    let body = text.split_once("\r\n\r\n").expect("body").1;
+    serde_json::from_str(body).expect("the response must be JSON")
+}
+
+#[tokio::test]
+async fn an_invoke_call_reaches_a_registered_method() {
+    let (url, cancel) = start_server_with_remote().await;
+
+    let response = invoke(
+        &url,
+        serde_json::json!({"namespace": "session", "method": "list", "args": {}, "peer": "p"}),
+    )
+    .await;
+
+    assert_eq!(response["status"], "ok", "{response}");
+    assert_eq!(response["value"]["items"][0]["sessionId"], "s1");
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn an_invoke_call_to_a_gap_reports_the_code() {
+    // The client must be able to tell a gap from a typo over the wire, not just in a unit test.
+    let (url, cancel) = start_server_with_remote().await;
+
+    let response = invoke(
+        &url,
+        serde_json::json!({"namespace": "session", "method": "search", "args": {}, "peer": "p"}),
+    )
+    .await;
+
+    assert_eq!(response["status"], "error", "{response}");
+    assert_eq!(response["error"]["code"], "NOT_IMPLEMENTED");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("session.search")
+    );
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn an_invoke_call_with_a_typo_reports_unknown_method() {
+    let (url, cancel) = start_server_with_remote().await;
+
+    let response = invoke(
+        &url,
+        serde_json::json!({"namespace": "session", "method": "lst", "args": {}, "peer": "p"}),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], "UNKNOWN_METHOD");
+
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn an_invoke_endpoint_is_absent_without_a_remote_registry() {
+    // A server with no methods must not pretend to have them; the route is not registered at all.
+    let (mut socket_url, cancel) = start_server().await;
+    socket_url = socket_url.replace("ws://", "http://");
+    socket_url = socket_url.replace("/api/remote.mux", "/api/remote.invoke");
+
+    let rest = socket_url.strip_prefix("http://").unwrap();
+    let (authority, path) = rest.split_once('/').unwrap();
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    let payload = r#"{"namespace":"session","method":"list","args":{},"peer":"p"}"#;
+    let request = format!(
+        "POST /{path} HTTP/1.1\r\nHost: {authority}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let text = String::from_utf8_lossy(&response);
+
+    assert!(
+        text.starts_with("HTTP/1.1 404") || text.starts_with("HTTP/1.1 405"),
+        "an unregistered route must 404, got: {}",
+        text.lines().next().unwrap_or_default()
+    );
+
+    cancel.cancel();
 }

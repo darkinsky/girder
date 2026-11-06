@@ -20,6 +20,7 @@ tokio-util = { workspace = true }
 tracing = "0.1"
 
 [dev-dependencies]
+axum = { version = "0.8", features = ["ws"] }
 tokio = { workspace = true }
 tokio-tungstenite = "0.28"
 

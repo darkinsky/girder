@@ -7,13 +7,13 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: phases 0-7 have a slice, plus a live provider.** `girder "…"` talks to DeepSeek's
-> Anthropic-format API when `DEEPSEEK_API_KEY` is set and falls back to a scripted provider
-> otherwise, saying which on stderr. Three limits are worth stating plainly: the live path is
-> **tested against a mock server, not the real API** (no key here); `girder serve` is
-> **protocol connectivity, not a working GUI**; and the sandbox is **advisory, not kernel-enforced**
-> (this host's kernel has no Landlock). See [phase 6](docs/phase6-scope.md) and
-> [phase 7](docs/phase7-scope.md).
+> **Status: phases 0-7 have a slice, plus a live provider and two Remote methods.** `girder "…"`
+> talks to DeepSeek's Anthropic-format API when `DEEPSEEK_API_KEY` is set and falls back to a
+> scripted provider otherwise, saying which on stderr. Three limits are worth stating plainly: the
+> live path is **tested against a mock server, not the real API** (no key here); `girder serve`
+> exposes **two of the twenty-two Remote methods a client calls**, so it lists sessions but cannot
+> start one; and the sandbox is **advisory, not kernel-enforced** (this host's kernel has no
+> Landlock). See [phase 6](docs/phase6-scope.md) and [phase 7](docs/phase7-scope.md).
 
 ## Why this repository starts with a plan
 
@@ -66,6 +66,9 @@ cargo run -p girder-cli -- schema
   a WebSocket mux, with JSON Schema export so both sides can be checked against one artifact.
   Bus dispatches reach a watching client as `emit` frames through a push subscription, not a poll —
   a poll cannot carry arguments and cannot report the same event twice.
+- **Two Remote methods** — `session.list` and `session.prompt` over `/api/remote.invoke`. The other
+  twenty `session.*` methods answer `NOT_IMPLEMENTED` rather than `UNKNOWN_METHOD`, so a client can
+  tell a gap from a typo.
 - **Subagent delegation** — a child agent runs in its own session, and at the depth ceiling the
   delegation tool is removed from the tool set rather than refused at call time, so the model cannot
   spend its way into unbounded recursion.

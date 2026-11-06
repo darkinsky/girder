@@ -58,6 +58,7 @@ mod fiber;
 mod llm;
 mod llm_deepseek;
 mod registry;
+mod remote;
 mod scope;
 mod service;
 mod session;
@@ -86,6 +87,11 @@ pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
 };
 pub use registry::{Registry, RegistryContext, RegistryError};
+pub use remote::{
+    DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionCatalog,
+    SessionListValue, SessionPromptRequest, SessionPromptValue, SessionRecord, SessionSummary,
+    default_registry, register_session_methods,
+};
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;
 pub use session::{

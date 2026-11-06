@@ -26,7 +26,8 @@
 pub mod server;
 
 pub use server::{
-    ClientAnswer, ClientHandle, RpcServer, TransportError, forward_events, serve, serve_on,
+    ClientAnswer, ClientHandle, INVOKE_PATH, RpcServer, TransportError, forward_events, serve,
+    serve_on, serve_with,
 };
 
 use std::collections::HashMap;

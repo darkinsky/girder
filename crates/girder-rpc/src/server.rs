@@ -222,6 +222,8 @@ pub struct RpcServer {
     /// Events forwarded to every client. Empty means none: defaulting to everything would leak host
     /// internals to any connected socket.
     watch: Arc<Vec<&'static str>>,
+    /// Remote methods, when the caller supplied them.
+    remote: Option<Arc<girder_core::RemoteRegistry>>,
 }
 
 impl RpcServer {
@@ -231,6 +233,7 @@ impl RpcServer {
         Self {
             bus,
             watch: Arc::new(Vec::new()),
+            remote: None,
         }
     }
 
@@ -241,15 +244,77 @@ impl RpcServer {
         self
     }
 
+    /// Installs the Remote method registry that the invoke endpoint dispatches to.
+    #[must_use]
+    pub fn with_remote(mut self, remote: Arc<girder_core::RemoteRegistry>) -> Self {
+        self.remote = Some(remote);
+        self
+    }
+
     /// Builds the axum router.
     ///
-    /// One route, matching upstream's exact path. A second route (`/api/remote`) would let a client
-    /// connect to something that is not the mux and then fail confusingly.
+    /// The mux route is upstream's exact path; a second WebSocket path would let a client connect to
+    /// something that is not the mux and then fail confusingly. The invoke endpoint is HTTP because
+    /// upstream's unary calls are, and because a method result is not a stream.
     pub fn router(self) -> Router {
-        Router::new()
-            .route(REMOTE_STREAM_MUX_PATH, get(upgrade))
-            .with_state(self)
+        let mut router = Router::new().route(REMOTE_STREAM_MUX_PATH, get(upgrade));
+        if self.remote.is_some() {
+            router = router.route(INVOKE_PATH, axum::routing::post(invoke));
+        }
+        router.with_state(self)
     }
+}
+
+/// HTTP endpoint for unary Remote calls.
+///
+/// Upstream carries these over the same mux as logical streams. A separate POST is simpler and
+/// equivalent for a unary call: there is no stream to multiplex.
+pub const INVOKE_PATH: &str = "/api/remote.invoke";
+
+/// Handles one unary Remote call.
+async fn invoke(
+    State(server): State<RpcServer>,
+    axum::Json(request): axum::Json<crate::InvokeRemoteRequest>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+
+    let Some(remote) = &server.remote else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(crate::InvokeResponse::Error {
+                error: crate::RemoteEventRejection {
+                    name: "NotFound".to_owned(),
+                    message: "this server exposes no Remote methods".to_owned(),
+                    code: Some("NOT_IMPLEMENTED".to_owned()),
+                    details: None,
+                },
+            }),
+        );
+    };
+
+    let call = girder_core::RemoteCall {
+        args: serde_json::Value::Object(request.args),
+        peer: request.peer,
+    };
+
+    let response = match remote
+        .dispatch(&request.namespace, &request.method, call)
+        .await
+    {
+        Ok(value) => crate::InvokeResponse::Ok { value },
+        Err(error) => crate::InvokeResponse::Error {
+            error: crate::RemoteEventRejection {
+                name: "RemoteError".to_owned(),
+                message: error.to_string(),
+                code: Some(error.code().to_owned()),
+                details: None,
+            },
+        },
+    };
+
+    // A method that ran and reported a domain failure is a successful HTTP exchange: the transport
+    // did its job. A 500 would make a client retry a call that already has an answer.
+    (StatusCode::OK, axum::Json(response))
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(server): State<RpcServer>) -> impl IntoResponse {
@@ -343,7 +408,25 @@ pub async fn serve_on(
     watch: Vec<&'static str>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
-    let server = RpcServer::new(bus).watching(watch);
+    serve_with(listener, bus, watch, None, cancel).await
+}
+
+/// Serves the mux endpoint and the invoke endpoint, exposing `remote` methods.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error when the listener fails.
+pub async fn serve_with(
+    listener: tokio::net::TcpListener,
+    bus: Arc<EventBus>,
+    watch: Vec<&'static str>,
+    remote: Option<Arc<girder_core::RemoteRegistry>>,
+    cancel: CancellationToken,
+) -> std::io::Result<()> {
+    let mut server = RpcServer::new(bus).watching(watch);
+    if let Some(remote) = remote {
+        server = server.with_remote(remote);
+    }
     axum::serve(listener, server.router())
         .with_graceful_shutdown(async move { cancel.cancelled().await })
         .await
