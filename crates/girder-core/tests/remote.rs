@@ -773,3 +773,275 @@ async fn page_of_an_empty_log_is_empty() {
     assert_eq!(value["records"], json!([]));
     assert_eq!(value["cursor"], 0);
 }
+
+// ---- prompt actually runs a turn ----------------------------------------------------------------
+
+use girder_core::{
+    AgentRuntime, EventBus, LlmError, LlmProvider, LlmRequest, RuntimeConfig, StreamChunk,
+    ToolRegistry, ToolRegistryView,
+};
+
+/// A provider that answers with a fixed text, recording that it was called.
+struct EchoProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl LlmProvider for EchoProvider {
+    fn stream(
+        &self,
+        _request: LlmRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> girder_core::BoxFut<Result<girder_core::ChunkStream, LlmError>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let chunks = vec![
+            StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".to_owned(),
+            },
+            StreamChunk::TextDelta {
+                index: 0,
+                text: "echoed".to_owned(),
+            },
+            StreamChunk::Finish {
+                reason: FinishReason::Stop,
+            },
+        ];
+        Box::pin(
+            async move { Ok(Box::pin(futures::stream::iter(chunks)) as girder_core::ChunkStream) },
+        )
+    }
+}
+
+fn runtime_with(provider: Arc<dyn LlmProvider>, bus: Arc<EventBus>) -> Arc<AgentRuntime> {
+    let tools: Arc<dyn ToolRegistryView> = Arc::new(ToolRegistry::new());
+    AgentRuntime::new(RuntimeConfig {
+        provider,
+        tools,
+        bus,
+        model: "test".to_owned(),
+        max_turns: 1,
+    })
+}
+
+#[tokio::test]
+async fn a_prompt_actually_calls_the_model() {
+    // The point of the whole commit: before this, prompt returned accepted:true and did nothing.
+    let dir = std::env::temp_dir().join(format!("girder-prompt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s1").await.unwrap();
+
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let bus = Arc::new(EventBus::new());
+    let mut observed = bus.observe(None);
+    let runtime = runtime_with(
+        Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        Arc::clone(&bus),
+    );
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), runtime);
+
+    let value = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s1", "text": "hello"})),
+        )
+        .await
+        .expect("prompt must be accepted");
+
+    assert_eq!(value["accepted"], true);
+    assert_eq!(
+        value["turn"], 2,
+        "the create wrote turn 1, so this is turn 2"
+    );
+
+    // The model runs asynchronously; wait for the event rather than sleeping a fixed time.
+    let mut saw_text = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(200), observed.recv()).await {
+            Ok(Some(event)) => {
+                if event.args.to_string().contains("echoed") {
+                    saw_text = true;
+                    break;
+                }
+            }
+            Ok(None) => break,
+            // A timeout just means no event arrived yet; keep waiting until the deadline.
+            Err(_) => {}
+        }
+    }
+    assert!(saw_text, "the model's text must reach the event stream");
+    assert_eq!(
+        provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the provider must have been called exactly once"
+    );
+
+    // The prompt is durable before the model answers.
+    let events = girder_core::read_session_file(dir.join("s1.jsonl.zst")).unwrap();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            SessionEvent::UserMessage { content }
+                if content.iter().any(|block| matches!(block, ContentBlock::Text { text } if text == "hello"))
+        )),
+        "the user message must be in the log: {events:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn prompting_an_unknown_session_fails() {
+    // Minting a log on demand would hide a client bug behind a new session.
+    let dir = std::env::temp_dir().join(format!("girder-prompt2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(catalog, runtime);
+
+    let error = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "nope", "text": "hello"})),
+        )
+        .await
+        .expect_err("an unknown session must not be prompted");
+
+    assert_eq!(error.code(), "FAILED");
+    assert!(error.to_string().contains("no session named"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_second_prompt_while_running_is_refused() {
+    // Two concurrent turns in one session would append messages out of order.
+    let dir = std::env::temp_dir().join(format!("girder-prompt3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s").await.unwrap();
+
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s", "text": "one"})),
+        )
+        .await
+        .unwrap();
+    // The first turn is in flight; a second prompt to the same session must be refused.
+    let error = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s", "text": "two"})),
+        )
+        .await
+        .expect_err("a running turn must block a second prompt");
+
+    assert!(error.to_string().contains("already running"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_runtime_clears_a_session_when_the_turn_ends() {
+    // A failed or finished turn must not wedge the session.
+    let dir = std::env::temp_dir().join(format!("girder-prompt4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s").await.unwrap();
+
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s", "text": "x"})),
+        )
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_running("s") && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!runtime.is_running("s"), "the session must be released");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_prompt_is_recorded_exactly_once() {
+    // The runtime writes the prompt before spawning so it is durable even if the model never
+    // answers. The loop must therefore not write it again: a duplicate user message makes the
+    // replayed conversation show the same turn twice.
+    let dir = std::env::temp_dir().join(format!("girder-once-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("once").await.unwrap();
+
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "once", "text": "unique-prompt"})),
+        )
+        .await
+        .unwrap();
+
+    // Let the turn settle, then count.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_running("once") && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let events = girder_core::read_session_file(dir.join("once.jsonl.zst")).unwrap();
+    let prompts = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                SessionEvent::UserMessage { content }
+                    if content.iter().any(|block| matches!(block, ContentBlock::Text { text } if text == "unique-prompt"))
+            )
+        })
+        .count();
+
+    assert_eq!(
+        prompts, 1,
+        "the prompt must appear once, got {prompts}: {events:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

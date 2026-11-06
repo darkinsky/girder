@@ -11,8 +11,9 @@ consumers, and stay out of the way.
 > talks to DeepSeek's Anthropic-format API when `DEEPSEEK_API_KEY` is set and falls back to a
 > scripted provider otherwise, saying which on stderr. Three limits are worth stating plainly: the
 > live path is **tested against a mock server, not the real API** (no key here); `girder serve`
-> exposes **five of the twenty-two Remote methods a client calls** — enough to list, create, and
-> read a session, but not to select a model or stream a turn; and the sandbox is **advisory, not kernel-enforced** (this host's kernel has no
+> exposes **five of the twenty-two Remote methods a client calls**, and `session.prompt` now really
+> runs a turn — though its output reaches a client only with `--watch agent/turn`, and model
+> selection is still absent; and the sandbox is **advisory, not kernel-enforced** (this host's kernel has no
 > Landlock). See [phase 6](docs/phase6-scope.md) and [phase 7](docs/phase7-scope.md).
 
 ## Why this repository starts with a plan

@@ -104,72 +104,119 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Mode::Serve { bind, watch } => {
-            let bus = Arc::new(EventBus::new());
-            let listener = tokio::net::TcpListener::bind(&bind).await?;
-            let address = listener.local_addr()?;
-            if watch.is_empty() {
-                println!(
-                    "girder rpc listening on ws://{address}{} (no events forwarded)",
-                    girder_rpc::REMOTE_STREAM_MUX_PATH
-                );
-            } else {
-                println!(
-                    "girder rpc listening on ws://{address}{} (watching: {})",
-                    girder_rpc::REMOTE_STREAM_MUX_PATH,
-                    watch.join(", ")
-                );
-            }
-            // `Event::NAME` is a `&'static str`, so a runtime-supplied name cannot be used directly.
-            // The CLI therefore accepts only names it knows; an unknown one is reported rather than
-            // silently dropped, because a typo would otherwise look like "no events happen".
-            let known = girder_rpc::known_events();
-            let mut selected: Vec<&'static str> = Vec::new();
-            for name in &watch {
-                if let Some(found) = known.iter().find(|known| **known == name.as_str()) {
-                    selected.push(found);
-                } else {
-                    eprintln!(
-                        "[watch] unknown event `{name}`; known names: {}",
-                        known.join(", ")
-                    );
-                    std::process::exit(2);
-                }
-            }
-            // Sessions live under the user's home by default; a directory that does not exist lists
-            // as empty rather than erroring.
-            let sessions_root = std::env::var("GIRDER_SESSIONS").map_or_else(
-                |_| {
-                    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                        .join(".girder")
-                        .join("sessions")
-                },
-                std::path::PathBuf::from,
-            );
-            let catalog: Arc<dyn girder_core::SessionCatalog> =
-                Arc::new(girder_core::DirectoryCatalog::new(sessions_root));
-            let remote = Arc::new(girder_core::default_registry(catalog));
-            println!(
-                "girder rpc exposing {} Remote method(s): {}",
-                remote.len(),
-                remote
-                    .names()
-                    .iter()
-                    .map(|(ns, m)| format!("{ns}.{m}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-
-            girder_rpc::serve_with(
-                listener,
-                bus,
-                selected,
-                Some(remote),
-                CancellationToken::new(),
-            )
-            .await?;
+            serve(cli, bind, watch).await?;
             return Ok(());
         }
         Mode::Prompt(prompt) => run_prompt(cli, prompt).await,
+    }
+}
+
+/// Serves the RPC endpoint with the Remote methods this build implements.
+async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
+    let bus = Arc::new(EventBus::new());
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let address = listener.local_addr()?;
+
+    if watch.is_empty() {
+        println!(
+            "girder rpc listening on ws://{address}{} (no events forwarded)",
+            girder_rpc::REMOTE_STREAM_MUX_PATH
+        );
+    } else {
+        println!(
+            "girder rpc listening on ws://{address}{} (watching: {})",
+            girder_rpc::REMOTE_STREAM_MUX_PATH,
+            watch.join(", ")
+        );
+    }
+
+    let selected = resolve_watched(&watch);
+    let catalog = session_catalog();
+    let provider = resolve_provider(&cli);
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let tools = girder_core::ToolRegistry::new();
+    tools.register(list_tool());
+    tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
+        &workspace,
+    )));
+
+    let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
+        provider,
+        tools: Arc::new(tools) as Arc<dyn girder_core::ToolRegistryView>,
+        bus: Arc::clone(&bus),
+        model: cli.model.clone(),
+        max_turns: cli.max_turns,
+    });
+    let remote = Arc::new(girder_core::registry_with_runtime(catalog, runtime));
+    println!(
+        "girder rpc exposing {} Remote method(s): {}",
+        remote.len(),
+        remote
+            .names()
+            .iter()
+            .map(|(ns, m)| format!("{ns}.{m}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    girder_rpc::serve_with(
+        listener,
+        bus,
+        selected,
+        Some(remote),
+        CancellationToken::new(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Resolves `--watch` names against the events this build can forward.
+///
+/// An event name is a `&'static str` constant, so a runtime string cannot become one directly. An
+/// unknown name is reported rather than dropped: a typo would otherwise look like "no events
+/// happen".
+fn resolve_watched(watch: &[String]) -> Vec<&'static str> {
+    let known = girder_rpc::known_events();
+    let mut selected = Vec::new();
+    for name in watch {
+        if let Some(found) = known.iter().find(|known| **known == name.as_str()) {
+            selected.push(*found);
+        } else {
+            eprintln!(
+                "[watch] unknown event `{name}`; known names: {}",
+                known.join(", ")
+            );
+            std::process::exit(2);
+        }
+    }
+    selected
+}
+
+/// Where sessions live: `GIRDER_SESSIONS`, or `~/.girder/sessions`.
+fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {
+    let root = std::env::var("GIRDER_SESSIONS").map_or_else(
+        |_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".girder")
+                .join("sessions")
+        },
+        std::path::PathBuf::from,
+    );
+    // A missing directory lists as empty rather than erroring: a fresh install has no sessions.
+    Arc::new(girder_core::DirectoryCatalog::new(root))
+}
+
+/// The live provider when a key is present, the scripted one otherwise.
+fn resolve_provider(cli: &Cli) -> Arc<dyn girder_core::LlmProvider> {
+    if let Ok(provider) = girder_core::provider_from_env() {
+        eprintln!("[provider] live: {}", cli.model);
+        provider
+    } else {
+        eprintln!("[provider] offline (set DEEPSEEK_API_KEY for real turns)");
+        Arc::new(OfflineProvider {
+            tool: cli.tool.clone(),
+        })
     }
 }
 

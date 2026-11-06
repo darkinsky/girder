@@ -182,10 +182,61 @@ page   {address:alpha}       → {cursor:1, hasMore:false, records:[{type:"event
 create {"sessionId":"alpha"} → 同一个 id，日志仍是 1 条事件
 ```
 
+### 后续三：prompt 真的会跑一轮
+
+之前 `session.prompt` 返回 `accepted:true` 却什么都不做——这是所有实现里最「说谎」的一处。
+现在它真的启动 `agent_loop`。
+
+**`AgentRuntime` 的职责**：持有 provider 与工具集，管理「每个 session 同时只有一个 turn」，
+把 loop 的步骤发布到事件总线（`agent/turn` 事件）。
+
+**为什么必须拒绝并发 prompt**：同一会话两个 turn 会交错追加消息，模型会看到一段从未发生过的
+对话。测试 `a_second_prompt_while_running_is_refused` 钉住这条。
+
+**为什么 prompt 先写日志再 spawn**：prompt 必须持久化，即使模型永不回答。但这也引入了一个
+bug——见下。
+
+### 一个被端到端测试抓到的真实 bug
+
+第一版跑通后翻日志，发现**两条相同的 `user/message`**：
+
+```
+turn/start
+user/message   ← runtime 写的
+user/message   ← agent_loop::run 又写了一次
+turn/start
+...
+```
+
+`AgentRuntime::prompt` 和 `agent_loop::run` 各写了一次。修复是给 `LoopContext` 加
+`record_prompt: bool`：直接调用方（CLI）保持 true，RPC runtime 设为 false。
+
+加测试 `the_prompt_is_recorded_exactly_once` 钉住，断言日志里恰好一条。
+
+**这个 bug 只有跑真实端到端才会暴露**——单元测试里 runtime 和 loop 各自都被正确调用，
+只有把两者串起来才看见重复。
+
+### 实测
+
+```
+$ GIRDER_SESSIONS=/tmp/gp girder serve --bind 127.0.0.1:8820
+girder rpc exposing 5 Remote method(s): session.create, ...
+
+create {"sessionId":"v2"}              → ok
+prompt {"sessionId":"v2","text":"list files"} → {"accepted":true,"turn":2}
+prompt 同一会话（运行中）                → error: "already running a turn"
+
+page {address:v2} → 10 条事件：
+  turn/start, user/message, turn/start, assistant/message(tool-call),
+  tool/call, tool/result, turn/end, turn/start, assistant/message, turn/end
+```
+
+即：RPC 发的 prompt 真的驱动了模型 → 调工具 → 结果写回 → 第二轮回答。
+
 ### 仍然没做到的
 
-**真实 GUI 还是连不上。** 它调 `session.selectModel` / `session.modelCatalog` /
-`session.stream` / `session.projections` 等，全部 `NOT_IMPLEMENTED`。
-
-差别在于：最初「什么都不能调」，然后「能列不能开」，现在**能开新会话、能读历史**。
-缺的是模型选择与流式订阅——GUI 打开会话后需要它们才能发消息。
+- **流式推送**：事件发到总线了，但 `serve` 默认 `--watch` 为空，所以客户端看不到。
+  需要 `--watch agent/turn` 才能收。`known_events()` 目前只列工具事件，没列 `agent/turn`。
+- **`session.stream` / `observeEvent`**：上游用 `mode: 'stream'` 的专用通道，本 build 没有。
+- **`session.cancel`**：`AgentRuntime::cancel` 已实现，但没有对应的 RPC 方法。
+- **模型选择**：`selectModel` / `modelCatalog` 仍未实现。

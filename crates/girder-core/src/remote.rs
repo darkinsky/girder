@@ -310,6 +310,15 @@ pub trait SessionCatalog: Send + Sync {
     /// Idempotent per id: creating one that exists reuses it rather than failing, which is what
     /// upstream's `create` does for a blank session.
     fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>>;
+
+    /// Opens the writable log for `id`, or `None` when no session has that id.
+    ///
+    /// The read methods return a *snapshot*; a prompt has to append to the live log, so it needs the
+    /// handle rather than a copy of the events. Returning `None` rather than creating on demand is
+    /// deliberate: prompting a session that does not exist should fail, not silently mint one.
+    fn open(&self, _id: &str) -> Option<Arc<dyn crate::session::Session>> {
+        None
+    }
 }
 
 /// One durable history record, in the shape a client's page reader expects.
@@ -491,6 +500,14 @@ impl SessionCatalog for DirectoryCatalog {
         let path = self.root.join(format!("{id}.jsonl.zst"));
         let id = id.to_owned();
         Box::pin(async move { read_record(&path, id) })
+    }
+
+    fn open(&self, id: &str) -> Option<Arc<dyn crate::session::Session>> {
+        let path = self.root.join(format!("{id}.jsonl.zst"));
+        // Only an existing session opens: a prompt to an unknown id must fail, not mint a log.
+        path.is_file().then(|| {
+            Arc::new(crate::session::SessionStore::new(path)) as Arc<dyn crate::session::Session>
+        })
     }
 
     fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>> {
@@ -732,6 +749,105 @@ pub fn default_registry(catalog: Arc<dyn SessionCatalog>) -> RemoteRegistry {
     let mut registry = RemoteRegistry::new();
     register_session_methods(&mut registry, &catalog);
     registry
+}
+
+/// Builds a registry whose `session.prompt` really runs a turn.
+///
+/// Without a runtime, prompt acknowledges and does nothing — the honest answer for a build with no
+/// agent, but a lie to a client that then waits for output. With one, the prompt starts a loop and
+/// its steps arrive on the bus.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "both Arcs are cloned into method closures, so ownership is the point"
+)]
+#[must_use]
+pub fn registry_with_runtime(
+    catalog: Arc<dyn SessionCatalog>,
+    runtime: Arc<crate::runtime::AgentRuntime>,
+) -> RemoteRegistry {
+    let mut registry = RemoteRegistry::new();
+    register_list(&mut registry, &catalog);
+    register_create(&mut registry, &catalog);
+    register_history(&mut registry, &catalog);
+    register_prompt_with_runtime(&mut registry, &catalog, &runtime);
+
+    registry.declare_unimplemented(
+        "session",
+        &[
+            "search",
+            "selectModel",
+            "modelCatalog",
+            "openWorkspacePath",
+            "workspacePathApplications",
+            "rename",
+            "fork",
+            "attachment",
+            "updateQueue",
+            "cancel",
+            "projections",
+            "stream",
+            "resume",
+            "archive",
+            "delete",
+            "duplicate",
+            "export",
+        ],
+    );
+    registry
+}
+
+/// Registers `session.prompt` against a live runtime.
+fn register_prompt_with_runtime(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    runtime: &Arc<crate::runtime::AgentRuntime>,
+) {
+    let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    let runtime = Arc::clone(runtime);
+    registry.register("session", "prompt", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        let runtime = Arc::clone(&runtime);
+        Box::pin(async move {
+            let request: SessionPromptRequest = parse_args("session", "prompt", call.args)?;
+            if request.text.trim().is_empty() {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "prompt".to_owned(),
+                    message: "`text` must not be empty".to_owned(),
+                });
+            }
+            if request.session_id.trim().is_empty() {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "prompt".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                });
+            }
+
+            // The session must exist: prompting an unknown id should fail rather than mint a log.
+            let Some(session) = catalog.open(&request.session_id) else {
+                return Err(RemoteError::Failed(format!(
+                    "no session named `{}`",
+                    request.session_id
+                )));
+            };
+
+            let turn = crate::runtime::AgentRuntime::prompt(
+                &runtime,
+                &request.session_id,
+                &request.text,
+                session,
+            )
+            .await
+            .map_err(|error| RemoteError::Failed(error.to_string()))?;
+
+            serde_json::to_value(SessionPromptValue {
+                accepted: true,
+                turn,
+            })
+            .map_err(|error| RemoteError::Failed(error.to_string()))
+        })
+    });
 }
 
 /// Selects one page of records from a session's events.

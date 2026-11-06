@@ -420,6 +420,7 @@ pub fn known_events() -> Vec<&'static str> {
         <girder_core::ToolPreExecute as girder_core::Waterfall>::NAME,
         <girder_core::ToolExecute as girder_core::Waterfall>::NAME,
         <girder_core::ToolPostExecute as girder_core::Waterfall>::NAME,
+        <girder_core::AgentTurn as girder_core::Event>::NAME,
     ]
 }
 

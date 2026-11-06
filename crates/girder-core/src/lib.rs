@@ -59,6 +59,7 @@ mod llm;
 mod llm_deepseek;
 mod registry;
 mod remote;
+mod runtime;
 mod scope;
 mod service;
 mod session;
@@ -92,7 +93,9 @@ pub use remote::{
     SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
     SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_session_methods,
+    registry_with_runtime,
 };
+pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;
 pub use session::{

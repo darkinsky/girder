@@ -134,6 +134,12 @@ pub struct LoopContext {
     pub depth: crate::subagent::Depth,
     /// How many nested delegations this agent may make.
     pub max_depth: u32,
+    /// Whether the loop writes the prompt as a user message.
+    ///
+    /// True for a direct caller that owns the conversation (the CLI). False when the caller already
+    /// recorded it — the RPC runtime writes the prompt before spawning, so that it is durable even
+    /// if the model never answers, and a second write would put the same message in the log twice.
+    pub record_prompt: bool,
 }
 
 impl LoopContext {
@@ -157,6 +163,7 @@ impl LoopContext {
             max_turns: 16,
             depth: crate::subagent::Depth::root(),
             max_depth: 2,
+            record_prompt: true,
         }
     }
 
@@ -185,16 +192,19 @@ pub fn run(
             content: vec![ContentBlock::Text { text: prompt.clone() }],
         }];
 
-        // The first user message is durable before any turn starts.
-        if let Err(error) = context
-            .session
-            .append(SessionEvent::UserMessage {
-                content: messages[0].content.clone(),
-            })
-            .await
-        {
-            yield Err(LoopError::Session(error));
-            return;
+        // The first user message is durable before any turn starts, unless the caller already
+        // recorded it.
+        if context.record_prompt {
+            if let Err(error) = context
+                .session
+                .append(SessionEvent::UserMessage {
+                    content: messages[0].content.clone(),
+                })
+                .await
+            {
+                yield Err(LoopError::Session(error));
+                return;
+            }
         }
 
         for turn in 1..=u64::from(context.max_turns) {

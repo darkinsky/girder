@@ -1322,6 +1322,76 @@ create {"sessionId":"alpha"} → 同 id，日志仍 1 条事件（文件仍 40 �
 每个 30 行左右。和之前几轮一样，这个阈值在这类「一堆相似闭包」的代码上是有效信号——
 拆开后每个函数的职责立刻清楚了。
 
+## 2.15 补充：prompt 真的会跑一轮
+
+2.14 的记录里写着：`prompt` 返回 `accepted:true`，但「本 build 没有 agent 可挂，事件不会真的产生」。
+这是所有实现里最「说谎」的一处——客户端收到 200 就以为在跑。这轮修掉了。
+
+### `AgentRuntime`
+
+新增 `crates/girder-core/src/runtime.rs`：
+
+- 持有 provider 与工具集，管理**每个 session 同时只有一个 turn**
+- 把 loop 的步骤发布成 `agent/turn` 事件（`turn-started` / `text-delta` / `tool-started` /
+  `tool-finished` / `turn-ended`）
+- `prompt` 先写用户消息、再 spawn，实现「立即返回、异步执行」
+
+### 两条必须守住的约束
+
+**并发 prompt 必须拒绝。** 同一会话两个 turn 会交错追加消息，模型会看到一段从未发生过的对话。
+测试 `a_second_prompt_while_running_is_refused` 断言第二个 prompt 报
+`already running a turn`。
+
+**turn 结束必须释放会话。** 失败或完成都要清掉运行标记，否则一次失败会把会话永久锁死。
+测试 `the_runtime_clears_a_session_when_the_turn_ends` 覆盖。
+
+### 端到端抓到的真实 bug
+
+第一版跑通后翻日志，发现**两条相同的 `user/message`**——`AgentRuntime::prompt` 和
+`agent_loop::run` 各写了一次。
+
+修复：给 `LoopContext` 加 `record_prompt: bool`。直接调用方（CLI）保持 `true`，
+RPC runtime 设为 `false`（它已经在 spawn 前写过）。测试
+`the_prompt_is_recorded_exactly_once` 断言日志里恰好一条。
+
+**这类 bug 只有真实端到端才会暴露。** 单元测试里 runtime 和 loop 各自都被正确调用，
+只有把两者串起来才看见重复。
+
+### 实测：全链路通了
+
+```
+$ girder serve --watch agent/turn --bind 127.0.0.1:8831
+
+create {"sessionId":"watch"} → ok
+prompt {"sessionId":"watch","text":"list files"} → {"accepted":true,"turn":1}
+
+WebSocket 收到 8 帧：
+  {"type":"ready","clientId":"gen-1",...}
+  {"type":"emit","event":"agent/turn","args":[{"type":"turn-started","turn":1}]}
+  {"type":"emit","event":"agent/turn","args":[{"type":"tool-started","name":"list"}]}
+  {"type":"emit","event":"agent/turn","args":[{"type":"tool-finished","isError":false}]}
+  {"type":"emit","event":"agent/turn","args":[{"type":"turn-ended","reason":"tool-calls"}]}
+  {"type":"emit","event":"agent/turn","args":[{"type":"turn-started","turn":2}]}
+  {"type":"emit","event":"agent/turn","args":[{"type":"text-delta","text":"Here is what I found..."}]}
+  {"type":"emit","event":"agent/turn","args":[{"type":"turn-ended","reason":"stop"}]}
+```
+
+**RPC prompt → 模型 → 工具调用 → 结果写回 → 第二轮 → 文本推送到 WebSocket**，
+整条路径都通了。
+
+### 仍然没做到的
+
+- **`session.stream` / `observeEvent`**：上游用 `mode: 'stream'` 的专用通道，本 build 靠总线
+  推送代替。语义等价但协议不同，真客户端不会用这条路径。
+- **`session.cancel`**：`AgentRuntime::cancel` 已实现并有测试，但没有对应的 RPC 方法。
+- **模型选择**：`selectModel` / `modelCatalog` 仍未实现。
+
+### 踩到的坑
+
+**`main` 长到 105 行被 clippy 拦下。** serve 分支抽成 `serve()`，再拆出
+`resolve_watched` / `session_catalog` / `resolve_provider`。这是我第四次被同一个阈值拦下，
+每次拆完都更清楚。
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：
