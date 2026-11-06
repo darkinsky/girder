@@ -132,6 +132,21 @@ impl SessionSummary {
             cwd: None,
         }
     }
+
+    /// Builds a summary from a catalog row.
+    ///
+    /// Uses the row's `blank` flag rather than its `events`, which `list` leaves empty.
+    #[must_use]
+    pub fn from_record(record: &SessionRecord) -> Self {
+        Self {
+            session_id: record.id.clone(),
+            updated_at: record.updated_at,
+            agent_available: false,
+            running: false,
+            blank: record.blank,
+            cwd: None,
+        }
+    }
 }
 
 /// The response to `session.list`.
@@ -289,7 +304,13 @@ pub struct SessionRecord {
     pub id: String,
     /// When it last advanced, milliseconds since the epoch.
     pub updated_at: u64,
-    /// Its durable events.
+    /// Whether the conversation has started.
+    ///
+    /// Carried rather than derived from `events` because [`SessionCatalog::list`] deliberately leaves
+    /// `events` empty: decoding every event of every session to compute this one bit is
+    /// O(sessions x events) of work for a list view.
+    pub blank: bool,
+    /// Its durable events. Empty for a row returned by `list`.
     pub events: Vec<SessionEvent>,
 }
 
@@ -501,11 +522,16 @@ impl SessionCatalog for DirectoryCatalog {
                         u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
                     });
 
-                let events = crate::session::read_session_file(&path).unwrap_or_default();
+                // One bit per row: decoding every event of every session to decide `blank` is
+                // O(sessions x events) of disk and zstd work. The summary only needs the flag.
+                let blank = !crate::session::SessionStore::new(&path)
+                    .has_user_message()
+                    .unwrap_or(true);
                 records.push(SessionRecord {
                     id: id.to_owned(),
                     updated_at,
-                    events,
+                    blank,
+                    events: Vec::new(),
                 });
             }
             // Newest first: a list view shows recent activity before old.
@@ -532,31 +558,42 @@ impl SessionCatalog for DirectoryCatalog {
         let path = self.root.join(format!("{id}.jsonl.zst"));
         let id = id.to_owned();
         Box::pin(async move {
-            // Reuse rather than fail: upstream's `create` returns an existing blank session rather
-            // than minting a second one, and a client that re-sends a create must not fork history.
-            if let Some(existing) = read_record(&path, id.clone()) {
-                return Ok(existing);
-            }
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| {
                     RemoteError::Failed(format!("cannot create session dir: {error}"))
                 })?;
             }
-            // An empty log file, so the session is visible to `list` before its first turn.
-            let store = crate::session::SessionStore::new(&path);
-            store
-                .append(&SessionEvent::TurnStart { turn: 1 })
-                .map_err(|error| RemoteError::Failed(error.to_string()))?;
 
-            Ok(SessionRecord {
-                id,
-                updated_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map_or(0, |elapsed| {
-                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                    }),
-                events: vec![SessionEvent::TurnStart { turn: 1 }],
+            // Existence check and creation must not race: two creates of the same id would both see
+            // "absent", both append a `TurnStart`, and leave a fresh session holding two turns.
+            // Measured before this guard: 8 concurrent creates left 8 events instead of 1.
+            //
+            // `create_new` makes the check atomic at the filesystem: exactly one writer wins, and
+            // the losers fall through to reading what the winner wrote.
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => {
+                    let store = crate::session::SessionStore::new(&path);
+                    store
+                        .append(&SessionEvent::TurnStart { turn: 1 })
+                        .map_err(|error| RemoteError::Failed(error.to_string()))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Reuse rather than fail: upstream's `create` returns the existing session, and
+                    // a client re-sending a create must not fork history.
+                }
+                Err(error) => {
+                    return Err(RemoteError::Failed(format!(
+                        "cannot create session: {error}"
+                    )));
+                }
+            }
+
+            read_record(&path, id).ok_or_else(|| {
+                RemoteError::Failed("the session disappeared while being created".to_owned())
             })
         })
     }
@@ -578,9 +615,13 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         });
+    let blank = !events
+        .iter()
+        .any(|event| matches!(event, SessionEvent::UserMessage { .. }));
     Some(SessionRecord {
         id,
         updated_at,
+        blank,
         events,
     })
 }

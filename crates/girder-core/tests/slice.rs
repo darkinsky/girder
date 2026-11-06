@@ -680,3 +680,80 @@ fn an_unknown_event_type_is_rejected_not_skipped() {
         .expect_err("unknown variants must not deserialize");
     assert!(error.to_string().contains("turn/rewind") || error.to_string().contains("unknown"));
 }
+
+// ---- session concurrency -------------------------------------------------------------------------
+
+#[test]
+fn concurrent_appends_do_not_lose_events() {
+    // `append` is read-modify-write over the whole compressed frame: decode, push, rewrite. Without
+    // a per-path lock, interleaved appends drop each other's events and every writer shares one
+    // staging file. Measured before the lock: 80 concurrent appends left 12 events and 41 errors.
+    let dir = std::env::temp_dir().join(format!("girder-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("race.jsonl.zst");
+    let store = Arc::new(girder_core::SessionStore::new(&path));
+
+    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let handles: Vec<_> = (0..8)
+        .map(|worker| {
+            let store = Arc::clone(&store);
+            let errors = Arc::clone(&errors);
+            std::thread::spawn(move || {
+                for index in 0..10 {
+                    let turn = u64::try_from(worker * 10 + index).expect("test ids are small");
+                    if let Err(error) = store.append(&SessionEvent::TurnStart { turn }) {
+                        errors.lock().unwrap().push(error.to_string());
+                    }
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let events = girder_core::read_session_file(&path).unwrap();
+    assert_eq!(events.len(), 80, "every append must survive");
+    assert!(
+        errors.lock().unwrap().is_empty(),
+        "no append may fail: {:?}",
+        errors.lock().unwrap()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn concurrent_appends_keep_the_log_readable() {
+    // The staging-file collision corrupted the frame itself on the original probe
+    // ("Unknown frame descriptor"), which would make a session unrecoverable rather than merely
+    // short.
+    let dir = std::env::temp_dir().join(format!("girder-race2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("race.jsonl.zst");
+    let store = Arc::new(girder_core::SessionStore::new(&path));
+
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let store = Arc::clone(&store);
+            std::thread::spawn(move || {
+                for _ in 0..5 {
+                    store
+                        .append(&SessionEvent::TurnStart { turn: 1 })
+                        .expect("append must not fail");
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // A corrupt frame surfaces here as a decode error rather than a short read.
+    let events = girder_core::read_session_file(&path).expect("the log must decode");
+    assert_eq!(events.len(), 20);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

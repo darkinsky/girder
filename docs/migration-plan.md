@@ -1442,6 +1442,72 @@ prompt 2 (immediate): error "session `b` is already running a turn"
 记这一条是因为**「测试通过」和「测试在测我以为的东西」是两件事**。差一点就把一个正确的
 实现改成错的。
 
+## 2.17 补充：一轮质量审查，抓到两个数据损坏 bug
+
+连续六轮加功能后，这轮回头审查。**用探针实测而不是读代码猜测**，结果三个怀疑里两个成立，
+且都是数据损坏级别。
+
+### Bug 1：并发 append 丢失事件
+
+`SessionStore::append` 是「解码整个 zstd 帧 → 追加一条 → 重写」。两个并发 append 会
+互相覆盖，而且**共用同一个 `.tmp` 中转文件**。
+
+探针实测（8 线程 × 10 条 = 应为 80 条）：
+
+```
+expected 80 events, got 12
+write errors: 41
+  session io: No such file or directory (os error 2)
+  session io: Unknown frame descriptor      ← 帧本身被写坏了
+```
+
+不只是丢数据，**日志帧会损坏**，那意味着整个会话不可恢复。
+
+**修复**：按路径的进程级互斥（`path_lock`），加中转文件名带唯一后缀。
+重测：80 条全部写入，0 错误。
+
+**为什么按路径而不是按实例**：`SessionStore` 很便宜（RPC 层每次调用都 new 一个），
+实例级 mutex 什么也串不住。
+
+### Bug 2：并发 create 破坏幂等性
+
+`create` 是「查存在 → 不存在则写」。两个并发调用都会看到「不存在」，各写一条 `TurnStart`。
+
+探针实测（8 个并发 create 同一个 id）：
+
+```
+concurrent creates succeeded: 8/8
+events in log: 8 (a fresh session should have 1)
+```
+
+**修复**：用 `OpenOptions::create_new` 让「查+建」在文件系统层原子。输的一方落到读赢家写的日志。
+重测：8 个全部成功，日志 1 条事件。
+
+### 优化：list 不再解码全部日志
+
+`list` 原本读取并解压**每个会话的全部事件**只为算一个 `blank` 布尔值。实测 200 个会话时
+解压了 10,200 条事件。
+
+改为 `has_user_message()`：流式读到第一条 user message 就停。`SessionRecord` 新增 `blank`
+字段，`list` 不再携带 events。
+
+**诚实的数字**：优化前 7.8ms，优化后 3.8ms（消息在前）/ 6.5ms（消息在后）。
+不是数量级提升，因为 zstd 是流式解压，取到后面的事件仍要读完整帧。真正的收益是
+**解码事件数从 10,200 降到 0**。
+
+### 一处过时的测试
+
+`a_directory_of_logs_lists_one_row_per_file` 原断言是
+`records.iter().all(|r| !r.events.is_empty())`——「事件必须被读取」。这恰好钉住了我刚修掉的
+低效行为。改成断言新语义（`events` 为空、`blank` 正确）。
+
+**记这一条**：优化改变语义时，旧测试可能不是在保护正确性，而是在保护旧实现。
+
+### 教训
+
+前几轮我一直在加功能，每轮都通过测试。但这两个 bug 从阶段 4 就存在，一直没被触发，
+因为测试从没并发写过同一个会话。**「测试全绿」不等于「没有 bug」，只等于「已写的测试通过」。**
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：

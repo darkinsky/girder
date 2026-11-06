@@ -50,6 +50,7 @@ fn record(id: &str, updated_at: u64, has_message: bool) -> SessionRecord {
     SessionRecord {
         id: id.to_owned(),
         updated_at,
+        blank: !has_message,
         events,
     }
 }
@@ -363,9 +364,16 @@ async fn a_directory_of_logs_lists_one_row_per_file() {
     let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
     assert!(ids.contains(&"alpha"), "{ids:?}");
     assert!(ids.contains(&"beta"), "{ids:?}");
+    // `list` deliberately does not carry events: decoding every event of every session to decide
+    // `blank` is O(sessions x events) for one bit. It reads until the first user message instead,
+    // so the flag is right and the payload is empty.
     assert!(
-        records.iter().all(|r| !r.events.is_empty()),
-        "the events must be read, not just the names"
+        records.iter().all(|r| r.events.is_empty()),
+        "list must not decode whole logs"
+    );
+    assert!(
+        records.iter().all(|r| !r.blank),
+        "both fixtures have a user message, so neither is blank"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -447,6 +455,7 @@ impl SessionCatalog for EmptyCatalog {
             Ok(SessionRecord {
                 id,
                 updated_at: 1,
+                blank: true,
                 events: vec![SessionEvent::TurnStart { turn: 1 }],
             })
         })
@@ -586,6 +595,7 @@ fn catalog_with_events(id: &str, count: usize) -> Arc<dyn SessionCatalog> {
     Arc::new(FixedCatalog(vec![SessionRecord {
         id: id.to_owned(),
         updated_at: 1,
+        blank: false,
         events,
     }]))
 }
@@ -758,6 +768,7 @@ async fn page_of_an_empty_log_is_empty() {
     let registry = default_registry(Arc::new(FixedCatalog(vec![SessionRecord {
         id: "s".to_owned(),
         updated_at: 1,
+        blank: false,
         events: Vec::new(),
     }])));
 
@@ -1270,6 +1281,63 @@ async fn turn_numbers_count_prompts_not_log_records() {
         second["turn"], 2,
         "the second prompt is turn 2 regardless of how many model rounds the first ran"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn concurrent_creates_of_one_id_leave_one_session() {
+    // Existence check and creation must not race: two creates both seeing "absent" would each append
+    // a `TurnStart`, leaving a fresh session holding two turns. Measured before the guard: eight
+    // concurrent creates left eight events instead of one.
+    let dir = std::env::temp_dir().join(format!("girder-toctou-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let catalog = Arc::clone(&catalog);
+        handles.push(tokio::spawn(async move { catalog.create("dup").await }));
+    }
+    for handle in handles {
+        handle
+            .await
+            .expect("the task must not panic")
+            .expect("every create must succeed: reusing is success, not failure");
+    }
+
+    let events = girder_core::read_session_file(dir.join("dup.jsonl.zst")).unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "a session created eight times concurrently must hold one turn, got {events:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn concurrent_creates_all_return_the_same_id() {
+    // Every caller must see the session, including the ones that lost the race to create it.
+    let dir = std::env::temp_dir().join(format!("girder-toctou2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let catalog = Arc::clone(&catalog);
+        handles.push(tokio::spawn(async move { catalog.create("same").await }));
+    }
+    for handle in handles {
+        let record = handle.await.unwrap().unwrap();
+        assert_eq!(record.id, "same");
+        assert!(
+            !record.events.is_empty(),
+            "a losing racer must still read the winner's log"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

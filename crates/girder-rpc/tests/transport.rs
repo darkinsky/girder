@@ -466,6 +466,7 @@ impl girder_core::SessionCatalog for OneSession {
             vec![girder_core::SessionRecord {
                 id: "s1".to_owned(),
                 updated_at: 7,
+                blank: false,
                 events: vec![girder_core::SessionEvent::UserMessage {
                     content: vec![girder_core::ContentBlock::Text {
                         text: "hi".to_owned(),
@@ -479,6 +480,7 @@ impl girder_core::SessionCatalog for OneSession {
         let found = (id == "s1").then(|| girder_core::SessionRecord {
             id: "s1".to_owned(),
             updated_at: 7,
+            blank: false,
             events: vec![girder_core::SessionEvent::TurnStart { turn: 1 }],
         });
         Box::pin(async move { found })
@@ -493,6 +495,7 @@ impl girder_core::SessionCatalog for OneSession {
             Ok(girder_core::SessionRecord {
                 id,
                 updated_at: 1,
+                blank: true,
                 events: Vec::new(),
             })
         })
