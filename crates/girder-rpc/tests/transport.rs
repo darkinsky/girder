@@ -474,6 +474,29 @@ impl girder_core::SessionCatalog for OneSession {
             }]
         })
     }
+
+    fn read(&self, id: &str) -> girder_core::BoxFut<Option<girder_core::SessionRecord>> {
+        let found = (id == "s1").then(|| girder_core::SessionRecord {
+            id: "s1".to_owned(),
+            updated_at: 7,
+            events: vec![girder_core::SessionEvent::TurnStart { turn: 1 }],
+        });
+        Box::pin(async move { found })
+    }
+
+    fn create(
+        &self,
+        id: &str,
+    ) -> girder_core::BoxFut<Result<girder_core::SessionRecord, girder_core::RemoteError>> {
+        let id = id.to_owned();
+        Box::pin(async move {
+            Ok(girder_core::SessionRecord {
+                id,
+                updated_at: 1,
+                events: Vec::new(),
+            })
+        })
+    }
 }
 
 /// Starts a server exposing the session methods.

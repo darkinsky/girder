@@ -297,6 +297,134 @@ pub struct SessionRecord {
 pub trait SessionCatalog: Send + Sync {
     /// Every visible session.
     fn list(&self) -> BoxFut<Vec<SessionRecord>>;
+
+    /// Reads one session's events, or `None` when no session has that id.
+    ///
+    /// Separate from [`SessionCatalog::list`] because a history read must not scan every log: a
+    /// client opens one session at a time, and a directory of thousands makes the difference
+    /// between one file and all of them.
+    fn read(&self, id: &str) -> BoxFut<Option<SessionRecord>>;
+
+    /// Creates a session, returning its id.
+    ///
+    /// Idempotent per id: creating one that exists reuses it rather than failing, which is what
+    /// upstream's `create` does for a blank session.
+    fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>>;
+}
+
+/// One durable history record, in the shape a client's page reader expects.
+///
+/// Upstream wraps each event in `{ type: 'event', event }` so a page can later carry non-event
+/// records without a breaking change to the array's element type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionHistoryRecord {
+    /// Always `event` today.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The durable event.
+    pub event: SessionEvent,
+}
+
+impl SessionHistoryRecord {
+    /// Wraps one event.
+    #[must_use]
+    pub fn event(event: SessionEvent) -> Self {
+        Self {
+            kind: "event".to_owned(),
+            event,
+        }
+    }
+}
+
+/// One page of session history.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionEventsPage {
+    /// Records in chronological order.
+    pub records: Vec<SessionHistoryRecord>,
+    /// Whether older records remain before this page.
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+    /// Inclusive sequence number of the last record, or 0 for an empty page.
+    ///
+    /// A client pins this to read a fixed cut later; without it a follow read would drift as new
+    /// events arrive.
+    pub cursor: u64,
+}
+
+/// The request to `session.page` and `session.events`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionPageRequest {
+    /// Which session to read.
+    pub address: SessionAddress,
+    /// Stop at this sequence, inclusive. Omitted means the current end.
+    #[serde(
+        rename = "throughSeq",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub through_seq: Option<u64>,
+    /// Read records strictly before this sequence.
+    #[serde(rename = "beforeSeq", default, skip_serializing_if = "Option::is_none")]
+    pub before_seq: Option<u64>,
+    /// Maximum records to return.
+    #[serde(
+        rename = "maxMessages",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_messages: Option<usize>,
+}
+
+/// A durable session address.
+///
+/// Only the ordinary case is modelled. Upstream also addresses a subagent child by parent and child
+/// id; this build has no such registry, so the variant is rejected as invalid arguments rather than
+/// silently reading the wrong log.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionAddress {
+    /// `session` for an ordinary session.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// The session id.
+    #[serde(rename = "sessionId", default)]
+    pub session_id: String,
+}
+
+fn default_kind() -> String {
+    "session".to_owned()
+}
+
+/// The request to `session.create`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionCreateRequest {
+    /// Working directory the session owns, when the client names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Identity to create, or a blank session to reuse.
+    #[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Preset the session runs.
+    #[serde(
+        rename = "agentPreset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_preset: Option<String>,
+}
+
+/// What `session.create` returns.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionCreateValue {
+    /// The created or reused session.
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    /// Preset it runs, when one was requested.
+    #[serde(
+        rename = "agentPreset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_preset: Option<String>,
 }
 
 /// A catalog backed by a directory of session logs.
@@ -358,39 +486,213 @@ impl SessionCatalog for DirectoryCatalog {
             records
         })
     }
+
+    fn read(&self, id: &str) -> BoxFut<Option<SessionRecord>> {
+        let path = self.root.join(format!("{id}.jsonl.zst"));
+        let id = id.to_owned();
+        Box::pin(async move { read_record(&path, id) })
+    }
+
+    fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>> {
+        let path = self.root.join(format!("{id}.jsonl.zst"));
+        let id = id.to_owned();
+        Box::pin(async move {
+            // Reuse rather than fail: upstream's `create` returns an existing blank session rather
+            // than minting a second one, and a client that re-sends a create must not fork history.
+            if let Some(existing) = read_record(&path, id.clone()) {
+                return Ok(existing);
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    RemoteError::Failed(format!("cannot create session dir: {error}"))
+                })?;
+            }
+            // An empty log file, so the session is visible to `list` before its first turn.
+            let store = crate::session::SessionStore::new(&path);
+            store
+                .append(&SessionEvent::TurnStart { turn: 1 })
+                .map_err(|error| RemoteError::Failed(error.to_string()))?;
+
+            Ok(SessionRecord {
+                id,
+                updated_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map_or(0, |elapsed| {
+                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                    }),
+                events: vec![SessionEvent::TurnStart { turn: 1 }],
+            })
+        })
+    }
+}
+
+/// Reads one session log from disk, or `None` when the file is absent.
+///
+/// A free function rather than a method so the returned future owns everything it touches: a method
+/// taking `&self` would tie the future to the borrow, and the trait's `BoxFut` is `'static`.
+fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
+    if !path.is_file() {
+        return None;
+    }
+    let events = crate::session::read_session_file(path).unwrap_or_default();
+    let updated_at = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        });
+    Some(SessionRecord {
+        id,
+        updated_at,
+        events,
+    })
 }
 
 /// Registers the `session.*` methods this build implements.
 ///
 /// The unimplemented ones are declared so a client gets `NOT_IMPLEMENTED` with a name rather than
 /// `UNKNOWN_METHOD`, which would read as a client bug.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the Arc is cloned into a method closure, so ownership is the point"
+)]
 pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
-    {
+    register_list(registry, catalog);
+    register_create(registry, catalog);
+    register_history(registry, catalog);
+    register_prompt(registry);
+
+    registry.declare_unimplemented(
+        "session",
+        &[
+            "search",
+            "selectModel",
+            "modelCatalog",
+            "openWorkspacePath",
+            "workspacePathApplications",
+            "rename",
+            "fork",
+            "attachment",
+            "updateQueue",
+            "cancel",
+            "projections",
+            "stream",
+            "resume",
+            "archive",
+            "delete",
+            "duplicate",
+            "export",
+        ],
+    );
+}
+
+/// Registers `session.list`.
+fn register_list(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let shared: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "list", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&shared);
+        Box::pin(async move {
+            // `session.list` takes an empty request upstream; a null or missing body is the common
+            // case, so it is accepted rather than rejected as invalid arguments.
+            let _: Option<Value> = if call.args.is_null() {
+                None
+            } else {
+                Some(call.args)
+            };
+
+            let records = catalog.list().await;
+            let items: Vec<SessionSummary> = records
+                .iter()
+                .map(|record| {
+                    SessionSummary::from_events(&record.id, &record.events, record.updated_at)
+                })
+                .collect();
+            serde_json::to_value(SessionListValue { items })
+                .map_err(|error| RemoteError::Failed(error.to_string()))
+        })
+    });
+}
+
+/// Registers `session.create`.
+fn register_create(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let shared: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "create", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&shared);
+        Box::pin(async move {
+            let request: SessionCreateRequest = parse_args("session", "create", call.args)?;
+            // An id is either supplied or minted. A minted id carries the millisecond so two
+            // creates in the same second do not collide.
+            let id = request
+                .session_id
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or_else(mint_session_id);
+
+            let _ = request.cwd;
+            catalog.create(&id).await?;
+            serde_json::to_value(SessionCreateValue {
+                session_id: id,
+                agent_preset: request.agent_preset,
+            })
+            .map_err(|error| RemoteError::Failed(error.to_string()))
+        })
+    });
+}
+
+/// Mints a session id from the current time.
+fn mint_session_id() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    format!("session-{now}")
+}
+
+/// Registers `session.page` and `session.events`.
+///
+/// Two names, one read: upstream keeps both because `page` is deprecated but still called by
+/// existing clients, and dropping it would break them for no gain.
+fn register_history(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    for method in ["page", "events"] {
         let shared: Arc<dyn SessionCatalog> = Arc::clone(catalog);
-        registry.register("session", "list", move |call| {
+        registry.register("session", method, move |call| {
             let catalog: Arc<dyn SessionCatalog> = Arc::clone(&shared);
             Box::pin(async move {
-                // `session.list` takes an empty request upstream; a null or missing body is the
-                // common case, so it is accepted rather than rejected as invalid arguments.
-                let _: Option<Value> = if call.args.is_null() {
-                    None
-                } else {
-                    Some(call.args)
+                let request: SessionPageRequest = parse_args("session", method, call.args)?;
+                if request.address.kind != "session" {
+                    return Err(RemoteError::InvalidArguments {
+                        namespace: "session".to_owned(),
+                        method: method.to_owned(),
+                        message: format!(
+                            "address kind `{}` is not supported; only `session` is",
+                            request.address.kind
+                        ),
+                    });
+                }
+                if request.address.session_id.trim().is_empty() {
+                    return Err(RemoteError::InvalidArguments {
+                        namespace: "session".to_owned(),
+                        method: method.to_owned(),
+                        message: "`address.sessionId` is required".to_owned(),
+                    });
+                }
+
+                let Some(record) = catalog.read(&request.address.session_id).await else {
+                    // An unknown session is an empty page, not an error: a client opening a session
+                    // another host deleted should render nothing rather than a failure banner.
+                    return serde_json::to_value(SessionEventsPage::default())
+                        .map_err(|error| RemoteError::Failed(error.to_string()));
                 };
 
-                let records = catalog.list().await;
-                let items: Vec<SessionSummary> = records
-                    .iter()
-                    .map(|record| {
-                        SessionSummary::from_events(&record.id, &record.events, record.updated_at)
-                    })
-                    .collect();
-                serde_json::to_value(SessionListValue { items })
+                serde_json::to_value(page_of(&record.events, &request))
                     .map_err(|error| RemoteError::Failed(error.to_string()))
             })
         });
     }
+}
 
+/// Registers `session.prompt`.
+fn register_prompt(registry: &mut RemoteRegistry) {
     registry.register("session", "prompt", |call| {
         Box::pin(async move {
             let request: SessionPromptRequest = parse_args("session", "prompt", call.args)?;
@@ -418,32 +720,6 @@ pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn
             .map_err(|error| RemoteError::Failed(error.to_string()))
         })
     });
-
-    registry.declare_unimplemented(
-        "session",
-        &[
-            "search",
-            "create",
-            "selectModel",
-            "modelCatalog",
-            "openWorkspacePath",
-            "workspacePathApplications",
-            "rename",
-            "fork",
-            "attachment",
-            "updateQueue",
-            "cancel",
-            "page",
-            "projections",
-            "stream",
-            "events",
-            "resume",
-            "archive",
-            "delete",
-            "duplicate",
-            "export",
-        ],
-    );
 }
 
 /// Builds a registry with everything this build implements.
@@ -456,4 +732,52 @@ pub fn default_registry(catalog: Arc<dyn SessionCatalog>) -> RemoteRegistry {
     let mut registry = RemoteRegistry::new();
     register_session_methods(&mut registry, &catalog);
     registry
+}
+
+/// Selects one page of records from a session's events.
+///
+/// Sequence numbers are 1-based positions in the log, which is what a client pins into
+/// `throughSeq`. A page is built backwards from the cut so `hasMore` describes what remains
+/// *before* it, matching how a history view scrolls up.
+fn page_of(events: &[SessionEvent], request: &SessionPageRequest) -> SessionEventsPage {
+    if events.is_empty() {
+        return SessionEventsPage::default();
+    }
+
+    // The inclusive cut defaults to the end of the log.
+    let through = request
+        .through_seq
+        .and_then(|seq| usize::try_from(seq).ok())
+        .map_or(events.len(), |seq| seq.min(events.len()));
+    // `beforeSeq` excludes that record and everything after it.
+    let end = request
+        .before_seq
+        .and_then(|seq| usize::try_from(seq).ok())
+        .map_or(through, |seq| seq.saturating_sub(1).min(through));
+
+    if end == 0 {
+        return SessionEventsPage {
+            records: Vec::new(),
+            has_more: false,
+            cursor: 0,
+        };
+    }
+
+    // The budget defaults to the whole remaining log; a caller asking for a page gets the newest
+    // `max_messages` records ending at the cut.
+    let budget = request.max_messages.filter(|max| *max > 0).unwrap_or(end);
+    let start = end.saturating_sub(budget);
+
+    let records: Vec<SessionHistoryRecord> = events[start..end]
+        .iter()
+        .cloned()
+        .map(SessionHistoryRecord::event)
+        .collect();
+
+    SessionEventsPage {
+        has_more: start > 0,
+        // The cursor is the inclusive position of the last returned record, 1-based.
+        cursor: u64::try_from(end).unwrap_or(u64::MAX),
+        records,
+    }
 }

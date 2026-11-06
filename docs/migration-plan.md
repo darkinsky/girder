@@ -1216,6 +1216,112 @@ session.prompt → {"status":"ok","value":{"accepted":true,"turn":1}}
    `expected &Arc<_,_>, found Arc<dyn SessionCatalog>`。加显式类型标注解决，
    不是靠猜。
 
+## 2.14 补充：Remote 方法扩到五个
+
+上一轮（2.13）做了 `session.list` 与 `session.prompt`，结论是「能列不能开」。
+这轮补了 `create` / `page` / `events`，现在**能开新会话、能读历史**。
+
+### 三个新方法的关键语义
+
+**`create` 必须幂等。** 同一个 id 重复创建不能追加事件——否则客户端重试一次，会话历史
+就多一个空 turn。测试 `create_twice_on_a_directory_reuses_the_existing_log` 断言第二次
+create 后日志**仍是 1 条事件**。这不是优化，是正确性。
+
+**`page` 的序列号是 1-based 日志位置。** 客户端把 `throughSeq` 钉住以读固定切面，
+`beforeSeq` 排除该记录及其之后，`maxMessages` 从切面**往前**取（历史视图从最新往上滚）。
+`cursor` 返回已返回记录的最后一个位置，`hasMore` 描述切面**之前**是否还有。
+
+**`events` 与 `page` 同实现。** 上游两者并存，`page` 已标记 deprecated 但仍被现有 Web 客户端
+调用。删掉它会让老客户端失效，收益为零。
+
+### 边界处理
+
+| 情况 | 行为 | 理由 |
+|---|---|---|
+| 未知 session 的 page | 空页 + `cursor:0` | 被别的主机删掉的会话应渲染为空白，不是错误横幅 |
+| `throughSeq` 超过日志长度 | 钳到末尾 | 客户端钉的切面可能来自更长的日志 |
+| `subagent` 地址 | `INVALID_ARGUMENTS` | 本 build 没有子 agent 注册表，按 parent/child 读会读错日志 |
+| 缺 `sessionId` | `INVALID_ARGUMENTS` | 无法选择日志 |
+
+### 实测
+
+```
+create {"sessionId":"alpha"} → {"sessionId":"alpha"}
+list                         → items:[{sessionId:"alpha", blank:true, ...}]
+page   {address:alpha}       → {cursor:1, hasMore:false, records:[{type:"event",...}]}
+create {"sessionId":"alpha"} → 同 id，日志仍 1 条事件（文件仍 40 字节）
+```
+
+### 与真 GUI 的距离
+
+还有 15 个方法没做，其中 GUI 打开会话后**必需**的是：
+
+- `session.selectModel` / `session.modelCatalog` — 选模型
+- `session.stream` / `session.observeEvent` — 流式订阅（`mode: 'stream'`）
+- `session.projections` — 侧栏状态
+
+所以现在的状态是：**能列出、能打开、能读历史，但不能发消息**。
+`prompt` 虽然返回 `accepted:true`，本 build 没有 agent 可挂，事件不会真的产生。
+
+### 踩到的坑
+
+**`register_session_methods` 长到 127 行被 clippy 拦下。** 按方法族拆成
+`register_list` / `register_create` / `register_history` / `register_prompt`，
+每个 30 行左右。和之前几轮一样，这个阈值在这类「一堆相似闭包」的代码上是有效信号——
+拆开后每个函数的职责立刻清楚了。
+
+上一轮（2.13）做了 `session.list` 与 `session.prompt`，结论是「能列不能开」。
+这轮补了 `create` / `page` / `events`，现在**能开新会话、能读历史**。
+
+### 三个新方法的关键语义
+
+**`create` 必须幂等。** 同一个 id 重复创建不能追加事件——否则客户端重试一次，会话历史
+就多一个空 turn。测试 `create_twice_on_a_directory_reuses_the_existing_log` 断言第二次
+create 后日志**仍是 1 条事件**。这不是优化，是正确性。
+
+**`page` 的序列号是 1-based 日志位置。** 客户端把 `throughSeq` 钉住以读固定切面，
+`beforeSeq` 排除该记录及其之后，`maxMessages` 从切面**往前**取（历史视图从最新往上滚）。
+`cursor` 返回已返回记录的最后一个位置，`hasMore` 描述切面**之前**是否还有。
+
+**`events` 与 `page` 同实现。** 上游两者并存，`page` 已标记 deprecated 但仍被现有 Web 客户端
+调用。删掉它会让老客户端失效，收益为零。
+
+### 边界处理
+
+| 情况 | 行为 | 理由 |
+|---|---|---|
+| 未知 session 的 page | 空页 + `cursor:0` | 被别的主机删掉的会话应渲染为空白，不是错误横幅 |
+| `throughSeq` 超过日志长度 | 钳到末尾 | 客户端钉的切面可能来自更长的日志 |
+| `subagent` 地址 | `INVALID_ARGUMENTS` | 本 build 没有子 agent 注册表，按 parent/child 读会读错日志 |
+| 缺 `sessionId` | `INVALID_ARGUMENTS` | 无法选择日志 |
+
+### 实测
+
+```
+create {"sessionId":"alpha"} → {"sessionId":"alpha"}
+list                         → items:[{sessionId:"alpha", blank:true, ...}]
+page   {address:alpha}       → {cursor:1, hasMore:false, records:[{type:"event",...}]}
+create {"sessionId":"alpha"} → 同 id，日志仍 1 条事件（文件仍 40 字节）
+```
+
+### 与真 GUI 的距离
+
+还有 15 个方法没做，其中 GUI 打开会话后**必需**的是：
+
+- `session.selectModel` / `session.modelCatalog` — 选模型
+- `session.stream` / `session.observeEvent` — 流式订阅（`mode: 'stream'`）
+- `session.projections` — 侧栏状态
+
+所以现在的状态是：**能列出、能打开、能读历史，但不能发消息**。
+`prompt` 虽然返回 `accepted:true`，本 build 没有 agent 可挂，事件不会真的产生。
+
+### 踩到的坑
+
+**`register_session_methods` 长到 127 行被 clippy 拦下。** 按方法族拆成
+`register_list` / `register_create` / `register_history` / `register_prompt`，
+每个 30 行左右。和之前几轮一样，这个阈值在这类「一堆相似闭包」的代码上是有效信号——
+拆开后每个函数的职责立刻清楚了。
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：

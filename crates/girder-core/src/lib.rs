@@ -88,9 +88,10 @@ pub use llm_deepseek::{
 };
 pub use registry::{Registry, RegistryContext, RegistryError};
 pub use remote::{
-    DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionCatalog,
-    SessionListValue, SessionPromptRequest, SessionPromptValue, SessionRecord, SessionSummary,
-    default_registry, register_session_methods,
+    DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionAddress,
+    SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
+    SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
+    SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_session_methods,
 };
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;

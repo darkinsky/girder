@@ -23,6 +23,19 @@ impl SessionCatalog for FixedCatalog {
         let records = self.0.clone();
         Box::pin(async move { records })
     }
+
+    fn read(&self, id: &str) -> girder_core::BoxFut<Option<SessionRecord>> {
+        let found = self.0.iter().find(|record| record.id == id).cloned();
+        Box::pin(async move { found })
+    }
+
+    fn create(&self, _id: &str) -> girder_core::BoxFut<Result<SessionRecord, RemoteError>> {
+        Box::pin(async {
+            Err(RemoteError::Failed(
+                "FixedCatalog does not create".to_owned(),
+            ))
+        })
+    }
 }
 
 fn record(id: &str, updated_at: u64, has_message: bool) -> SessionRecord {
@@ -401,4 +414,362 @@ fn a_summary_omits_unknown_optional_fields() {
         !json.as_object().unwrap().contains_key("cwd"),
         "an unknown cwd must be omitted: {json}"
     );
+}
+
+// ---- session.create -----------------------------------------------------------------------------
+
+/// A catalog with no sessions that records what was created.
+struct EmptyCatalog {
+    created: std::sync::Mutex<Vec<String>>,
+}
+
+impl EmptyCatalog {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            created: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+}
+
+impl SessionCatalog for EmptyCatalog {
+    fn list(&self) -> girder_core::BoxFut<Vec<SessionRecord>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    fn read(&self, _id: &str) -> girder_core::BoxFut<Option<SessionRecord>> {
+        Box::pin(async { None })
+    }
+
+    fn create(&self, id: &str) -> girder_core::BoxFut<Result<SessionRecord, RemoteError>> {
+        self.created.lock().unwrap().push(id.to_owned());
+        let id = id.to_owned();
+        Box::pin(async move {
+            Ok(SessionRecord {
+                id,
+                updated_at: 1,
+                events: vec![SessionEvent::TurnStart { turn: 1 }],
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn create_returns_the_requested_id() {
+    let registry = default_registry(EmptyCatalog::new());
+
+    let value = registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({"sessionId": "new-session"})),
+        )
+        .await
+        .expect("create must succeed");
+
+    assert_eq!(value["sessionId"], "new-session");
+}
+
+#[tokio::test]
+async fn create_mints_an_id_when_none_is_given() {
+    let registry = default_registry(EmptyCatalog::new());
+
+    let value = registry
+        .dispatch("session", "create", call(json!({})))
+        .await
+        .expect("create must succeed");
+
+    let id = value["sessionId"].as_str().unwrap();
+    assert!(!id.is_empty(), "a minted id must be non-empty");
+    assert!(id.starts_with("session-"), "got {id}");
+}
+
+#[tokio::test]
+async fn create_is_idempotent_per_id() {
+    // A client that re-sends create must not fork history; the catalog decides reuse, and the
+    // method must pass the same id through rather than minting a second one.
+    let catalog = EmptyCatalog::new();
+    let registry = default_registry(Arc::clone(&catalog) as Arc<dyn SessionCatalog>);
+
+    registry
+        .dispatch("session", "create", call(json!({"sessionId": "same"})))
+        .await
+        .unwrap();
+    registry
+        .dispatch("session", "create", call(json!({"sessionId": "same"})))
+        .await
+        .unwrap();
+
+    let created = catalog.created.lock().unwrap().clone();
+    assert_eq!(
+        created,
+        vec!["same", "same"],
+        "the id is passed through unchanged"
+    );
+}
+
+#[tokio::test]
+async fn create_echoes_the_requested_preset() {
+    let registry = default_registry(EmptyCatalog::new());
+
+    let value = registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({"sessionId": "s", "agentPreset": "coding"})),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(value["agentPreset"], "coding");
+}
+
+#[tokio::test]
+async fn create_on_a_directory_catalog_writes_a_log() {
+    let dir = std::env::temp_dir().join(format!("girder-create-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let registry = default_registry(catalog);
+
+    registry
+        .dispatch("session", "create", call(json!({"sessionId": "fresh"})))
+        .await
+        .expect("create must write a log");
+
+    let path = dir.join("fresh.jsonl.zst");
+    assert!(path.is_file(), "the session must exist on disk");
+    // It must already be visible to `list`, or a client would create and then not see it.
+    let listed = registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .unwrap();
+    assert_eq!(listed["items"][0]["sessionId"], "fresh");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn create_twice_on_a_directory_reuses_the_existing_log() {
+    let dir = std::env::temp_dir().join(format!("girder-create2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let registry = default_registry(catalog);
+
+    registry
+        .dispatch("session", "create", call(json!({"sessionId": "reuse"})))
+        .await
+        .unwrap();
+    registry
+        .dispatch("session", "create", call(json!({"sessionId": "reuse"})))
+        .await
+        .unwrap();
+
+    let events = girder_core::read_session_file(dir.join("reuse.jsonl.zst")).unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "a second create must not append a second turn: {events:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- session.page / session.events --------------------------------------------------------------
+
+fn catalog_with_events(id: &str, count: usize) -> Arc<dyn SessionCatalog> {
+    let events: Vec<SessionEvent> = (1..=count)
+        .map(|turn| SessionEvent::TurnStart {
+            turn: u64::try_from(turn).unwrap(),
+        })
+        .collect();
+    Arc::new(FixedCatalog(vec![SessionRecord {
+        id: id.to_owned(),
+        updated_at: 1,
+        events,
+    }]))
+}
+
+#[tokio::test]
+async fn page_returns_every_record_by_default() {
+    let registry = default_registry(catalog_with_events("s", 5));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "s"}})),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(value["records"].as_array().unwrap().len(), 5);
+    assert_eq!(value["hasMore"], false);
+    assert_eq!(value["cursor"], 5);
+}
+
+#[tokio::test]
+async fn page_honours_the_message_budget_from_the_end() {
+    // A history view opens at the newest records, so the budget applies backwards from the cut.
+    let registry = default_registry(catalog_with_events("s", 10));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "s"}, "maxMessages": 3})),
+        )
+        .await
+        .unwrap();
+
+    let records = value["records"].as_array().unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(value["hasMore"], true, "older records remain");
+    assert_eq!(value["cursor"], 10, "the cut is still the log end");
+}
+
+#[tokio::test]
+async fn page_before_a_sequence_excludes_that_record() {
+    let registry = default_registry(catalog_with_events("s", 5));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "s"}, "beforeSeq": 3})),
+        )
+        .await
+        .unwrap();
+
+    let records = value["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2, "records 1 and 2 precede 3");
+    assert_eq!(value["cursor"], 2);
+}
+
+#[tokio::test]
+async fn page_through_a_sequence_stops_there() {
+    let registry = default_registry(catalog_with_events("s", 5));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "s"}, "throughSeq": 2})),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(value["records"].as_array().unwrap().len(), 2);
+    assert_eq!(value["cursor"], 2);
+}
+
+#[tokio::test]
+async fn page_past_the_end_clamps_rather_than_failing() {
+    // A client pinning a sequence beyond a log another host truncated should get what exists.
+    let registry = default_registry(catalog_with_events("s", 3));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "s"}, "throughSeq": 999})),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(value["records"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn page_of_an_unknown_session_is_empty_not_an_error() {
+    // A session deleted by another host should render as nothing, not as a failure banner.
+    let registry = default_registry(Arc::new(FixedCatalog(vec![])));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "missing"}})),
+        )
+        .await
+        .expect("an unknown session is an empty page");
+
+    assert_eq!(value["records"], json!([]));
+    assert_eq!(value["hasMore"], false);
+    assert_eq!(value["cursor"], 0);
+}
+
+#[tokio::test]
+async fn events_is_the_same_read_as_page() {
+    // Upstream keeps both names because one is deprecated but still called.
+    let registry = default_registry(catalog_with_events("s", 4));
+    let request = json!({"address": {"kind": "session", "sessionId": "s"}, "maxMessages": 2});
+
+    let from_page = registry
+        .dispatch("session", "page", call(request.clone()))
+        .await
+        .unwrap();
+    let from_events = registry
+        .dispatch("session", "events", call(request))
+        .await
+        .unwrap();
+
+    assert_eq!(from_page, from_events);
+}
+
+#[tokio::test]
+async fn page_rejects_a_subagent_address() {
+    // This build has no subagent registry, so reading one by parent/child id would read the wrong
+    // log. Refusing is better than returning an empty page that looks like an empty session.
+    let registry = default_registry(catalog_with_events("s", 3));
+
+    let error = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "subagent", "sessionId": "s"}})),
+        )
+        .await
+        .expect_err("an unsupported address kind must be refused");
+
+    assert_eq!(error.code(), "INVALID_ARGUMENTS");
+    assert!(error.to_string().contains("subagent"));
+}
+
+#[tokio::test]
+async fn page_requires_a_session_id() {
+    let registry = default_registry(catalog_with_events("s", 3));
+
+    let error = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session"}})),
+        )
+        .await
+        .expect_err("an address without an id cannot select a log");
+
+    assert_eq!(error.code(), "INVALID_ARGUMENTS");
+    assert!(error.to_string().contains("sessionId"));
+}
+
+#[tokio::test]
+async fn page_of_an_empty_log_is_empty() {
+    let registry = default_registry(Arc::new(FixedCatalog(vec![SessionRecord {
+        id: "s".to_owned(),
+        updated_at: 1,
+        events: Vec::new(),
+    }])));
+
+    let value = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({"address": {"kind": "session", "sessionId": "s"}})),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(value["records"], json!([]));
+    assert_eq!(value["cursor"], 0);
 }

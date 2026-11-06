@@ -149,11 +149,43 @@ POST ... {"method":"lst"}
 → {"status":"error","error":{"code":"UNKNOWN_METHOD","message":"unknown method `session.lst`"}}
 ```
 
+### 后续二：create / page / events
+
+又补了三个方法，现在共 **5 个**：
+
+| 方法 | 状态 |
+|---|---|
+| `session.list` | ✅ |
+| `session.create` | ✅ 幂等：同 id 重复创建不追加事件 |
+| `session.page` | ✅ 分页读取，`cursor` / `hasMore` 语义对齐上游 |
+| `session.events` | ✅ 与 `page` 同一实现（上游两者并存，`page` 已弃用但仍被调用） |
+| `session.prompt` | ✅ 接受并确认 |
+| 其余 15 个 | ❌ `NOT_IMPLEMENTED` |
+
+**分页语义**：序列号是日志中 1-based 的位置，客户端把 `throughSeq` 钉住以读固定的切面。
+`maxMessages` 从切面**往前**取，因为历史视图是从最新往上滚。`beforeSeq` 排除该记录及其之后。
+
+**`create` 的幂等性**通过测试钉住：`create_twice_on_a_directory_reuses_the_existing_log`
+断言第二次 create 后日志仍是 1 条事件。这不是可选的优化——客户端重试 create 时如果追加
+一条 `TurnStart`，会话历史就会多出一个空 turn。
+
+### 实测
+
+```
+$ girder serve --bind 127.0.0.1:8810
+girder rpc exposing 5 Remote method(s): session.create, session.events, session.list,
+                                        session.page, session.prompt
+
+create {"sessionId":"alpha"} → {"sessionId":"alpha"}
+list                         → items:[{sessionId:"alpha", blank:true, ...}]
+page   {address:alpha}       → {cursor:1, hasMore:false, records:[{type:"event", event:{type:"turn/start"}}]}
+create {"sessionId":"alpha"} → 同一个 id，日志仍是 1 条事件
+```
+
 ### 仍然没做到的
 
-**真实 GUI 还是连不上。** 它调用 `session.create` / `session.page` / `session.stream` 等
-2 个之外的方法，全部返回 `NOT_IMPLEMENTED`。所以这条限定只补了一半：现在**能列出会话**，
-但**不能开新会话、不能流转**。
+**真实 GUI 还是连不上。** 它调 `session.selectModel` / `session.modelCatalog` /
+`session.stream` / `session.projections` 等，全部 `NOT_IMPLEMENTED`。
 
-差别在于：之前是「什么都不能调」，现在是「能调两个、其余的会说缺什么」。后者对排查有用，
-对使用还不够。
+差别在于：最初「什么都不能调」，然后「能列不能开」，现在**能开新会话、能读历史**。
+缺的是模型选择与流式订阅——GUI 打开会话后需要它们才能发消息。
