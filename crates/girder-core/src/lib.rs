@@ -50,13 +50,21 @@
 //! assert_eq!(greeter.greet(), "hello");
 //! ```
 
+mod agent_loop;
 mod config;
 mod events;
+mod exec;
 mod fiber;
+mod llm;
+mod llm_deepseek;
 mod registry;
 mod scope;
 mod service;
+mod session;
+mod subagent;
+mod tools;
 
+pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 pub use config::{
     ConfigError, ConfigValue, Entry, EntryList, Environment, Owner, Patch, PatchWarning, Template,
     When, parse_entries, parse_patches,
@@ -65,7 +73,30 @@ pub use events::{
     Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, Next, Order, Parallel, Serial,
     Terminal, Waterfall,
 };
+pub use exec::{
+    AdvisorySandbox, Enforcement, ExecError, ExecOptions, ExecOutput, PathPolicy, Sandbox,
+    bash_tool, has_program, landlock_abi, read_file, run_bash, run_shell,
+};
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
+pub use llm::{
+    AssembleError, AssistantMessage, ChunkStream, ContentBlock, FinishReason, LlmError, LlmKey,
+    LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolCallId, ToolSchema,
+};
+pub use llm_deepseek::{
+    DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
+};
 pub use registry::{Registry, RegistryContext, RegistryError};
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;
+pub use session::{
+    MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, read_session_file,
+};
+pub use subagent::{
+    DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
+    subagent_tool,
+};
+pub use tools::{
+    AgentId, PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition,
+    ToolError, ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry,
+    ToolRegistryView, ToolResult, ToolRunContext, ToolValue, ToolsKey,
+};
