@@ -2,7 +2,9 @@
 
 本文是 `girder` 的迁移设计基线。它回答一个问题：Cordis 这套 TypeScript 插件框架，在 Rust 里应该长成什么样，哪些能一比一搬过来，哪些必须换实现，哪些要直接放弃。
 
-上游规模：`vendor/cordis/src` 共 2811 行，其中 `fiber.ts` 820、`reflect.ts` 436、`events.ts` 371、`registry.ts` 337。DSH 对它的使用强度：`ctx.on()` 1714 处、`ctx.provide()` 997 处、`inject:` 947 处、`ctx.effect()` 657 处、`Service` 子类 242 个、`waterfall()` 108 处、`declare module '@deepseek-ai/cordis'` 386 处。
+上游规模：`vendor/cordis/src` 共 2811 行，其中 `fiber.ts` 820、`reflect.ts` 436、`events.ts` 371、`registry.ts` 337。
+
+DSH 对 Cordis 的使用强度（`packages/*/*/src/` 内，不含测试）：`ctx.effect()` 485 处、`ctx.on()` 285 处、`ctx.provide()` 37 处、`waterfall()` 31 处、`extends Service` 88 处、`inject:` 声明分布在 106 个文件。若计入测试，数字约为 657 / 1714 / 997 / 108 / 242 / 947——**迁移工作量应按 src 计**，测试是重写对象而非移植对象。
 
 ## 一、先划清楚：四层结构，逐层判断可行性
 
@@ -15,7 +17,7 @@ Cordis 不是一个整体，它是四层叠加起来的东西，每层在 Rust �
 | L3 反射代理 | `ctx.xxx` 动态属性、`Proxy` trap、mixin、accessor | 低 | **放弃**，改显式访问器 |
 | L4 动态配置 | `!!js` 表达式、`StandardSchemaV1` 运行时校验、HMR | 中 | 降级迁移，用 `serde` + 编译期配置 |
 
-**最大的判断：L3 必须放弃。** 不是"暂时做不到"，是"不该做"。`ctx.xxx` 动态属性在 Rust 里只能靠 `Deref` 到 `dyn Any` 再 downcast，这会让每个服务访问都变成运行时失败，而且彻底摧毁编译器能给的帮助。DSH 里 997 处 `ctx.provide()` 全都依赖这个机制，迁移时这些点会变成显式的 `ctx.tools()` / `ctx.sessions()` 方法调用——**这是好事**，因为类型错误从运行时前移到编译期。
+**最大的判断：L3 必须放弃。** 不是"暂时做不到"，是"不该做"。`ctx.xxx` 动态属性在 Rust 里只能靠 `Deref` 到 `dyn Any` 再 downcast，这会让每个服务访问都变成运行时失败，而且彻底摧毁编译器能给的帮助。DSH 里 **153 个服务键**全都依赖这个机制，迁移时这些点会变成显式的 `ctx.tools()` / `ctx.sessions()` 方法调用——**这是好事**，因为类型错误从运行时前移到编译期。
 
 ## 二、L1：服务注册表
 
@@ -305,7 +307,7 @@ Cordis 里 `DisposableList` + `_disposables.clear()` 的模式在 Rust 里对应
 
 3. **386 处 `declare module` 的手工迁移量**。这不是技术风险，是工作量风险。每处都要判断"这个事件该是什么类型"，不能机械转换。
 
-4. **`ctx.provide()` 997 处的隐式契约**。上游靠 `check` 谓词和 `PENDING` 状态处理"服务存在但不可用"，这些语义散落在 997 个调用点里。Rust 版本必须先把这套语义收敛成显式 API，否则会逐个踩坑。
+4. **`provide` 的隐式契约**。上游靠 `check` 谓词和 `PENDING` 状态处理"服务存在但不可用"，这些语义散落在注册点里。Rust 版本必须先把这套语义收敛成显式 API，否则会逐个踩坑。
 
 5. **框架与产品的边界模糊**。Cordis 是 vendored 的，DSH 对它有本地修改（`vendor/README.md` 有记录）。Rust 版本要不要保持"可替换框架"的形态？我的建议是**不要**：girder 直接实现一个融合了 Cordis 语义和应用装配的单体，因为 Rust 里"框架 + 产品"分层的收益远小于维护成本。这一点需要在第 1 步就定下来，后期改代价很大。
 
