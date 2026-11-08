@@ -528,3 +528,79 @@ async fn a_waterfall_dispatch_is_observable() {
     assert_eq!(result, -1, "the veto still wins");
     assert_eq!(observed.try_recv().unwrap().args, serde_json::json!(42));
 }
+
+// ---- observer backpressure ----------------------------------------------------------------------
+
+#[test]
+fn an_unread_observer_is_dropped_rather_than_buffered_without_bound() {
+    // Dispatches arrive at model speed, a consumer at network speed. Measured before the bound:
+    // 100,000 unread events stayed in memory. An unbounded queue turns one slow client into a leak.
+    let bus = girder_core::EventBus::new();
+    let mut observed = bus.observe(None);
+    bus.on::<Ping, _>("p", Order::Append, |_| {});
+
+    // Emit far more than the queue holds.
+    for value in 0..10_000u32 {
+        bus.emit::<Ping>(value);
+    }
+
+    assert_eq!(
+        bus.observer_count(),
+        0,
+        "an observer that cannot keep up must be dropped, not buffered"
+    );
+
+    // What it did receive is a prefix: dropping the observer rather than the oldest event means a
+    // consumer never sees a gap in the middle.
+    let mut received = Vec::new();
+    while let Ok(event) = observed.try_recv() {
+        if let Some(value) = event.args.as_u64() {
+            received.push(value);
+        }
+    }
+    assert!(
+        !received.is_empty(),
+        "it must receive something before being dropped"
+    );
+    for (index, value) in received.iter().enumerate() {
+        assert_eq!(
+            *value, index as u64,
+            "the received events must be a contiguous prefix"
+        );
+    }
+}
+
+#[test]
+fn a_consumer_that_keeps_up_observes_every_dispatch() {
+    // The bound must not drop anything for a healthy reader.
+    let bus = girder_core::EventBus::new();
+    let mut observed = bus.observe(None);
+    bus.on::<Ping, _>("p", Order::Append, |_| {});
+
+    let mut received = Vec::new();
+    for value in 0..100u32 {
+        bus.emit::<Ping>(value);
+        // Drain between dispatches, as a real forwarder does.
+        while let Ok(event) = observed.try_recv() {
+            if let Some(value) = event.args.as_u64() {
+                received.push(value);
+            }
+        }
+    }
+
+    assert_eq!(received.len(), 100, "a healthy consumer loses nothing");
+    assert_eq!(bus.observer_count(), 1, "and is not dropped");
+}
+
+#[test]
+fn a_dropped_receiver_is_pruned_on_the_next_dispatch() {
+    // Cleanup must not depend on the consumer cooperatively unsubscribing.
+    let bus = girder_core::EventBus::new();
+    let rx = bus.observe(None);
+    drop(rx);
+    bus.on::<Ping, _>("p", Order::Append, |_| {});
+
+    bus.emit::<Ping>(1);
+
+    assert_eq!(bus.observer_count(), 0);
+}

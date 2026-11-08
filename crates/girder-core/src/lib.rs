@@ -72,8 +72,8 @@ pub use config::{
     When, parse_entries, parse_patches,
 };
 pub use events::{
-    Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, Next, Order, Parallel, Serial,
-    Terminal, Waterfall,
+    Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, Next, ObservedEvent, Order,
+    Parallel, Serial, Terminal, Waterfall,
 };
 pub use exec::{
     AdvisorySandbox, Enforcement, ExecError, ExecOptions, ExecOutput, PathPolicy, Sandbox,

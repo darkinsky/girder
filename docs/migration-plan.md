@@ -1508,6 +1508,54 @@ events in log: 8 (a fresh session should have 1)
 前几轮我一直在加功能，每轮都通过测试。但这两个 bug 从阶段 4 就存在，一直没被触发，
 因为测试从没并发写过同一个会话。**「测试全绿」不等于「没有 bug」，只等于「已写的测试通过」。**
 
+## 2.18 补充：观察者背压（补上 2.17 留下的第三个隐患）
+
+2.17 结尾我列了两处「查过但没改」的，第一处是「`agent/turn` 在没人监听时事件会堆积」。
+这轮验证了它，**成立**，并修掉。
+
+### 探针实测
+
+```
+dropped receiver: observers left = 0          ← 这个没问题
+unread receiver: buffered 100000 events       ← 这个有问题
+slow reader: got 50 of 50
+```
+
+接收者被 drop 时会正确清理，但**接收者活着却不读时，10 万条事件全部留在内存**。
+
+`observe()` 用的是 `unbounded_channel`。对实时事件流这是错的：派发以模型速度到来，
+消费以网络速度进行，无界队列等于把「一个慢客户端」变成「无界内存」。
+
+### 修法与一个设计判断
+
+改成有界通道（4096 容量），满时**丢弃该观察者**而不是丢弃最旧的事件。
+
+为什么丢观察者而不是丢事件：这些是客户端**按顺序渲染**的 turn 事件。丢中间一条会让客户端
+看到「turn 结束了但没开始」。丢观察者则表现为连接关闭——那是客户端能处理的状态。
+
+顺带补了 `ObservedEvent` 的导出。之前 `observe()` 是 pub 但返回类型没导出，外部代码
+根本没法接住它——这是个 API 缺口，探针编译失败才暴露。
+
+### 验证
+
+三条新测试：
+
+| 测试 | 断言 |
+|---|---|
+| `an_unread_observer_is_dropped_rather_than_buffered_without_bound` | 发 10,000 条后观察者被丢弃，且**收到的是连续前缀**（不会中间断层） |
+| `a_consumer_that_keeps_up_observes_every_dispatch` | 健康消费者一条不丢，且不被丢弃 |
+| `a_dropped_receiver_is_pruned_on_the_next_dispatch` | 清理不依赖消费者协作退订 |
+
+端到端复验：正常 WebSocket 客户端仍收到全部 7 个事件帧
+（`turn-started → tool-started → tool-finished → turn-ended → turn-started → text-delta → turn-ended`），
+有界通道没有破坏正常路径。
+
+### 仍未处理的
+
+2.17 列的第二处：**`SessionStore::rewrite` 是 O(文件)**，每条事件重写整个日志。
+这是已知设计债务，写在代码注释和模块文档里，没在这轮动——修它需要改成追加式帧或
+未压缩工作文件 + 定期压缩，是独立的一次改动。
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：

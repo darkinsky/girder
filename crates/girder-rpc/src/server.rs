@@ -475,6 +475,9 @@ pub fn forward_events(
                 // The client is gone; stop watching.
                 break;
             }
+            // A slow client is bounded by the bus's observer queue: when it fills, the observer is
+            // dropped and `recv` returns `None`, ending this loop. Buffering without bound would
+            // turn one stalled socket into unbounded memory.
         }
     })
 }

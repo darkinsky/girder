@@ -330,8 +330,21 @@ struct Observer {
     /// Event names this observer wants, or `None` for every event.
     events: Option<Vec<&'static str>>,
     /// Receives one `(name, args)` pair per dispatch.
-    sink: tokio::sync::mpsc::UnboundedSender<ObservedEvent>,
+    sink: tokio::sync::mpsc::Sender<ObservedEvent>,
+    /// Dispatches dropped because this observer fell behind.
+    dropped: Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// How many dispatches an observer may fall behind before it is dropped.
+///
+/// A bound rather than unbounded because dispatches arrive at model speed and a consumer at network
+/// speed: an unbounded queue turns one slow client into unbounded memory. Measured before the bound:
+/// 100,000 unread events stayed in memory.
+///
+/// Dropping the observer rather than the oldest event is deliberate: these are turn events a client
+/// renders in order, and a gap would show a turn ending without starting it. A dropped observer sees
+/// the connection close, which is a state it can act on.
+const OBSERVER_QUEUE_CAPACITY: usize = 4096;
 
 impl Observer {
     /// Whether this observer asked for `name`.
@@ -682,9 +695,13 @@ impl EventBus {
     pub fn observe(
         &self,
         events: Option<Vec<&'static str>>,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<ObservedEvent> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        self.lock().observers.push(Observer { events, sink: tx });
+    ) -> tokio::sync::mpsc::Receiver<ObservedEvent> {
+        let (tx, rx) = tokio::sync::mpsc::channel(OBSERVER_QUEUE_CAPACITY);
+        self.lock().observers.push(Observer {
+            events,
+            sink: tx,
+            dropped: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        });
         rx
     }
 
@@ -718,13 +735,23 @@ impl EventBus {
             if !observer.wants(name) {
                 return true;
             }
-            observer
-                .sink
-                .send(ObservedEvent {
-                    name,
-                    args: payload.clone(),
-                })
-                .is_ok()
+            match observer.sink.try_send(ObservedEvent {
+                name,
+                args: payload.clone(),
+            }) {
+                // Delivered.
+                Ok(()) => true,
+                // Full: this observer cannot keep up. Drop it rather than buffer without bound, and
+                // count the loss so a caller can report why the stream stopped.
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    observer
+                        .dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    false
+                }
+                // The receiver is gone.
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+            }
         });
     }
 
