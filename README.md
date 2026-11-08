@@ -13,9 +13,8 @@ consumers, and stay out of the way.
 > live path is **tested against a mock server, not the real API** (no key here); `girder serve`
 > exposes **six of the twenty-two Remote methods a client calls**, and `session.prompt` now really
 > runs a turn, cancellable through `session.cancel` — though its output reaches a client only with
-> `--watch agent/turn`, and model selection is still absent. Concurrent writers to one session log
-> are serialised: before that fix, eight parallel appends left twelve events and a corrupted
-> frame; and the sandbox is **advisory, not kernel-enforced** (this host's kernel has no
+> `--watch agent/turn`, and model selection is still absent. The session log appends one compressed
+> frame per event, so append cost no longer grows with the conversation; and the sandbox is **advisory, not kernel-enforced** (this host's kernel has no
 > Landlock). See [phase 6](docs/phase6-scope.md) and [phase 7](docs/phase7-scope.md).
 
 ## Why this repository starts with a plan

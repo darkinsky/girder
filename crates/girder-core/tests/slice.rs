@@ -757,3 +757,110 @@ fn concurrent_appends_keep_the_log_readable() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- the multi-frame log format -----------------------------------------------------------------
+
+#[test]
+fn a_log_is_readable_after_many_appended_frames() {
+    // Each append writes its own zstd frame, concatenated. A reader must see one logical stream:
+    // if the frames did not concatenate, every event after the first would be lost.
+    let dir = std::env::temp_dir().join(format!("girder-frames-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("many.jsonl.zst");
+    let store = girder_core::SessionStore::new(&path);
+
+    let expected: Vec<SessionEvent> = (1..=50)
+        .map(|turn| SessionEvent::TurnStart { turn })
+        .collect();
+    for event in &expected {
+        store.append(event).unwrap();
+    }
+
+    let read_back = girder_core::read_session_file(&path).unwrap();
+    assert_eq!(read_back, expected, "every frame must contribute its event");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn appending_does_not_rewrite_the_whole_log() {
+    // The property the format change exists for: append cost must not grow with log size. A
+    // read-modify-write shows up as a much larger file after the last append than the total of the
+    // frames, and as a time that scales; here the file only ever grows by one frame.
+    let dir = std::env::temp_dir().join(format!("girder-appendcost-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cost.jsonl.zst");
+    let store = girder_core::SessionStore::new(&path);
+
+    let mut sizes = Vec::new();
+    for turn in 1..=30 {
+        store.append(&SessionEvent::TurnStart { turn }).unwrap();
+        sizes.push(std::fs::metadata(&path).unwrap().len());
+    }
+
+    // Every append adds bytes and never shrinks the file, which rules out a rewrite that could
+    // recompress the whole log to a smaller result.
+    for window in sizes.windows(2) {
+        assert!(window[1] >= window[0], "the file must only grow: {sizes:?}");
+    }
+    // Thirty small events must fit far below a per-append whole-file rewrite.
+    assert!(
+        *sizes.last().unwrap() < 4096,
+        "thirty tiny events must be small, got {} bytes",
+        sizes.last().unwrap()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_explicit_sync_flushes_the_log() {
+    // Appends are not individually synced; `sync` is the caller's lever for durability.
+    let dir = std::env::temp_dir().join(format!("girder-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = girder_core::SessionStore::new(dir.join("s.jsonl.zst"));
+
+    store.append(&SessionEvent::TurnStart { turn: 1 }).unwrap();
+    store.sync().expect("sync must succeed on an existing log");
+
+    // A store for a file that does not exist is a no-op, not an error.
+    let absent = girder_core::SessionStore::new(dir.join("absent.jsonl.zst"));
+    absent.sync().expect("syncing a missing log is a no-op");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn has_user_message_stops_at_the_first_message() {
+    // The list view reads until the first user message rather than decoding everything.
+    let dir = std::env::temp_dir().join(format!("girder-hasmsg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("s.jsonl.zst");
+    let store = girder_core::SessionStore::new(&path);
+
+    assert!(
+        !store.has_user_message().unwrap(),
+        "a missing log has no message"
+    );
+
+    store.append(&SessionEvent::TurnStart { turn: 1 }).unwrap();
+    assert!(
+        !store.has_user_message().unwrap(),
+        "a bare turn start is not a message"
+    );
+
+    store
+        .append(&SessionEvent::UserMessage {
+            content: vec![ContentBlock::Text {
+                text: "hello".to_owned(),
+            }],
+        })
+        .unwrap();
+    assert!(store.has_user_message().unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

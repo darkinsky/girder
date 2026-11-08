@@ -195,16 +195,48 @@ impl SessionStore {
     /// acceptable for the slice (a conversation is kilobytes) and is the reason phase 5 will move
     /// to an uncompressed working file with periodic compaction.
     pub fn append(&self, event: &SessionEvent) -> Result<(), SessionError> {
-        // Serialised per path: the operation is a read-modify-write of the whole frame, so two
-        // concurrent appends would otherwise lose one and share a staging file.
+        // Serialised per path so two appends cannot interleave their frame writes. The lock is still
+        // needed although this is a pure append: a torn write would corrupt the frame.
         let lock = path_lock(&self.path);
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let mut events = self.read_all()?;
-        events.push(event.clone());
-        self.rewrite(&events)
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let line = serde_json::to_string(event).map_err(|error| {
+            SessionError::Compression(format!("failed to encode event: {error}"))
+        })?;
+        let mut payload = line.into_bytes();
+        payload.push(b'\n');
+
+        // One compressed frame per append, concatenated onto the file.
+        //
+        // zstd decodes concatenated frames as a single stream, so a reader still sees the whole log.
+        // This replaces a read-modify-write of the entire file: append cost was O(log size) and grew
+        // quadratically, measured at 4.3 ms for a 500-message session.
+        //
+        // Appending trades crash-atomicity for that: a torn tail loses the event being written,
+        // where a rewrite-and-rename could not. The format already tolerated a truncated tail for
+        // exactly this reason, and the reader treats an unparseable line as content.
+        let frame = zstd::encode_all(payload.as_slice(), self.level)
+            .map_err(|error| SessionError::Compression(error.to_string()))?;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        std::io::Write::write_all(&mut file, &frame)?;
+        // Deliberately *not* `sync_data` per event. It costs about 3 ms here, twenty times the
+        // compress-and-write, and it buys durability only against an OS crash — not against the
+        // process crashing, which the write already survives because the data is in the page cache.
+        // The session log matters most for the latter case; a host that needs the former can call
+        // `sync` on its own cadence. See `docs/migration-plan.md` §2.19 for the measurement.
+        Ok(())
     }
 
     /// Reads every event, in order.
@@ -239,44 +271,6 @@ impl SessionStore {
             events.push(event);
         }
         Ok(events)
-    }
-
-    /// Rewrites the file from `events`.
-    fn rewrite(&self, events: &[SessionEvent]) -> Result<(), SessionError> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        // Write to a unique temporary file and rename, so a crash mid-write cannot truncate a good
-        // log, and two writers cannot clobber each other's staging file even if the lock is bypassed.
-        let unique = u64::from(std::process::id())
-            ^ std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| u64::from(elapsed.subsec_nanos()));
-        let staging = self.path.with_extension(format!("tmp-{unique}"));
-        {
-            let file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&staging)?;
-            let mut encoder = zstd::stream::write::Encoder::new(file, self.level)
-                .map_err(|error| SessionError::Compression(error.to_string()))?;
-            for event in events {
-                let line = serde_json::to_string(event).map_err(|error| {
-                    SessionError::Compression(format!("failed to encode event: {error}"))
-                })?;
-                std::io::Write::write_all(&mut encoder, line.as_bytes())?;
-                std::io::Write::write_all(&mut encoder, b"\n")?;
-            }
-            encoder
-                .finish()
-                .map_err(|error| SessionError::Compression(error.to_string()))?;
-        }
-        std::fs::rename(&staging, &self.path)?;
-        Ok(())
     }
 
     /// Whether the session has any user message, without decoding the whole log.
@@ -314,6 +308,23 @@ impl SessionStore {
             }
         }
         Ok(false)
+    }
+
+    /// Flushes the log to durable storage.
+    ///
+    /// Appends are not synced individually because the cost is twenty times the write and buys
+    /// durability only against an OS crash. A caller that needs that guarantee — a host shutting
+    /// down, a checkpoint — calls this at its own cadence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error when the file cannot be opened or synced.
+    pub fn sync(&self) -> Result<(), SessionError> {
+        match File::open(&self.path) {
+            Ok(file) => file.sync_all().map_err(SessionError::Io),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Counts events without materializing them all.
