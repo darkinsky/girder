@@ -68,6 +68,7 @@ mod scope;
 mod service;
 mod session;
 mod subagent;
+mod subprocess;
 mod tools;
 
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
@@ -125,6 +126,10 @@ pub use session::{
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
     subagent_tool,
+};
+pub use subprocess::{
+    ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,
+    run as run_process, spawn as spawn_process,
 };
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,

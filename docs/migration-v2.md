@@ -277,4 +277,26 @@ Rust 的 newtype 构造器不公开时，非法 id 根本造不出来。
 这已经是同一类错误的**第三次**（`fiber` 的 `start`、`events` 的 `observe_services`、
 现在的 `fs`）。规则很清楚：**任何跨 `await` 的临界区必须用 tokio 的锁**。
 
-**未完成**：`subprocess` / `shell` / `sandbox` / `storage`。
+### subprocess seam（已完成）
+
+`subprocess.rs`：`SpawnOptions` + `run`，`exec.rs` 改为委托。
+
+拆分的理由不是审美：`run_shell` 和 `run_bash` 原本各自复制了管道并发读取、进程组杀死、
+超时竞态三块逻辑，改任何一处都要改两遍。上一轮在 `exec.rs` 内部合并过一次，但进程机制和
+路径策略还混在一个文件里。
+
+现在职责清楚：
+
+| 文件 | 职责 |
+|---|---|
+| `subprocess.rs` | 进程机制：spawn、进程组、管道、超时、回收 |
+| `exec.rs` | 路径策略、`Sandbox` trait、bash 工具 |
+| `fs.rs` | 文件读写与版本守卫 |
+
+**三种静默失败模式各有测试**：
+
+1. `a_timeout_kills_the_whole_process_group` —— 断言**孙进程已死**，不是只断言 shell 退出
+2. `a_large_output_does_not_deadlock` —— 20,000 行输出，管道必须并发排空
+3. `a_killed_command_leaves_no_zombie` —— 读 `/proc` 统计本进程的 `Z` 状态子进程
+
+**未完成**：`sandbox` 内核实现（本机无 Landlock）、`storage`。
