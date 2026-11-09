@@ -442,6 +442,32 @@ live options 只是会话没有历史时的默认值。把 live options 放第�
 
 这个 bug 只有**用永不结束的 provider 写测试**才会暴露，用 OneShot 永远测不出来。
 
+### Goal 状态机（已完成）
+
+`goal.rs`：`GoalState` / `Goal` / `Phase` / `Activation` / `GoalRef`。
+
+**核心是 phase 和 activation 是两个不同的东西。**
+
+| 概念 | 是否持久化 | 含义 |
+|---|---|---|
+| `Phase` | 是 | goal 在生命周期里的位置 |
+| `Activation` | **否** | **这个进程**是否可以自动继续它 |
+
+合二为一看起来更简单，但是错的。磁盘上 `active` 的 goal，是**写它的那个进程停下时**它是 active；
+新进程**不能因为上一进程做到一半就自己接着做**。必须由用户要求继续，否则保持 disarmed。
+
+所以 `resume` 是**人类授权**的迁移，而不是重启时自动发生的事。
+
+**每个变更都是一个 revision。** 两个客户端可以各自持有视图并同时编辑。没有 compare-and-set 时，
+后写的赢，前一个客户端的改动**无声消失**。`GoalRef` 带调用方看到的 revision，不匹配就拒绝。
+
+**迁移表**：completed 是终态。重新打开它会让「complete」变成「大概完成」。
+
+**轮次上限有默认值**（25），因为目标不可达的 goal 会永远继续，每轮花 token 而无人察觉。
+
+**30 个测试**覆盖：重启不自动继续、revision 冲突、终态不可逆、block 原因清空、轮次预算、
+disarmed 不能开轮。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

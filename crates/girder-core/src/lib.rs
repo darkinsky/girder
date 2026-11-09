@@ -60,6 +60,7 @@ mod events;
 mod exec;
 mod fiber;
 mod fs;
+mod goal;
 mod inbox;
 mod instructions;
 mod json;
@@ -117,6 +118,10 @@ pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec}
 pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
+};
+pub use goal::{
+    Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
+    Phase, check_reference as check_goal_reference,
 };
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use instructions::{
