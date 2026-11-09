@@ -342,4 +342,28 @@ provider 改一次措辞，重试循环就悄悄不再重试了。
 - `jitter_never_produces_zero` —— 零延迟是重试风暴，正是抖动要防的东西
 - `a_large_attempt_number_does_not_overflow` —— `2u32.pow(31)` 在 debug 下会 panic，位移是饱和的
 
+### 消息模型（已完成）
+
+`message.rs`：`Message` / `Role` / `MessageSource` / `ContextForm`。
+
+**核心是把「角色」和「来源」拆成两个轴。**
+
+`role` 回答「这是什么位置的消息」，`source` 回答「谁产生的」。当前实现三种角色
+（user/assistant/tool），补到五种：`system` 和 `developer`。
+
+`developer` 单独成角色是因为**工具增删骑在一轮对话上，但既不是模型说的也不是人说的**。
+归到任何一边都会让重放有歧义。
+
+来源是判别联合：`user` / `model` / `tool` / `system-prompt` / `relay`。同一个 `role: user`
+可以是本人、可以是别的 agent 中继、可以是插件注入的上下文——角色相同，来源不同。
+
+**一致性检查** `check_history`：`assistant` 必须来自 model，`tool` 必须带 call id。
+这个检查存在是因为日志可以从磁盘解码，**手改的文件会说谎**，重放要在行动前拒绝而不是照做。
+
+**`ContextForm` 是语义的，不是视觉的**：`instructions` / `catalog` / `snapshot` / `notice` /
+`relay` / `recall`。颜色、图标、折叠默认值属于消费方，不能进这个枚举。
+
+**一处换算细节**：`bound_context_summary` 按**字符**而非字节截断。CJK 摘要是 N 个字符但 3N 字节，
+按字节限制会砍到三分之一。
+
 **未完成**：`llm` 的多 provider、`session` 的事件全集、`context` / `compaction` / `attachment`。

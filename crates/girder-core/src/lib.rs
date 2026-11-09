@@ -60,6 +60,7 @@ mod fs;
 mod json;
 mod llm;
 mod llm_deepseek;
+mod message;
 mod paths;
 mod registry;
 mod remote;
@@ -105,6 +106,10 @@ pub use llm::{
 };
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
+};
+pub use message::{
+    CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
+    MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
 };
 pub use paths::{
     AGENTS_HOME_DISPLAY, AGENTS_HOME_ENV, HARNESS_HOME_DISPLAY, HARNESS_HOME_ENV, Root,
