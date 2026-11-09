@@ -63,6 +63,7 @@ mod fs;
 mod goal;
 mod inbox;
 mod instructions;
+mod jobs;
 mod json;
 mod llm;
 mod llm_deepseek;
@@ -130,6 +131,10 @@ pub use instructions::{
     INSTRUCTION_FILE_NAME, InstructionFile, InstructionLimits, InstructionState, LoadedInstruction,
     RenderedInstructions, TruncatedInstruction, USER_GLOBAL_DIRECTORY, digest,
     discover as discover_instructions, load as load_instructions, render as render_instructions,
+};
+pub use jobs::{
+    Channel as JobChannel, Job, JobChunk, JobError, JobId, JobProducer, JobRegistry,
+    JobRegistryHandle, Outcome as JobOutcome, OutputRing, Status as JobStatus,
 };
 pub use json::{
     JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,
