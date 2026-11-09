@@ -546,6 +546,28 @@ disarmed 不能开轮。
 **`reasoning_effort` 为 `None` 时不序列化**：写 null 的日志条目和从未设置过的条目无法区分。
 同理 `context_window` 未知时省略而非写 0——「没有窗口」和「未披露」是两个不同的事实。
 
+### Goal 接入 loop（已完成）
+
+`LoopContext` 增加 `goal`，`run` 在 turn 将要结束时检查 goal 是否 armed。
+
+**goal 和 agent 分开是有意的。** goal 是**会话**概念，不是 agent 概念：恢复的会话在还没有
+agent 时就要恢复它的 goal；一个 loop 也可以完全没有 goal。
+
+**这是让 goal 区别于 prompt 的唯一一件事**：armed 的 goal 会让 loop 在本来会结束的 turn 之后
+继续。用户要的是结果，不是一次回答。
+
+**轮次预算在继续之前检查，而不是之后。** 否则不可达的目标会多花一轮才发现预算用完。
+
+**继续提示不重述目标。** 模型刚在做这件事，重复目标只会招来复述而不是进展。提示只说
+「已用 N/M 轮，完成就标记完成，被具体阻塞就说出来」。
+
+**又一次踩到同一个坑。** 第一版把 `MutexGuard` 跨着 `await` 持有，编译器报
+`future cannot be sent between threads safely`。这是同一类错误的第四次（fiber、events、fs、
+现在的 agent_loop）。
+
+规则已经很清楚：**跨 `await` 的临界区必须先算完再 await**。修法是抽出
+`goal_continuation()` 函数——顺便也让 `run` 从 121 行降到 clippy 允许的范围。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

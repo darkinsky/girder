@@ -137,6 +137,12 @@ pub struct LoopContext {
     /// holds it rather than duplicating those three as its own fields, because two copies of the same
     /// state is how a cancel that the UI sees and the loop does not becomes possible.
     pub agent: Option<Arc<crate::agent::Agent>>,
+
+    /// The goal this loop advances, when one is attached.
+    ///
+    /// Separate from the agent because a goal is a *session* concept, not an agent one: a resumed
+    /// session restores its goal before it has an agent, and a loop may run with no goal at all.
+    pub goal: Option<Arc<std::sync::Mutex<crate::goal::GoalState>>>,
     /// Which agent this loop runs for.
     pub agent_id: crate::brand::AgentId,
     /// Maximum turns before the loop stops on its own.
@@ -177,12 +183,25 @@ impl LoopContext {
             bus,
             model: model.into(),
             agent: None,
+            goal: None,
             agent_id,
             max_turns: 16,
             depth: crate::subagent::Depth::root(),
             max_depth: 2,
             message_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             record_prompt: true,
+        }
+    }
+
+    /// Attaches the goal this loop advances.
+    ///
+    /// An armed goal makes the loop keep going after a turn that would otherwise end, which is the
+    /// whole point of a goal: the user asked for an outcome, not for one answer.
+    #[must_use]
+    pub fn with_goal(self, goal: Arc<std::sync::Mutex<crate::goal::GoalState>>) -> Self {
+        Self {
+            goal: Some(goal),
+            ..self
         }
     }
 
@@ -203,6 +222,54 @@ impl LoopContext {
         self.max_depth = max_depth;
         self
     }
+}
+
+/// Builds and records a goal-continuation prompt, when the goal says to keep going.
+///
+/// A separate function for two reasons: `run` was long enough to hide the order in which it decides
+/// to continue, and the guard-taking must not sit across an `await` — a `std` mutex guard is not
+/// `Send`, so holding one would make the whole stream un-spawnable. Deciding here and awaiting after
+/// keeps both properties.
+async fn goal_continuation(
+    context: &Arc<LoopContext>,
+    turn: u64,
+) -> Option<crate::message::Message> {
+    let goal = context.goal.as_ref()?;
+
+    // Decide under the lock and release it before the await below.
+    let (used, budget) = {
+        let mut state = goal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.may_continue() {
+            return None;
+        }
+        // A budget that is spent is not an error here: the loop simply ends.
+        let updated = state.start_round(turn).ok()?;
+        (updated.rounds_started, updated.max_rounds)
+    };
+
+    // The prompt says what to do without restating the objective: the model has just been working on
+    // it, and repeating it invites a restatement rather than progress.
+    let prompt = format!(
+        "Continue working toward the goal. You have used {used}/{budget} rounds. \
+         If the goal is complete, mark it complete. If something concrete blocks you, say what it is."
+    );
+    let message = crate::message::Message::new(
+        context.next_message_id(),
+        crate::message::Role::User,
+        crate::message::MessageSource::User {
+            form: Some(crate::message::ContextForm::Notice),
+        },
+        vec![ContentBlock::Text { text: prompt }],
+    );
+    let _ = context
+        .session
+        .append(SessionEvent::UserMessage {
+            message: message.clone(),
+        })
+        .await;
+    Some(message)
 }
 
 /// Runs one conversation turn by turn.
@@ -314,9 +381,20 @@ pub fn run(
                 yield Ok(LoopStep::TurnStarted { turn: turn + 1 });
             }
 
+            // An armed goal keeps going after a turn that would otherwise end. This is what makes a
+            // goal different from a prompt: the user asked for an outcome, and one answer is not it.
+            //
+            // The round budget is checked before continuing rather than after, so an unreachable
+            // objective stops instead of spending one more turn discovering that.
+            let mut goal_continued = false;
+            if let Some(message) = goal_continuation(&context, turn).await {
+                messages.push(Message::new(Role::User, message.content.clone()));
+                goal_continued = true;
+            }
+
             // A turn that ran tools continues so the model can see the results; a turn that only
-            // answered ends the conversation unless something is queued.
-            if !ran_tools && queued.is_empty() {
+            // answered ends the conversation unless something is queued or a goal is active.
+            if !ran_tools && queued.is_empty() && !goal_continued {
                 return;
             }
         }
