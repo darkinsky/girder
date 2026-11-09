@@ -56,8 +56,10 @@ mod config;
 mod events;
 mod exec;
 mod fiber;
+mod json;
 mod llm;
 mod llm_deepseek;
+mod paths;
 mod registry;
 mod remote;
 mod runtime;
@@ -85,12 +87,21 @@ pub use exec::{
     bash_tool, has_program, landlock_abi, read_file, run_bash, run_shell,
 };
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
+pub use json::{
+    JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,
+    number_from_f64, number_from_u64,
+};
 pub use llm::{
     AssembleError, AssistantMessage, ChunkStream, ContentBlock, FinishReason, LlmError, LlmKey,
     LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolSchema,
 };
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
+};
+pub use paths::{
+    AGENTS_HOME_DISPLAY, AGENTS_HOME_ENV, HARNESS_HOME_DISPLAY, HARNESS_HOME_ENV, Root,
+    RootEnvironment, RootError, abbreviate_home, agents_home, expand_home, harness_home, home_dir,
+    join_within,
 };
 pub use registry::{Label, Registry, RegistryContext, RegistryError};
 pub use remote::{
