@@ -35,13 +35,17 @@ use crate::brand::SessionId;
 ///
 /// Complete by construction: a struct with two required fields cannot represent "provider but no
 /// model", which is the state that produces a request nobody can route.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModelSelection {
     /// The registered provider route.
     pub provider: String,
     /// The provider-owned model id.
     pub model: String,
     /// The adapter-owned reasoning effort, when one was chosen.
+    ///
+    /// Omitted from the wire when absent rather than serialized as null: a log entry that names a
+    /// null effort is indistinguishable from one where the field was never set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
 }
 

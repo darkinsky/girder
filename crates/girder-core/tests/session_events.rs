@@ -257,3 +257,172 @@ fn a_first_attempt_omits_the_reason() {
 
     assert!(!text.contains("reason"), "{text}");
 }
+
+// ---- the extended vocabulary ------------------------------------------------------------------
+
+#[test]
+fn the_extended_tags_match_the_upstream_spelling() {
+    // Each of these is a wire format, so each is pinned rather than assumed.
+    let cases: Vec<(SessionEvent, &str)> = vec![
+        (
+            SessionEvent::SystemMessage {
+                turn: 1,
+                step: 1,
+                message: girder_core::ChatMessage::system(MessageId::new("m").unwrap(), "prompt"),
+            },
+            "system/message",
+        ),
+        (
+            SessionEvent::ModelSelection {
+                selection: girder_core::ModelSelection::new("ds", "deepseek-chat"),
+            },
+            "model/selection",
+        ),
+        (
+            SessionEvent::PermissionPreset {
+                preset: "read-only".to_owned(),
+            },
+            "permission/preset",
+        ),
+        (SessionEvent::PlanMode { active: true }, "plan/mode"),
+        (
+            SessionEvent::SandboxMode {
+                mode: "advisory".to_owned(),
+                source: None,
+            },
+            "sandbox/mode",
+        ),
+        (
+            SessionEvent::RequestContext {
+                provider: "ds".to_owned(),
+                model: "m".to_owned(),
+                context_window: Some(64_000),
+            },
+            "request/context",
+        ),
+        (
+            SessionEvent::SessionTitle {
+                title: "a conversation".to_owned(),
+                message_seqs: vec![1, 2],
+                source: "model".to_owned(),
+            },
+            "session/title",
+        ),
+    ];
+
+    for (event, expected) in cases {
+        assert_eq!(event.type_name(), expected);
+    }
+}
+
+#[test]
+fn a_system_message_records_its_step() {
+    // Recorded per step rather than once: an instruction file can be edited between steps, and a
+    // replay that kept only the first would show the model a prompt it never saw.
+    let event = SessionEvent::SystemMessage {
+        turn: 2,
+        step: 3,
+        message: girder_core::ChatMessage::system(MessageId::new("m").unwrap(), "be brief"),
+    };
+
+    assert_eq!(event.turn(), Some(2));
+    let SessionEvent::SystemMessage { step, message, .. } = event else {
+        panic!("expected SystemMessage");
+    };
+    assert_eq!(step, 3);
+    assert_eq!(message.text(), "be brief");
+}
+
+#[test]
+fn a_model_selection_event_carries_a_complete_selection() {
+    // Both halves are required by the type, so a log cannot hold one without the other.
+    let event = SessionEvent::ModelSelection {
+        selection: girder_core::ModelSelection::new("ds", "deepseek-reasoner"),
+    };
+    let text = serde_json::to_string(&event).unwrap();
+
+    assert!(text.contains("deepseek-reasoner"), "{text}");
+    assert!(text.contains(r#""type":"model/selection""#), "{text}");
+}
+
+#[test]
+fn an_absent_reasoning_effort_is_omitted_from_the_wire() {
+    // A log entry naming a null effort is indistinguishable from one where it was never set.
+    let selection = girder_core::ModelSelection::new("ds", "m");
+    let text = serde_json::to_string(&selection).unwrap();
+
+    assert!(!text.contains("reasoning_effort"), "{text}");
+}
+
+#[test]
+fn a_reasoning_effort_round_trips() {
+    let selection = girder_core::ModelSelection::new("ds", "m").with_reasoning("high");
+    let text = serde_json::to_string(&selection).unwrap();
+    let restored: girder_core::ModelSelection = serde_json::from_str(&text).unwrap();
+
+    assert_eq!(restored.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn the_environment_events_round_trip() {
+    // A replay without these cannot explain why a tool was refused or a conversation compacted.
+    for event in [
+        SessionEvent::PermissionPreset {
+            preset: "full".to_owned(),
+        },
+        SessionEvent::PlanMode { active: false },
+        SessionEvent::SandboxMode {
+            mode: "enforcing".to_owned(),
+            source: Some("config".to_owned()),
+        },
+        SessionEvent::RequestContext {
+            provider: "p".to_owned(),
+            model: "m".to_owned(),
+            context_window: None,
+        },
+        SessionEvent::SessionTitle {
+            title: "t".to_owned(),
+            message_seqs: vec![1],
+            source: "human".to_owned(),
+        },
+    ] {
+        let text = serde_json::to_string(&event).unwrap();
+        let restored: SessionEvent = serde_json::from_str(&text).unwrap();
+        assert_eq!(restored, event, "{}", event.type_name());
+    }
+}
+
+#[test]
+fn an_unknown_context_window_is_omitted_not_zeroed() {
+    // Zero would claim the model has no window, which is a different fact from "not disclosed".
+    let event = SessionEvent::RequestContext {
+        provider: "p".to_owned(),
+        model: "m".to_owned(),
+        context_window: None,
+    };
+    let text = serde_json::to_string(&event).unwrap();
+
+    assert!(!text.contains("context_window"), "{text}");
+}
+
+#[test]
+fn environment_events_do_not_name_a_turn() {
+    // They describe the environment a turn runs in, not a position within one.
+    assert_eq!(
+        SessionEvent::PermissionPreset {
+            preset: "x".to_owned()
+        }
+        .turn(),
+        None
+    );
+    assert_eq!(SessionEvent::PlanMode { active: true }.turn(), None);
+    assert_eq!(
+        SessionEvent::SessionTitle {
+            title: "t".to_owned(),
+            message_seqs: vec![],
+            source: "human".to_owned()
+        }
+        .turn(),
+        None
+    );
+}

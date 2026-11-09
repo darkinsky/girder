@@ -188,6 +188,87 @@ pub enum SessionEvent {
         is_error: bool,
     },
 
+    /// The rendered system prompt on the model-visible surface.
+    ///
+    /// Recorded per step rather than once, because the prompt can change between steps: an
+    /// instruction file is edited, a tool is added, the working directory moves. A replay that kept
+    /// only the first would show the model a prompt it never saw.
+    #[serde(rename = "system/message")]
+    SystemMessage {
+        /// Turn it was assembled in.
+        turn: u64,
+        /// Step it was assembled for.
+        step: u64,
+        /// The message.
+        message: crate::message::Message,
+    },
+
+    /// The model selection this step will use.
+    ///
+    /// Carries the selection rather than a `Value`: a selection has a shape — provider and model are
+    /// both required — and storing it loosely would let a log hold one half.
+    #[serde(rename = "model/selection")]
+    ModelSelection {
+        /// The selection.
+        selection: crate::agent::ModelSelection,
+    },
+
+    /// The capability preset in force.
+    ///
+    /// A preset decides what the model may do — read-only, edit, full access — so a replay without
+    /// it cannot explain why a tool was refused.
+    #[serde(rename = "permission/preset")]
+    PermissionPreset {
+        /// The preset name.
+        preset: String,
+    },
+
+    /// Whether plan mode is on.
+    ///
+    /// Plan mode changes the contract with the model: it must describe before acting. A turn
+    /// recorded without it looks like a model that failed to act.
+    #[serde(rename = "plan/mode")]
+    PlanMode {
+        /// Whether it is active.
+        active: bool,
+    },
+
+    /// The sandbox mode in force.
+    #[serde(rename = "sandbox/mode")]
+    SandboxMode {
+        /// The mode.
+        mode: String,
+        /// Where the setting came from, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+
+    /// The context window the request was planned against.
+    ///
+    /// Recorded because compaction decisions depend on it: a log without the window cannot explain
+    /// why a conversation was compacted when it looked small.
+    #[serde(rename = "request/context")]
+    RequestContext {
+        /// The provider.
+        provider: String,
+        /// The model.
+        model: String,
+        /// The window, when the catalogue declared one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
+    },
+
+    /// The session's title, and what produced it.
+    #[serde(rename = "session/title")]
+    SessionTitle {
+        /// The title.
+        title: String,
+        /// The message sequence numbers it was derived from.
+        message_seqs: Vec<u64>,
+        /// Whether a human or a model produced it.
+        source: String,
+    },
+
     /// An LLM request is about to be attempted.
     ///
     /// Recorded because a retry makes the log otherwise unexplainable: two assistant messages for
@@ -216,6 +297,13 @@ impl SessionEvent {
             Self::AssistantMessage { .. } => "assistant/message",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
+            Self::SystemMessage { .. } => "system/message",
+            Self::ModelSelection { .. } => "model/selection",
+            Self::PermissionPreset { .. } => "permission/preset",
+            Self::PlanMode { .. } => "plan/mode",
+            Self::SandboxMode { .. } => "sandbox/mode",
+            Self::RequestContext { .. } => "request/context",
+            Self::SessionTitle { .. } => "session/title",
             Self::LlmRetry { .. } => "llm/retry",
         }
     }
@@ -228,11 +316,18 @@ impl SessionEvent {
             | Self::TurnEnd { turn, .. }
             | Self::StepStart { turn, .. }
             | Self::StepEnd { turn, .. }
-            | Self::DeveloperMessage { turn, .. } => Some(*turn),
+            | Self::DeveloperMessage { turn, .. }
+            | Self::SystemMessage { turn, .. } => Some(*turn),
             Self::UserMessage { .. }
             | Self::AssistantMessage { .. }
             | Self::ToolCall { .. }
             | Self::ToolResult { .. }
+            | Self::ModelSelection { .. }
+            | Self::PermissionPreset { .. }
+            | Self::PlanMode { .. }
+            | Self::SandboxMode { .. }
+            | Self::RequestContext { .. }
+            | Self::SessionTitle { .. }
             | Self::LlmRetry { .. } => None,
         }
     }
