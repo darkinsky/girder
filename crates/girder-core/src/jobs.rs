@@ -577,3 +577,122 @@ pub trait JobProducer: Send + Sync {
         spec: crate::subprocess::SpawnOptions,
     ) -> BoxFut<Result<(), JobError>>;
 }
+
+/// Spawns a command as a background job.
+///
+/// The one function that connects the job lifecycle to a real process. Everything else in this module
+/// is bookkeeping; this is where a job becomes something a caller can watch.
+///
+/// # How the pieces fit
+///
+/// A task owns the process and drives it: read a chunk, append it to the ring, repeat until the
+/// streams close, then settle. The registry is shared, so a reader sees output as it is produced
+/// rather than after the command exits — which is the entire point of a job over a tool call.
+///
+/// # Errors
+///
+/// Returns [`JobError::AlreadySettled`] when the id is taken, and [`JobError::NotFound`] if the
+/// registration vanished, which cannot happen while the caller holds the registry.
+pub fn spawn_job(
+    registry: Arc<JobRegistry>,
+    id: &JobId,
+    kind: impl Into<String>,
+    label: impl Into<String>,
+    options: crate::subprocess::SpawnOptions,
+) -> Result<tokio::task::JoinHandle<()>, JobError> {
+    let id_for_task = id.clone();
+    registry.register(id, kind, label)?;
+
+    let handle = tokio::spawn(async move {
+        let id = id_for_task;
+        let mut process = match crate::subprocess::start(&options) {
+            Ok(process) => process,
+            Err(_error) => {
+                // A spawn failure is a failed job, not a silent absence: a caller watching the id
+                // must see it settle rather than hang forever on a job that never existed.
+                let _ = registry.fail(&id.to_string(), None, now_millis());
+                return;
+            }
+        };
+
+        // Drain until both streams close OR a stop is requested.
+        //
+        // The stop check has to race the read rather than follow it: `next_chunk` blocks while the
+        // process is silent, so a `sleep 30` with no output would never reach a check placed after
+        // the loop. That is a real hang, not a slow test.
+        loop {
+            tokio::select! {
+                chunk = process.next_chunk() => match chunk {
+                    Some((channel, text)) => {
+                        if registry.append(&id.to_string(), text, channel).is_err() {
+                            // Settled from outside; stop reading.
+                            process.terminate();
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+                () = wait_for_stop(&registry, &id) => {
+                    process.terminate();
+                    let _ = registry.confirm_killed(&id.to_string(), now_millis());
+                    // Wait for the group to go so the task does not outlive its process.
+                    let _ = process.wait().await;
+                    return;
+                }
+            }
+        }
+
+        // A job asked to stop settles as killed; one that exited on its own settles by its code.
+        let requested_stop = registry
+            .get(&id.to_string())
+            .is_ok_and(|job| job.status == Status::Stopping);
+        if requested_stop {
+            process.terminate();
+            let _ = registry.confirm_killed(&id.to_string(), now_millis());
+        } else {
+            match process.wait().await {
+                Ok(Some(0)) => {
+                    let _ = registry.complete(&id.to_string(), 0, now_millis());
+                }
+                Ok(Some(code)) => {
+                    let _ = registry.fail(&id.to_string(), Some(code), now_millis());
+                }
+                Ok(None) => {
+                    // Signalled: not a clean exit, and not a stop we asked for.
+                    let _ = registry.fail(&id.to_string(), None, now_millis());
+                }
+                Err(_) => {
+                    let _ = registry.fail(&id.to_string(), None, now_millis());
+                }
+            }
+        }
+    });
+
+    Ok(handle)
+}
+
+/// Resolves once a job has been asked to stop.
+///
+/// Polling rather than a channel: the registry is the shared state and adding a notification channel
+/// would give the stop path a second source of truth. The interval is short enough that a kill feels
+/// immediate and long enough not to spin.
+async fn wait_for_stop(registry: &JobRegistry, id: &JobId) {
+    loop {
+        if registry
+            .get(&id.to_string())
+            .is_ok_and(|job| job.status == Status::Stopping)
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// The current time in milliseconds since the epoch.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
+}

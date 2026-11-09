@@ -568,6 +568,34 @@ agent 时就要恢复它的 goal；一个 loop 也可以完全没有 goal。
 规则已经很清楚：**跨 `await` 的临界区必须先算完再 await**。修法是抽出
 `goal_continuation()` 函数——顺便也让 `run` 从 121 行降到 clippy 允许的范围。
 
+### Jobs 接入真实进程（已完成）
+
+`subprocess::start()` 返回可流式读取的 `RunningProcess`；`jobs::spawn_job()` 把进程接到环形缓冲。
+
+**`subprocess` 原本只有收集式输出**（等结束一次性返回），那是工具的语义。job 需要**相反**的语义：
+进程还在跑时就要能读到输出。两者不能共用一个实现——收集式在子进程退出前不能返回，流式必须立刻返回。
+
+所以新增 `start()`，它与 `run()` 并列而不是替代。
+
+**一个真实的挂起 bug，被测试抓到。**
+
+第一版在读取循环**之后**检查 stopping：
+
+```rust
+while let Some(chunk) = process.next_chunk().await { ... }   // sleep 30 时永远阻塞
+let requested_stop = ...                                      // 永远到不了
+```
+
+`next_chunk()` 在进程沉默时会一直阻塞，所以一个没有输出的 `sleep 30` **永远不会走到检查**。
+
+修法是用 `tokio::select!` 让读取和停止检查**竞争**，而不是顺序执行。
+
+修复后同一个测试从 **5.32 秒降到 1.02 秒**——说明修复前它确实在空转等待。这不是「测试慢」，是**真的挂住**。
+
+**两个 tokio 细节**：
+- `select!` 不能同时可变借用同一个 buffer，所以 stdout 和 stderr 各用一个
+- `select!` 两个 reader 才能让 chatty stderr 不饿死 stdout（顺序读会）
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

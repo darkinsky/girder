@@ -134,7 +134,7 @@ pub use instructions::{
 };
 pub use jobs::{
     Channel as JobChannel, Job, JobChunk, JobError, JobId, JobProducer, JobRegistry,
-    JobRegistryHandle, Outcome as JobOutcome, OutputRing, Status as JobStatus,
+    JobRegistryHandle, Outcome as JobOutcome, OutputRing, Status as JobStatus, spawn_job,
 };
 pub use json::{
     JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,

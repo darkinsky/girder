@@ -337,3 +337,169 @@ pub fn spawn(
 ) -> BoxFut<Result<ProcessOutcome, ProcessError>> {
     Box::pin(async move { run(options, cancel).await })
 }
+
+/// A running process whose output is readable while it runs.
+///
+/// The collecting [`run`] is what a tool wants: it waits and renders one result. A job wants the
+/// opposite — the process is still running when the caller reads, so the output has to arrive as it
+/// is produced. The two cannot share one implementation, because the collecting form must not return
+/// until the child exits while this one must return immediately.
+pub struct RunningProcess {
+    child: Child,
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
+    pid: Option<u32>,
+}
+
+impl RunningProcess {
+    /// Reads the next available chunk of either stream.
+    ///
+    /// Returns `None` when both streams are closed. Chunks are `(channel, text)`; the caller decides
+    /// how to label them, which is what lets a job record stdout and stderr differently.
+    pub async fn next_chunk(&mut self) -> Option<(crate::jobs::Channel, String)> {
+        use tokio::io::AsyncReadExt as _;
+
+        loop {
+            // Two buffers, because `select!` cannot mutably borrow one buffer for two futures.
+            // `select` on both readers is what stops a chatty stderr from starving stdout the way a
+            // sequential read would.
+            let mut out_buffer = [0u8; 4096];
+            let mut err_buffer = [0u8; 4096];
+            match (self.stdout.as_mut(), self.stderr.as_mut()) {
+                (Some(out), Some(err)) => {
+                    tokio::select! {
+                        result = out.read(&mut out_buffer) => match result {
+                            Ok(0) | Err(_) => {
+                                self.stdout = None;
+                                if self.stdout.is_none() && self.stderr.is_none() {
+                                    return None;
+                                }
+                            }
+                            Ok(n) => {
+                                return Some((
+                                    crate::jobs::Channel::Stdout,
+                                    String::from_utf8_lossy(&out_buffer[..n]).into_owned(),
+                                ))
+                            }
+                        },
+                        result = err.read(&mut err_buffer) => match result {
+                            Ok(0) | Err(_) => {
+                                self.stderr = None;
+                                if self.stdout.is_none() && self.stderr.is_none() {
+                                    return None;
+                                }
+                            }
+                            Ok(n) => {
+                                return Some((
+                                    crate::jobs::Channel::Stderr,
+                                    String::from_utf8_lossy(&err_buffer[..n]).into_owned(),
+                                ))
+                            }
+                        },
+                    }
+                }
+                (Some(out), None) => match out.read(&mut out_buffer).await {
+                    Ok(0) | Err(_) => {
+                        self.stdout = None;
+                        return None;
+                    }
+                    Ok(n) => {
+                        return Some((
+                            crate::jobs::Channel::Stdout,
+                            String::from_utf8_lossy(&out_buffer[..n]).into_owned(),
+                        ));
+                    }
+                },
+                (None, Some(err)) => match err.read(&mut err_buffer).await {
+                    Ok(0) | Err(_) => {
+                        self.stderr = None;
+                        return None;
+                    }
+                    Ok(n) => {
+                        return Some((
+                            crate::jobs::Channel::Stderr,
+                            String::from_utf8_lossy(&err_buffer[..n]).into_owned(),
+                        ));
+                    }
+                },
+                (None, None) => return None,
+            }
+        }
+    }
+
+    /// Waits for the child to exit, returning its code.
+    ///
+    /// # Errors
+    ///
+    /// Returns the wait error; a signalled child reports `None` as its code.
+    pub async fn wait(mut self) -> Result<Option<i32>, std::io::Error> {
+        self.child.wait().await.map(|status| status.code())
+    }
+
+    /// Kills the whole process group.
+    ///
+    /// The group rather than the child: a shell that started a pipeline leaves other processes holding
+    /// the pipes, and killing only the shell leaves them running with no reader.
+    pub fn terminate(&self) {
+        kill_tree(self.pid);
+    }
+}
+
+/// Spawns a process whose output can be read while it runs.
+///
+/// # Errors
+///
+/// Returns [`ProcessError::Spawn`] when the program cannot start.
+pub fn start(options: &SpawnOptions) -> Result<RunningProcess, ProcessError> {
+    let mut command = Command::new(&options.program);
+    command
+        .args(&options.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if let Some(cwd) = &options.cwd {
+        command.current_dir(cwd);
+    }
+    for (key, value) in &options.env {
+        command.env(key, value);
+    }
+
+    if options.new_process_group {
+        #[cfg(unix)]
+        {
+            // SAFETY: `pre_exec` runs in the child after fork and before exec, where only
+            // async-signal-safe calls are allowed. `setpgid` is one, and it allocates nothing.
+            #[allow(
+                unsafe_code,
+                reason = "pre_exec is the only way to set a process group before exec"
+            )]
+            unsafe {
+                command.pre_exec(|| {
+                    nix::unistd::setpgid(
+                        nix::unistd::Pid::from_raw(0),
+                        nix::unistd::Pid::from_raw(0),
+                    )
+                    .map_err(std::io::Error::from)?;
+                    Ok(())
+                });
+            }
+        }
+    }
+
+    let program = options.program.clone();
+    let mut child = command
+        .spawn()
+        .map_err(|source| ProcessError::Spawn { program, source })?;
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    Ok(RunningProcess {
+        child,
+        stdout,
+        stderr,
+        pid,
+    })
+}
