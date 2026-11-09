@@ -661,6 +661,31 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **8 个新测试**，重点是 `the_wrapper_and_a_direct_replay_agree`：包装的缓存和独立重放必须一致。
 
+### Subagent provider 注册表（已完成）
+
+`subagent_providers.rs`：`SubagentProvider` trait + `ProviderRegistry` + `Capabilities`。
+
+**能力是声明的，不是探测的，而且要在创建子会话之前检查。**
+
+能派生进程的后端可以设置工作目录；对接远程服务的后端可能不行。调用方若假定能力存在，
+会发出后端**静默忽略**的请求，子会话就运行在调用方没打算的地方。
+
+**拒绝必须发生在子会话存在之前。** 一旦子会话有了 session、日志、可能的进程，
+因为一个字段不支持而要回滚，比一开始就拒绝糟得多。
+测试 `a_refused_request_never_reaches_the_backend` 断言后端的调用计数是 0。
+
+**返回值即所有权边界。** provider 建立子会话后把 handle 交出来：返回前 provider 负责清理，
+返回后调用方负责。**没有一刻是双方都以为拥有它，或都不拥有它。**
+这就是为什么 API 是「start 并交回 handle」，而不是「start」再「get handle」——
+后者存在一个「启动失败就泄漏」的窗口。
+
+**多个 provider 共存。** 进程内 fork、派生的进程、远程 agent 用不同取舍满足同一需求。
+按名字注册让调用方选择，也让不同部署用不同后端而不改代码。
+
+**`steering` 能力单列。** 外部执行没有回到子会话的消息通道，所以 `one_shot()` 不声明它。
+
+**18 个测试**，核心是「拒绝不产生副作用」。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

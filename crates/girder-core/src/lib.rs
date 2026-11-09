@@ -81,6 +81,7 @@ mod service;
 mod session;
 mod storage;
 mod subagent;
+mod subagent_providers;
 mod subprocess;
 mod tools;
 
@@ -194,6 +195,10 @@ pub use storage::{
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
     subagent_tool,
+};
+pub use subagent_providers::{
+    Capabilities as SubagentCapabilities, ChildHandle, ProviderHandle, ProviderRegistry,
+    StartError, StartRequest, SubagentProvider,
 };
 pub use subprocess::{
     ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,
