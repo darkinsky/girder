@@ -154,7 +154,24 @@ pub struct SessionStore {
 ///
 /// Keyed by path rather than held in the store because a store is cheap to construct — the RPC
 /// layer builds one per call — so a per-instance mutex would not serialise anything.
-fn path_lock(path: &Path) -> Arc<std::sync::Mutex<()>> {
+/// A per-path async lock for writers whose critical section contains an `await`.
+///
+/// A `std::sync::Mutex` guard is not `Send`, so holding one across an `await` makes the future
+/// un-spawnable. Anything that must await inside its critical section — a file write, a version
+/// check that reads metadata — uses this instead.
+pub(crate) fn async_path_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+
+    let locks = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guards = locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(guards.entry(path.to_path_buf()).or_default())
+}
+
+pub(crate) fn path_lock(path: &Path) -> Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<std::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();

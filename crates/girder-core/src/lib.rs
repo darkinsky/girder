@@ -56,6 +56,7 @@ mod config;
 mod events;
 mod exec;
 mod fiber;
+mod fs;
 mod json;
 mod llm;
 mod llm_deepseek;
@@ -87,6 +88,10 @@ pub use exec::{
     bash_tool, has_program, landlock_abi, read_file, run_bash, run_shell,
 };
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
+pub use fs::{
+    FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
+    LocalFileSystem, read_file as read_file_via_fs, target_at,
+};
 pub use json::{
     JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,
     number_from_f64, number_from_u64,

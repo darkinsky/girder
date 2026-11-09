@@ -254,5 +254,27 @@ Rust 的 newtype 构造器不公开时，非法 id 根本造不出来。
 
 三项：品牌标识符、JSON 无损、路径根。
 
-**下一个动作**：M2 基础设施（`fs` / `subprocess` / `shell` / `sandbox` / `storage`，约 22k 行）。
-当前 `exec.rs` 只有 bash 一种执行，需要拆成四个 seam。
+## M2 进度记录
+
+### fs seam（已完成）
+
+`fs.rs`：`FileSystem` trait + `LocalFileSystem`。
+
+**核心设计是 `FsVersion`**。上游 7.3k 行的抽象层里，真正决定正确性的是乐观并发：
+写入必须携带从 `stat` 拿到的版本，不匹配就拒绝。这样「读-改-写」不会静默覆盖别人的修改，
+而是告诉模型「文件变了，重读」。
+
+测试 `a_write_with_a_stale_version_is_refused` 断言**另一个写入者的改动存活**——
+这是这个设计存在的唯一理由。
+
+`FsTarget` 分成 `key`（稳定身份）和 `display_path`（给人看）两个字段。本地后端两者相同，
+但远程后端的 display 是 URI 而 key 不是。接口不假设它们一样。
+
+**一处实现陷阱**：第一版用 `std::sync::Mutex` 守护写入临界区，编译报
+`future cannot be sent between threads safely`——`std` 的 guard 不是 `Send`，跨 `await`
+持有会让 future 无法 spawn。改成 `tokio::sync::Mutex`（`async_path_lock`）。
+
+这已经是同一类错误的**第三次**（`fiber` 的 `start`、`events` 的 `observe_services`、
+现在的 `fs`）。规则很清楚：**任何跨 `await` 的临界区必须用 tokio 的锁**。
+
+**未完成**：`subprocess` / `shell` / `sandbox` / `storage`。
