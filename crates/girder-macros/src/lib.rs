@@ -14,6 +14,7 @@
 use proc_macro::TokenStream;
 
 mod derive;
+mod remote;
 mod schema_path;
 
 /// Derives the schema description of a struct.
@@ -30,4 +31,16 @@ mod schema_path;
 #[proc_macro_derive(Typert, attributes(typert))]
 pub fn derive_typert(input: TokenStream) -> TokenStream {
     derive::expand(input)
+}
+
+/// Marks a function as a Remote method and generates its wire descriptor.
+///
+/// `#[remote(namespace = "session")]` on `fn list(&self, limit: u32)` produces
+/// `list_remote_method() -> Method` describing the parameters and return type. The original function
+/// is emitted unchanged.
+///
+/// A `&self` receiver is not part of the wire signature: the namespace already names the object.
+#[proc_macro_attribute]
+pub fn remote(attr: TokenStream, item: TokenStream) -> TokenStream {
+    remote::expand(attr, item)
 }

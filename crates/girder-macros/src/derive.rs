@@ -132,6 +132,22 @@ fn expand_inner(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
+/// Maps a type to a schema, for the attribute macro.
+///
+/// A different entry point from `schema_for_type` because an attribute sees a `Box<Type>` rather
+/// than the same shape a field does, and because this path has no field attributes to consult.
+pub fn schema_for_public_type(
+    ty: &syn::Type,
+    schema_crate: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    // `&str` and `&T` are references; the wire carries the value, not the borrow.
+    if let syn::Type::Reference(reference) = ty {
+        return schema_for_public_type(&reference.elem, schema_crate);
+    }
+    // A trait object or a function pointer has no schema a client can use.
+    schema_for_type(ty, &TypertAttrs::default(), schema_crate)
+}
+
 /// Maps a Rust type to a schema.
 fn schema_for_type(
     ty: &syn::Type,
