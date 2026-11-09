@@ -158,8 +158,8 @@ pub use paths::{
     join_within,
 };
 pub use projection::{
-    ModelSelectionProjection, Projection, ProjectionError, ProjectionHandle, ProjectionRegistry,
-    Seq as ProjectionSeq, TitleProjection, TurnBoundary,
+    ModelSelectionProjection, ProjectedSession, Projection, ProjectionError, ProjectionHandle,
+    ProjectionRegistry, Seq as ProjectionSeq, TitleProjection, TurnBoundary,
 };
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,

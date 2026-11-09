@@ -641,6 +641,26 @@ let requested_stop = ...                                      // 永远到不了
 
 **19 个测试**，核心两条：重复事件只折叠一次；`fresh replay == incremental fold`。
 
+### Projection 接入 Session（已完成）
+
+`ProjectedSession`：包装任意 `Session`，在 append 成功后折叠事件。
+
+**用包装而非给每个 Session 加字段。** 已有多个 `Session` 实现（内存、文件存储），给每个都加
+projection 支持会让它们各自负责一个**都不拥有**的关注点。需要 projection 的调用方包装一次即可。
+
+**不实现 `Session` trait，是有意的。** 如果实现了，调用方可以通过 trait 调用 `append`
+**绕过折叠**，两者就会悄悄分叉。`append` 是包装自己的方法，保证顺序。
+
+**先写日志，再折叠。** 写入失败时 projection **不推进**，所以重试不会重复折叠。
+
+**`attach()` 先重放已有日志。** 这是恢复的会话正确的原因：projection 反映**整个日志**，
+而不是只有本进程启动之后发生的事。
+
+**序列号由包装自己计数。** 日志不携带序列号——位置就是序列号。包装计数让第一条是 1，
+重复投递可被识别。用计数器而不是每次读日志长度，避免每次写多一次 I/O。
+
+**8 个新测试**，重点是 `the_wrapper_and_a_direct_replay_agree`：包装的缓存和独立重放必须一致。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

@@ -336,3 +336,127 @@ impl Projection for TitleProjection {
         state
     }
 }
+
+// ---- the projection-aware session -------------------------------------------------------------
+
+/// A session wrapper that keeps projections in step with the log.
+///
+/// A wrapper rather than a field on every session: there are already several `Session` implementations
+/// (an in-memory one, a file store), and adding projection awareness to each would make every one of
+/// them responsible for a concern none of them owns. A caller that wants projections wraps its session
+/// once.
+///
+/// # Why the index is tracked here
+///
+/// `ProjectionRegistry::observe` is idempotent per sequence number, but nothing assigns them: the log
+/// does not carry a sequence, because the position *is* the sequence. This wrapper counts appends, so
+/// the first event is 1 and a duplicate delivery is recognisable.
+pub struct ProjectedSession {
+    inner: Arc<dyn crate::session::Session>,
+    projections: Arc<ProjectionRegistry>,
+    /// The sequence number of the last appended event.
+    ///
+    /// A counter rather than the log length, because reading the length per append would be a second
+    /// I/O per write.
+    cursor: std::sync::atomic::AtomicU64,
+}
+
+impl ProjectedSession {
+    /// Wraps a session, folding its existing log first.
+    ///
+    /// Replaying at construction is what makes a resumed session correct: the projections reflect the
+    /// whole log rather than only what happens after this process started.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session's replay error. A wrapper whose projections disagree with the log is worse
+    /// than no wrapper, so a failed replay refuses to construct.
+    pub async fn attach(
+        inner: Arc<dyn crate::session::Session>,
+        projections: Arc<ProjectionRegistry>,
+    ) -> Result<Self, crate::session::SessionError> {
+        let events = inner.replay().await?;
+        let numbered: Vec<(Seq, crate::session::SessionEvent)> = events
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| (u64::try_from(index).unwrap_or(0) + 1, event))
+            .collect();
+        let cursor = numbered.last().map_or(0, |(seq, _)| *seq);
+        projections.replay(&numbered);
+        Ok(Self {
+            inner,
+            projections,
+            cursor: std::sync::atomic::AtomicU64::new(cursor),
+        })
+    }
+
+    /// The projections this wrapper maintains.
+    #[must_use]
+    pub fn projections(&self) -> &Arc<ProjectionRegistry> {
+        &self.projections
+    }
+
+    /// The session being wrapped.
+    #[must_use]
+    pub fn inner(&self) -> &Arc<dyn crate::session::Session> {
+        &self.inner
+    }
+
+    /// How many events have been folded.
+    #[must_use]
+    pub fn cursor(&self) -> u64 {
+        self.cursor.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Appends an event and folds it.
+    ///
+    /// A separate method rather than an `impl Session`, deliberately: folding must happen **after**
+    /// the write succeeds. Providing `Session` would let a caller call `append` through the trait and
+    /// bypass the fold, and the two would silently diverge.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session's error. The projection is **not** advanced on failure, so a caller that
+    /// retries does not fold an event twice.
+    pub async fn append(
+        &self,
+        event: crate::session::SessionEvent,
+    ) -> Result<(), crate::session::SessionError> {
+        self.inner.append(event.clone()).await?;
+        let seq = self
+            .cursor
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.projections.observe(&event, seq);
+        Ok(())
+    }
+
+    /// Appends several events in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failure; events before it are already written and folded, which is the same
+    /// partial-application a caller would see appending one at a time.
+    pub async fn append_all(
+        &self,
+        events: impl IntoIterator<Item = crate::session::SessionEvent>,
+    ) -> Result<(), crate::session::SessionError> {
+        for event in events {
+            self.append(event).await?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for ProjectedSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The folded state is deliberately not printed: a projection can hold a transcript, and a
+        // debug line should name it rather than dump it. The keys and the cursor are what a caller
+        // actually needs from this type.
+        f.debug_struct("ProjectedSession")
+            .field("inner", &"<session>")
+            .field("projections", &self.projections.keys())
+            .field("cursor", &self.cursor())
+            .finish()
+    }
+}

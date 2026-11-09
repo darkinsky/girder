@@ -299,3 +299,182 @@ fn a_content_block_event_is_ignored_without_corrupting_state() {
 
     assert_eq!(registry.read("turnBoundary").unwrap()["lastTurn"], 1);
 }
+
+// ---- the projection-aware session -------------------------------------------------------------
+
+use girder_core::{MemorySession, ProjectedSession, Session};
+
+fn session() -> Arc<MemorySession> {
+    Arc::new(MemorySession::new())
+}
+
+#[tokio::test]
+async fn attaching_replays_an_existing_log() {
+    // A resumed session must reflect the whole log, not only what happens after this process starts.
+    let inner = session();
+    inner.append(turn_start(1)).await.unwrap();
+    inner.append(turn_start(2)).await.unwrap();
+
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .expect("attached");
+
+    let state = wrapper.projections().read("turnBoundary").unwrap();
+    assert_eq!(state["lastTurn"], 2);
+    assert_eq!(wrapper.cursor(), 2);
+}
+
+#[tokio::test]
+async fn an_append_is_folded() {
+    let inner = session();
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .unwrap();
+
+    wrapper.append(turn_start(1)).await.unwrap();
+
+    assert_eq!(
+        wrapper.projections().read("turnBoundary").unwrap()["lastTurn"],
+        1
+    );
+    assert_eq!(wrapper.cursor(), 1);
+}
+
+#[tokio::test]
+async fn several_appends_fold_in_order() {
+    let inner = session();
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .unwrap();
+
+    wrapper
+        .append_all(vec![
+            turn_start(1),
+            step_start(1, 1),
+            turn_end(1),
+            turn_start(2),
+        ])
+        .await
+        .unwrap();
+
+    let state = wrapper.projections().read("turnBoundary").unwrap();
+    assert_eq!(state["lastTurn"], 2);
+    // The last event is `turn_start(2)` at sequence 4, so that turn is open.
+    assert_eq!(state["openTurnStartSeq"], 4);
+    assert_eq!(wrapper.cursor(), 4);
+}
+
+#[tokio::test]
+async fn the_wrapper_and_a_direct_replay_agree() {
+    // The property that makes the cache trustworthy.
+    let inner = session();
+    inner.append(turn_start(1)).await.unwrap();
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .unwrap();
+    wrapper.append(step_start(1, 1)).await.unwrap();
+    wrapper.append(turn_end(1)).await.unwrap();
+
+    // Replay the log independently.
+    let events = inner.replay().await.unwrap();
+    let numbered: Vec<(u64, SessionEvent)> = events
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| (i as u64 + 1, e))
+        .collect();
+    let fresh = registry();
+    fresh.replay(&numbered);
+
+    assert_eq!(wrapper.projections().view(), fresh.view());
+}
+
+#[tokio::test]
+async fn the_log_and_the_projection_stay_in_step() {
+    // Every appended event appears in the log exactly once and advances the cursor once.
+    let inner = session();
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .unwrap();
+
+    for turn in 1..=5 {
+        wrapper.append(turn_start(turn)).await.unwrap();
+    }
+
+    assert_eq!(inner.replay().await.unwrap().len(), 5);
+    assert_eq!(wrapper.cursor(), 5);
+    assert_eq!(
+        wrapper.projections().read("turnBoundary").unwrap()["lastTurn"],
+        5
+    );
+}
+
+#[tokio::test]
+async fn attaching_to_an_empty_log_starts_at_the_initial_state() {
+    let inner = session();
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .unwrap();
+
+    assert_eq!(wrapper.cursor(), 0);
+    assert_eq!(
+        wrapper.projections().read("turnBoundary").unwrap()["lastTurn"],
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_multi_projection_wrapper_folds_them_all() {
+    let inner = session();
+    let mut projections = ProjectionRegistry::new();
+    projections.register(Arc::new(TurnBoundary)).unwrap();
+    projections.register(Arc::new(TitleProjection)).unwrap();
+    projections
+        .register(Arc::new(girder_core::ModelSelectionProjection))
+        .unwrap();
+
+    let wrapper = ProjectedSession::attach(
+        Arc::clone(&inner) as Arc<dyn Session>,
+        Arc::new(projections),
+    )
+    .await
+    .unwrap();
+
+    wrapper.append(turn_start(1)).await.unwrap();
+    wrapper
+        .append(SessionEvent::SessionTitle {
+            title: "a title".to_owned(),
+            message_seqs: vec![1],
+            source: "human".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        wrapper.projections().read("turnBoundary").unwrap()["lastTurn"],
+        1
+    );
+    assert_eq!(
+        wrapper.projections().read("title").unwrap()["title"],
+        "a title"
+    );
+}
+
+#[tokio::test]
+async fn the_debug_form_does_not_print_the_state() {
+    // A projection can hold a transcript; a debug line should name it, not dump it.
+    let inner = session();
+    let wrapper =
+        ProjectedSession::attach(Arc::clone(&inner) as Arc<dyn Session>, Arc::new(registry()))
+            .await
+            .unwrap();
+
+    let text = format!("{wrapper:?}");
+    assert!(text.contains("ProjectedSession"));
+    assert!(text.contains("turnBoundary"));
+}
