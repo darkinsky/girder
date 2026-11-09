@@ -51,6 +51,7 @@
 //! ```
 
 mod agent_loop;
+mod attachment;
 mod brand;
 mod compaction;
 mod config;
@@ -77,6 +78,11 @@ mod subprocess;
 mod tools;
 
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
+pub use attachment::{
+    ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore, DecodedImage, EncodedImage, ImageRef,
+    Limits as AttachmentLimits, MemoryStore, admit_batch, admit_image, decode_base64_canonical,
+    detect_media_type, encode_base64, storage_key as attachment_storage_key, store_batch,
+};
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
