@@ -376,6 +376,25 @@ prefix cache 因此被复用而不是作废。换成单独 system prompt 会改�
 实测输出保留了 `crates/core/src/retry.rs`、`RetryPolicy`、`run_with_retry`、
 `jitter_never_produces_zero` 这些**精确标识符**，以及「jitter 结果永不为零」的设计决策。
 
+### 多 provider 注册与模型目录（已完成）
+
+`providers.rs`：`RouteRegistry` / `Route` / `ModelInfo` / `Providers` / `MountedProvider`。
+
+**路由是寻址单位，不是 provider。** 一个 provider 可以服务多个模型，一个部署也可以把同一个
+provider 挂载两次用不同凭据（个人 key 和组织 key）。路由名是调用方选的，所以两次挂载互不遮蔽；
+名字也在适配器上而不是 provider 上。
+
+**模型目录存在的原因**：超过窗口的请求要等一次往返才被拒绝，而拒绝信息是笼统的
+"context length exceeded"，**没有数字**。提前知道窗口才能让压缩在发送前决定。
+
+**未知窗口不能当作 0。** `fits()` 在窗口未知时返回 `None` 而不是 `false`——「装不下」是一个
+需要知道窗口才能下的断言，对未知窗口回答 `false` 会让所有发往该模型的请求都被拒绝。
+
+**重复路由名被拒绝。** 静默替换会让配置重载后，已记录的路由名指向另一个 provider。
+
+**真实 API 验证**：`a_registered_route_serves_a_real_request` 走完整链路
+catalogue → resolve → 真实请求，并断言路由声明了窗口（没有窗口就无法驱动压缩）。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

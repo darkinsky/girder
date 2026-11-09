@@ -66,6 +66,7 @@ mod llm;
 mod llm_deepseek;
 mod message;
 mod paths;
+mod providers;
 mod registry;
 mod remote;
 mod retry;
@@ -138,6 +139,10 @@ pub use paths::{
     AGENTS_HOME_DISPLAY, AGENTS_HOME_ENV, HARNESS_HOME_DISPLAY, HARNESS_HOME_ENV, Root,
     RootEnvironment, RootError, abbreviate_home, agents_home, expand_home, harness_home, home_dir,
     join_within,
+};
+pub use providers::{
+    Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
+    RouteRegistry, deepseek_route, fits as model_fits, window_of,
 };
 pub use registry::{Label, Registry, RegistryContext, RegistryError};
 pub use remote::{
