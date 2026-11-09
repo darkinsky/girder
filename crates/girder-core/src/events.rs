@@ -214,6 +214,24 @@ impl<T: Send + 'static, A: Send + Sync + Clone + 'static> std::fmt::Debug for Ch
 /// Identifies one registration, so it can be removed without searching by value.
 pub type ListenerId = u64;
 
+/// An opaque identity used to route scoped events.
+///
+/// Upstream's `dsh-scope` attaches one to a listener and one to a dispatch: a listener receives an
+/// event when its key is the dispatching key or an ancestor of it. That is how an agent-scoped
+/// event reaches the agent's own listeners plus the harness-wide ones, but not a sibling agent's.
+///
+/// A `u64` rather than a pointer because these are compared and stored, never dereferenced.
+pub type ScopeKey = u64;
+
+/// Where a listener sits in the scope tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListenerScope {
+    /// Receives every dispatch of this event, regardless of scope.
+    Global,
+    /// Receives dispatches tagged with this key or a descendant of it.
+    Scoped(ScopeKey),
+}
+
 /// Where a listener goes relative to the ones already registered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Order {
@@ -250,14 +268,27 @@ impl<L: ?Sized> Default for Slots<L> {
 struct Entry<L: ?Sized> {
     id: ListenerId,
     owner: &'static str,
+    scope: ListenerScope,
     listener: Arc<L>,
 }
 
 impl<L: ?Sized> Slots<L> {
     fn push(&mut self, id: ListenerId, owner: &'static str, order: Order, listener: Arc<L>) {
+        self.push_with_scope(id, owner, order, ListenerScope::Global, listener);
+    }
+
+    fn push_with_scope(
+        &mut self,
+        id: ListenerId,
+        owner: &'static str,
+        order: Order,
+        scope: ListenerScope,
+        listener: Arc<L>,
+    ) {
         let entry = Entry {
             id,
             owner,
+            scope,
             listener,
         };
         match order {
@@ -272,6 +303,14 @@ impl<L: ?Sized> Slots<L> {
         self.entries
             .iter()
             .map(|entry| Arc::clone(&entry.listener))
+            .collect()
+    }
+
+    /// Listeners paired with their scope, for a scoped dispatch.
+    fn snapshot_scoped(&self) -> Vec<(ListenerScope, Arc<L>)> {
+        self.entries
+            .iter()
+            .map(|entry| (entry.scope, Arc::clone(&entry.listener)))
             .collect()
     }
 }
@@ -419,6 +458,69 @@ impl EventBus {
         self.push(E::NAME, &slots, owner, order, Arc::new(listener))
     }
 
+    /// Registers a listener that only receives dispatches in its scope.
+    ///
+    /// Upstream's `ctx.on` under a `Scoped<T>` carrier. The listener is invoked when the dispatching
+    /// key equals `scope` or descends from it — never for a sibling subtree.
+    pub fn on_scoped<E, F>(
+        &self,
+        owner: &'static str,
+        order: Order,
+        scope: ScopeKey,
+        listener: F,
+    ) -> ListenerId
+    where
+        E: Event,
+        F: Fn(E::Args) + Send + Sync + 'static,
+    {
+        let slots = self.slots::<dyn Fn(E::Args) + Send + Sync>(E::NAME);
+        let id = self
+            .lock()
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_with_scope(
+                id,
+                owner,
+                order,
+                ListenerScope::Scoped(scope),
+                Arc::new(listener),
+            );
+        self.bump(E::NAME, 1);
+        id
+    }
+
+    /// Dispatches an event inside a scope.
+    ///
+    /// Listeners registered with [`EventBus::on_scoped`] see it only if their key is an ancestor;
+    /// global listeners always see it.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the value is cloned once per admitted listener, not consumed by the call"
+    )]
+    pub fn emit_scoped<E: Event>(&self, scope: ScopeKey, args: E::Args) {
+        let slots = self.slots::<dyn Fn(E::Args) + Send + Sync>(E::NAME);
+        let listeners = slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot_scoped();
+        for (listener_scope, listener) in listeners {
+            // A global listener always sees the event; a scoped one sees it only when its key is
+            // the dispatching key or an ancestor, which is how a harness-wide listener and the
+            // owning agent both receive it while a sibling agent does not.
+            let admitted = match listener_scope {
+                ListenerScope::Global => true,
+                ListenerScope::Scoped(key) => scope_is_within(scope, key),
+            };
+            if admitted {
+                listener(args.clone());
+            }
+        }
+        self.announce(E::NAME, &args);
+    }
+
     /// Registers a listener for a [`Parallel`] event.
     pub fn on_parallel<E, F>(&self, owner: &'static str, order: Order, listener: F) -> ListenerId
     where
@@ -564,9 +666,13 @@ impl EventBus {
         let listeners = slots
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .snapshot();
-        for listener in listeners {
-            listener(args.clone());
+            .snapshot_scoped();
+        for (scope, listener) in listeners {
+            // An unscoped dispatch carries no subtree, so only global listeners receive it. A
+            // scoped listener admitted here would see events from subtrees it never opted into.
+            if scope == ListenerScope::Global {
+                listener(args.clone());
+            }
         }
         self.announce(E::NAME, &args);
     }
@@ -757,5 +863,39 @@ impl EventBus {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BusInner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Whether `child` is `ancestor` or a descendant of it.
+///
+/// Keys are minted as `parent << 8 | n`, so an ancestor is a prefix and the test is a shift-and-
+/// compare. Encoding the path in the number avoids storing a parent map and makes the check a
+/// constant-time comparison rather than a walk.
+fn scope_is_within(child: ScopeKey, ancestor: ScopeKey) -> bool {
+    if ancestor == 0 {
+        // The root scope owns everything.
+        return true;
+    }
+    let mut cursor = child;
+    loop {
+        if cursor == ancestor {
+            return true;
+        }
+        if cursor < 256 {
+            // Reached the root without matching.
+            return false;
+        }
+        cursor >>= 8;
+    }
+}
+
+/// Mints a child scope key under `parent`.
+#[must_use]
+pub fn child_scope(parent: ScopeKey, index: u8) -> ScopeKey {
+    if parent == 0 {
+        // Depth one: the root is 0, so the first child starts at 1.
+        ScopeKey::from(index).max(1)
+    } else {
+        (parent << 8) | ScopeKey::from(index)
     }
 }

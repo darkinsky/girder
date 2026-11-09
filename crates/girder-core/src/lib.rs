@@ -72,8 +72,8 @@ pub use config::{
     When, parse_entries, parse_patches,
 };
 pub use events::{
-    Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, Next, ObservedEvent, Order,
-    Parallel, Serial, Terminal, Waterfall,
+    Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, ListenerScope, Next,
+    ObservedEvent, Order, Parallel, ScopeKey, Serial, Terminal, Waterfall, child_scope,
 };
 pub use exec::{
     AdvisorySandbox, Enforcement, ExecError, ExecOptions, ExecOutput, PathPolicy, Sandbox,
@@ -87,7 +87,7 @@ pub use llm::{
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
 };
-pub use registry::{Registry, RegistryContext, RegistryError};
+pub use registry::{Label, Registry, RegistryContext, RegistryError};
 pub use remote::{
     DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionAddress,
     SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,

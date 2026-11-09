@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use girder_core::{BoxFut, Registry, RegistryError, ServiceKey};
+use girder_core::{BoxFut, Label, Registry, RegistryError, ServiceKey};
 
 // ---- the greeter from the plan's acceptance list -------------------------------------------------
 
@@ -310,5 +310,136 @@ fn a_stale_type_under_a_reused_id_resolves_to_nothing_rather_than_wrong_type() {
     assert!(
         matches!(retyped, Err(RegistryError::Missing { id: "greeter" })),
         "a stale key must not receive another key's service"
+    );
+}
+
+// ---- isolation (M0 of the v2 plan) --------------------------------------------------------------
+
+#[test]
+fn an_isolated_child_does_not_see_the_parents_service() {
+    // Cordis shadows a name in a child context; the parent's provider must be invisible below it.
+    let registry = Registry::new();
+    let root = registry.context("root");
+    root.register::<GreeterKey>(Arc::new(English)).unwrap();
+
+    let child = registry.isolate(&root, GreeterKey::ID, None);
+
+    assert!(
+        registry.get::<GreeterKey>().is_ok(),
+        "the parent still resolves"
+    );
+    assert!(
+        child.get::<GreeterKey>().is_err(),
+        "the isolated child must not inherit the parent's provider"
+    );
+}
+
+#[test]
+fn an_isolated_child_can_publish_its_own_service_of_the_same_name() {
+    let registry = Registry::new();
+    let root = registry.context("root");
+    root.register::<GreeterKey>(Arc::new(English)).unwrap();
+    let child = registry.isolate(&root, GreeterKey::ID, None);
+
+    // The same id, a different provider, no conflict.
+    child.register::<GreeterKey>(Arc::new(Verbose)).unwrap();
+
+    assert_eq!(registry.get::<GreeterKey>().unwrap().greet("x"), "hello, x");
+    assert_eq!(
+        child.get::<GreeterKey>().unwrap().greet("x"),
+        "greetings, x"
+    );
+}
+
+#[test]
+fn two_children_without_a_shared_label_are_separate() {
+    let registry = Registry::new();
+    let root = registry.context("root");
+    let a = registry.isolate(&root, GreeterKey::ID, None);
+    let b = registry.isolate(&root, GreeterKey::ID, None);
+
+    a.register::<GreeterKey>(Arc::new(English)).unwrap();
+    b.register::<GreeterKey>(Arc::new(Verbose)).unwrap();
+
+    assert_eq!(a.get::<GreeterKey>().unwrap().greet("x"), "hello, x");
+    assert_eq!(b.get::<GreeterKey>().unwrap().greet("x"), "greetings, x");
+}
+
+#[test]
+fn two_children_sharing_a_label_share_their_provider() {
+    // This is what makes `isolate` useful for a fleet: each agent owns a `session` but they share
+    // one `llm`.
+    let registry = Registry::new();
+    let root = registry.context("root");
+    let shared: Label = 42;
+    let a = registry.isolate(&root, GreeterKey::ID, Some(shared));
+    let b = registry.isolate(&root, GreeterKey::ID, Some(shared));
+
+    a.register::<GreeterKey>(Arc::new(English)).unwrap();
+
+    assert_eq!(b.get::<GreeterKey>().unwrap().greet("x"), "hello, x");
+}
+
+#[test]
+fn isolating_one_name_leaves_others_at_the_root() {
+    // Isolation is per name: a child that isolates `greeter` still sees the parent's other services.
+    let registry = Registry::new();
+    let root = registry.context("root");
+    root.register::<GreeterKey>(Arc::new(English)).unwrap();
+
+    let child = registry.isolate(&root, "some.other.service", None);
+
+    assert_eq!(
+        child.get::<GreeterKey>().unwrap().greet("x"),
+        "hello, x",
+        "an unrelated name must not be isolated"
+    );
+}
+
+#[test]
+fn an_isolated_child_can_read_a_shared_service_published_at_its_label() {
+    // The reverse direction of sharing: a group publishes once and every member reads it.
+    let registry = Registry::new();
+    let root = registry.context("root");
+    let group_label: Label = 7;
+    let owner = registry.isolate(&root, GreeterKey::ID, Some(group_label));
+    let member = registry.isolate(&root, GreeterKey::ID, Some(group_label));
+
+    owner.register::<GreeterKey>(Arc::new(English)).unwrap();
+
+    assert!(member.get::<GreeterKey>().is_ok());
+    assert!(
+        root.get::<GreeterKey>().is_err(),
+        "the root must not see a service published at another label"
+    );
+}
+
+#[test]
+fn labels_are_unique_when_not_supplied() {
+    let registry = Registry::new();
+    let root = registry.context("root");
+    let a = registry.isolate(&root, "x", None);
+    let b = registry.isolate(&root, "x", None);
+
+    assert_ne!(a.label_for("x"), b.label_for("x"));
+    assert_ne!(
+        a.label_for("x"),
+        0,
+        "0 is the root label and must not be handed out"
+    );
+}
+
+#[test]
+fn a_duplicate_at_the_same_label_is_still_refused() {
+    // Isolation must not disable the conflict check within a label.
+    let registry = Registry::new();
+    let root = registry.context("root");
+    let a = registry.isolate(&root, GreeterKey::ID, Some(9));
+    let b = registry.isolate(&root, GreeterKey::ID, Some(9));
+
+    a.register::<GreeterKey>(Arc::new(English)).unwrap();
+    assert!(
+        b.register::<GreeterKey>(Arc::new(Verbose)).is_err(),
+        "two providers at one label is the same conflict as at the root"
     );
 }

@@ -604,3 +604,131 @@ fn a_dropped_receiver_is_pruned_on_the_next_dispatch() {
 
     assert_eq!(bus.observer_count(), 0);
 }
+
+// ---- scoped dispatch (M0 of the v2 plan) --------------------------------------------------------
+
+use girder_core::{ScopeKey, child_scope};
+
+#[test]
+fn a_global_listener_sees_every_scope() {
+    let bus = EventBus::new();
+    let seen = Arc::new(AtomicUsize::new(0));
+    {
+        let seen = Arc::clone(&seen);
+        bus.on::<Ping, _>("global", Order::Append, move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    bus.emit_scoped::<Ping>(child_scope(0, 1), 1);
+    bus.emit_scoped::<Ping>(child_scope(0, 2), 2);
+
+    assert_eq!(seen.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_scoped_listener_sees_only_its_own_subtree() {
+    // The property `dsh-scope` exists for: an agent's events reach that agent and the harness, not
+    // a sibling agent.
+    let bus = EventBus::new();
+    let agent_a = child_scope(0, 1);
+    let agent_b = child_scope(0, 2);
+
+    let seen_a = Arc::new(AtomicUsize::new(0));
+    {
+        let seen = Arc::clone(&seen_a);
+        bus.on_scoped::<Ping, _>("a", Order::Append, agent_a, move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    bus.emit_scoped::<Ping>(agent_a, 1);
+    assert_eq!(seen_a.load(Ordering::SeqCst), 1, "its own event arrives");
+
+    bus.emit_scoped::<Ping>(agent_b, 2);
+    assert_eq!(
+        seen_a.load(Ordering::SeqCst),
+        1,
+        "a sibling's event must not arrive"
+    );
+}
+
+#[test]
+fn an_ancestor_listener_sees_a_descendants_event() {
+    // Events extend *up* the chain: a harness-level listener observes every agent's events.
+    let bus = EventBus::new();
+    let root_scope: ScopeKey = child_scope(0, 1);
+    let deeper = child_scope(root_scope, 3);
+
+    let seen = Arc::new(AtomicUsize::new(0));
+    {
+        let seen = Arc::clone(&seen);
+        bus.on_scoped::<Ping, _>("ancestor", Order::Append, root_scope, move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    bus.emit_scoped::<Ping>(deeper, 1);
+
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        1,
+        "an ancestor admits descendants"
+    );
+}
+
+#[test]
+fn a_descendant_listener_does_not_see_an_ancestors_event() {
+    let bus = EventBus::new();
+    let root_scope: ScopeKey = child_scope(0, 1);
+    let deeper = child_scope(root_scope, 3);
+
+    let seen = Arc::new(AtomicUsize::new(0));
+    {
+        let seen = Arc::clone(&seen);
+        bus.on_scoped::<Ping, _>("descendant", Order::Append, deeper, move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    bus.emit_scoped::<Ping>(root_scope, 1);
+
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        0,
+        "admission extends up the chain, never down"
+    );
+}
+
+#[test]
+fn scope_keys_encode_their_path() {
+    // Keys are `parent << 8 | index`, so ancestry is a shift-and-compare rather than a parent map.
+    let root = child_scope(0, 2);
+    let child = child_scope(root, 5);
+    let grandchild = child_scope(child, 7);
+
+    assert_ne!(root, child);
+    assert_ne!(child, grandchild);
+    // Two different roots never collide.
+    assert_ne!(child_scope(0, 1), child_scope(0, 2));
+    // Siblings under one parent differ.
+    assert_ne!(child_scope(root, 1), child_scope(root, 2));
+}
+
+#[test]
+fn an_unscoped_dispatch_reaches_only_global_listeners() {
+    // `emit` has no scope, so a scoped listener must not receive it: it would see events from
+    // unknown subtrees.
+    let bus = EventBus::new();
+    let seen = Arc::new(AtomicUsize::new(0));
+    {
+        let seen = Arc::clone(&seen);
+        bus.on_scoped::<Ping, _>("scoped", Order::Append, child_scope(0, 1), move |_| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    bus.emit::<Ping>(1);
+
+    assert_eq!(seen.load(Ordering::SeqCst), 0);
+}

@@ -39,13 +39,40 @@ pub enum RegistryError {
 }
 
 /// Published services, keyed by their [`ServiceKey::ID`].
-pub(crate) type ServiceTable = BTreeMap<&'static str, Entry>;
+/// A published service's key: its id plus the isolation label it was published under.
+///
+/// Cordis isolates by shadowing a name in a child context, so the same name can resolve to
+/// different implementations in different subtrees. A flat table keyed by id cannot express that;
+/// keying by `(id, label)` can, and a lookup with the default label finds the un-isolated entry.
+pub(crate) type ServiceTable = BTreeMap<(&'static str, Label), Entry>;
+
+/// An isolation label.
+///
+/// `0` is the root label: a service published and read without isolation. Any other value comes
+/// from [`Registry::isolate`], and two isolated subtrees that share a label share implementations —
+/// which is what makes `isolate` useful for a fleet of agents that all want their own `session` but
+/// a shared `llm`.
+pub type Label = u64;
 
 /// State shared by the registry and every context handle it hands out.
-#[derive(Default)]
 pub(crate) struct RegistryInner {
     pub(crate) services: Mutex<ServiceTable>,
     pub(crate) scope: Scope,
+    /// Next label to hand out.
+    ///
+    /// Starts at 1 because 0 is the root label: a service with no isolation must not collide with
+    /// the first isolated subtree.
+    pub(crate) next_label: std::sync::atomic::AtomicU64,
+}
+
+impl Default for RegistryInner {
+    fn default() -> Self {
+        Self {
+            services: Mutex::new(ServiceTable::new()),
+            scope: Scope::default(),
+            next_label: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
 }
 
 impl RegistryInner {
@@ -81,7 +108,48 @@ impl Registry {
         RegistryContext {
             plugin,
             inner: Arc::clone(&self.inner),
+            isolated: Arc::new(BTreeMap::new()),
         }
+    }
+
+    /// Returns a child handle that resolves `id` against its own label.
+    ///
+    /// A service published through the returned handle is invisible to the parent, and a lookup
+    /// through it never sees the parent's provider. Two children that pass the same `label` share
+    /// implementations, which is how a group of agents can each own a `session` while sharing one
+    /// `llm`.
+    ///
+    /// The id is a `&'static str` rather than a `ServiceKey` because isolation is decided per name,
+    /// not per type: upstream isolates `'llm'`, and a key type would force a generic that the
+    /// config layer cannot supply.
+    #[must_use]
+    pub fn isolate(
+        &self,
+        context: &RegistryContext,
+        id: &'static str,
+        label: Option<Label>,
+    ) -> RegistryContext {
+        let label = label.unwrap_or_else(|| {
+            self.inner
+                .next_label
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        });
+        let mut isolated = (*context.isolated).clone();
+        isolated.insert(id, label);
+        RegistryContext {
+            plugin: context.plugin,
+            inner: Arc::clone(&self.inner),
+            isolated: Arc::new(isolated),
+        }
+    }
+
+    /// Resolves a service at the root label.
+    pub fn get_at<K: ServiceKey>(&self, label: Label) -> Result<Arc<K::Service>, RegistryError> {
+        let services = self.inner.lock();
+        let entry = services
+            .get(&(K::ID, label))
+            .ok_or(RegistryError::Missing { id: K::ID })?;
+        entry.get::<K>().ok_or(RegistryError::Missing { id: K::ID })
     }
 
     /// Resolves a service that a plugin has published.
@@ -90,17 +158,13 @@ impl Registry {
     ///
     /// Returns [`RegistryError::Missing`] when no plugin publishes `K::ID`.
     pub fn get<K: ServiceKey>(&self) -> Result<Arc<K::Service>, RegistryError> {
-        let services = self.inner.lock();
-        let entry = services
-            .get(K::ID)
-            .ok_or(RegistryError::Missing { id: K::ID })?;
-        entry.get::<K>().ok_or(RegistryError::Missing { id: K::ID })
+        self.get_at::<K>(0)
     }
 
-    /// Returns true when some plugin publishes `K::ID`.
+    /// Returns true when some plugin publishes `K::ID` at the root label.
     #[must_use]
     pub fn contains<K: ServiceKey>(&self) -> bool {
-        self.inner.lock().contains_key(K::ID)
+        self.inner.lock().contains_key(&(K::ID, 0))
     }
 
     /// Number of published services.
@@ -133,6 +197,10 @@ impl Registry {
 pub struct RegistryContext {
     plugin: &'static str,
     inner: Arc<RegistryInner>,
+    /// Isolation labels in effect for this handle, by service id.
+    ///
+    /// Only ids that were explicitly isolated appear; everything else resolves at the root label.
+    isolated: Arc<BTreeMap<&'static str, Label>>,
 }
 
 impl RegistryContext {
@@ -155,15 +223,16 @@ impl RegistryContext {
     /// is not silently replaced: replacement would make resolution depend on plugin apply order,
     /// and upstream observed that bug whenever two plugins claimed the same name.
     pub fn register<K: ServiceKey>(&self, service: Arc<K::Service>) -> Result<(), RegistryError> {
+        let key = (K::ID, self.label_for(K::ID));
         let mut services = self.inner.lock();
-        if let Some(existing) = services.get(K::ID) {
+        if let Some(existing) = services.get(&key) {
             return Err(RegistryError::Duplicate {
                 id: K::ID,
                 existing: existing.plugin,
                 plugin: self.plugin,
             });
         }
-        services.insert(K::ID, Entry::new(self.plugin, service));
+        services.insert(key, Entry::new(self.plugin, service));
         Ok(())
     }
 
@@ -186,8 +255,14 @@ impl RegistryContext {
     pub fn get<K: ServiceKey>(&self) -> Result<Arc<K::Service>, RegistryError> {
         let services = self.inner.lock();
         let entry = services
-            .get(K::ID)
+            .get(&(K::ID, self.label_for(K::ID)))
             .ok_or(RegistryError::Missing { id: K::ID })?;
         entry.get::<K>().ok_or(RegistryError::Missing { id: K::ID })
+    }
+
+    /// The label this handle resolves `id` at.
+    #[must_use]
+    pub fn label_for(&self, id: &str) -> Label {
+        self.isolated.get(id).copied().unwrap_or(0)
     }
 }
