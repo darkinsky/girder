@@ -25,10 +25,8 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::brand::ToolCallId;
 use crate::scope::BoxFut;
-
-/// A provider-issued identity for one tool call, correlating a call with its result.
-pub type ToolCallId = String;
 
 /// A boxed chunk stream.
 ///

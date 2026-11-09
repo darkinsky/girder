@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use girder_core::{
     AdvisorySandbox, AgentId, Depth, DepthLimitedTools, Enforcement, EventBus, LoopContext,
-    MemorySession, PathPolicy, Sandbox, Session, ToolDefinition, ToolRegistry, ToolRegistryView,
-    landlock_abi,
+    MemorySession, PathPolicy, Sandbox, Session, ToolCallId, ToolDefinition, ToolRegistry,
+    ToolRegistryView, landlock_abi,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -135,7 +135,7 @@ fn context_with(
             Arc::new(MemorySession::new()) as Arc<dyn Session>,
             Arc::new(EventBus::new()),
             "test-model",
-            AgentId("agent".to_owned()),
+            AgentId::new("agent".to_owned()).expect("valid test id"),
         )
         .with_depth(depth, max_depth),
     )
@@ -193,10 +193,10 @@ async fn the_tool_reports_a_refusal_as_a_model_facing_result() {
     let tool = girder_core::subagent_tool(Arc::clone(&ctx), 2);
     let run_context = girder_core::ToolRunContext {
         execution: girder_core::ToolExecution {
-            call_id: "c1".to_owned(),
+            call_id: ToolCallId::new("c1").expect("valid test id"),
             name: "subagent".to_owned(),
             arguments: "{}".to_owned(),
-            agent_id: AgentId("agent".to_owned()),
+            agent_id: AgentId::new("agent".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
     };
@@ -224,10 +224,10 @@ async fn the_tool_rejects_an_empty_prompt() {
     let tool = girder_core::subagent_tool(ctx, 2);
     let run_context = girder_core::ToolRunContext {
         execution: girder_core::ToolExecution {
-            call_id: "c1".to_owned(),
+            call_id: ToolCallId::new("c1").expect("valid test id"),
             name: "subagent".to_owned(),
             arguments: "{}".to_owned(),
-            agent_id: AgentId("agent".to_owned()),
+            agent_id: AgentId::new("agent".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
     };
@@ -312,7 +312,7 @@ fn a_delegation_result_renders_for_the_parent_model() {
     let result = girder_core::DelegationResult {
         text: "the answer".to_owned(),
         turns: 3,
-        child_id: AgentId("child".to_owned()),
+        child_id: AgentId::new("child".to_owned()).expect("valid test id"),
     };
     let tool_result = result.to_tool_result();
     assert!(!tool_result.is_error);
@@ -325,7 +325,7 @@ fn an_empty_child_answer_is_a_failure_the_parent_can_see() {
     let result = girder_core::DelegationResult {
         text: "   ".to_owned(),
         turns: 2,
-        child_id: AgentId("child".to_owned()),
+        child_id: AgentId::new("child".to_owned()).expect("valid test id"),
     };
     let tool_result = result.to_tool_result();
     assert!(tool_result.is_error);

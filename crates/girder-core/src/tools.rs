@@ -24,24 +24,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::{ContentBlock, ToolCallId, ToolSchema};
+use crate::brand::{AgentId, ToolCallId};
+use crate::llm::{ContentBlock, ToolSchema};
 use crate::scope::BoxFut;
-
-/// Identity of the agent that requested a call.
-///
-/// Explicit rather than ambient. Upstream reads this from `AsyncLocalStorage`; Rust cannot propagate
-/// that across `tokio::spawn` (measured in phase 1), so the id travels in the execution context.
-/// See `docs/phase4-interfaces.md` decision two.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct AgentId(pub String);
-
-impl AgentId {
-    /// The id as a string slice.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 /// What a tool is about to be asked to do.
 #[derive(Clone, Debug, Serialize)]

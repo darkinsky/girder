@@ -12,9 +12,9 @@ use futures::StreamExt;
 use girder_core::{
     AgentId, AssembleError, AssistantMessage, ChunkStream, ContentBlock, EventBus, FinishReason,
     LlmError, LlmProvider, LlmRequest, LoopContext, LoopError, LoopStep, MemorySession,
-    PostToolDecision, PreToolDecision, Session, SessionEvent, StreamChunk, ToolDefinition,
-    ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
-    ToolResult,
+    PostToolDecision, PreToolDecision, Session, SessionEvent, StreamChunk, ToolCallId,
+    ToolDefinition, ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry,
+    ToolRegistryView, ToolResult,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -113,14 +113,14 @@ fn tool_call_chunks(id: &str, name: &str, arguments: &str) -> Vec<StreamChunk> {
         },
         StreamChunk::ToolCallDelta {
             index: 0,
-            id: id.to_owned(),
+            id: ToolCallId::new(id).expect("valid test id"),
             name: Some(name.to_owned()),
             arguments_delta: arguments.to_owned(),
         },
         StreamChunk::BlockEnd {
             index: 0,
             block: ContentBlock::ToolCall {
-                id: id.to_owned(),
+                id: ToolCallId::new(id).expect("valid test id"),
                 name: name.to_owned(),
                 arguments: arguments.to_owned(),
             },
@@ -144,7 +144,7 @@ fn context(
         session,
         Arc::new(EventBus::new()),
         "deepseek-test",
-        AgentId("agent-1".to_owned()),
+        AgentId::new("agent-1".to_owned()).expect("valid test id"),
     ))
 }
 
@@ -313,10 +313,10 @@ async fn cancellation_stops_the_loop() {
 
 fn execution(name: &str) -> ToolExecution {
     ToolExecution {
-        call_id: "call-1".to_owned(),
+        call_id: ToolCallId::new("call-1").expect("valid test id"),
         name: name.to_owned(),
         arguments: "{}".to_owned(),
-        agent_id: AgentId("agent-1".to_owned()),
+        agent_id: AgentId::new("agent-1".to_owned()).expect("valid test id"),
     }
 }
 
@@ -346,7 +346,7 @@ fn pipeline_context(tools: ToolRegistry, bus: Arc<EventBus>) -> Arc<LoopContext>
         Arc::new(MemorySession::new()),
         bus,
         "m",
-        AgentId("a".to_owned()),
+        AgentId::new("a".to_owned()).expect("valid test id"),
     ))
 }
 
@@ -523,13 +523,13 @@ fn assembly_accumulates_streamed_tool_arguments() {
         },
         StreamChunk::ToolCallDelta {
             index: 0,
-            id: "c1".to_owned(),
+            id: ToolCallId::new("c1").expect("valid test id"),
             name: Some("list".to_owned()),
             arguments_delta: "{\"pa".to_owned(),
         },
         StreamChunk::ToolCallDelta {
             index: 0,
-            id: "c1".to_owned(),
+            id: ToolCallId::new("c1").expect("valid test id"),
             name: None,
             arguments_delta: "th\":\"/tmp\"}".to_owned(),
         },
@@ -660,7 +660,7 @@ fn session_events_have_stable_type_tags() {
     );
     assert_eq!(
         SessionEvent::ToolCall {
-            id: "c".to_owned(),
+            id: ToolCallId::new("c").expect("valid test id"),
             name: "n".to_owned(),
             arguments: "{}".to_owned()
         }

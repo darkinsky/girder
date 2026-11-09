@@ -265,7 +265,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
         Arc::clone(&session),
         Arc::new(EventBus::new()),
         cli.model.clone(),
-        AgentId("cli".to_owned()),
+        AgentId::new("cli").expect("valid test id"),
     );
     context.max_turns = cli.max_turns;
     context.max_depth = cli.max_depth;
@@ -411,7 +411,7 @@ impl girder_core::LlmProvider for OfflineProvider {
                 },
                 girder_core::StreamChunk::ToolCallDelta {
                     index: 0,
-                    id: "call-1".to_owned(),
+                    id: girder_core::ToolCallId::new("call-1").expect("valid test id"),
                     name: Some(if wants_delegation {
                         "subagent".to_owned()
                     } else {

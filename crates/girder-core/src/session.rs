@@ -31,7 +31,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::llm::{ContentBlock, FinishReason, ToolCallId};
+use crate::brand::ToolCallId;
+use crate::llm::{ContentBlock, FinishReason};
 use crate::scope::BoxFut;
 
 /// One durable session event.

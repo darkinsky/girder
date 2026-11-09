@@ -28,8 +28,9 @@ use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::{LoopContext, LoopError, LoopStep};
+use crate::brand::AgentId;
 use crate::session::{MemorySession, Session};
-use crate::tools::{AgentId, ToolDefinition, ToolRegistryView, ToolResult};
+use crate::tools::{ToolDefinition, ToolRegistryView, ToolResult};
 
 /// How far a delegation is from the root agent.
 ///
@@ -142,11 +143,17 @@ pub async fn delegate(
     }
 
     let child_depth = depth.child();
-    let child_id = AgentId(format!(
+    // A child id is the parent id plus the depth, which is well formed whenever the parent is.
+    let child_id = AgentId::new(format!(
         "{}/{}",
         context.agent_id.as_str(),
         child_depth.get()
-    ));
+    ))
+    .map_err(|error| {
+        SubagentError::Child(LoopError::Session(
+            crate::session::SessionError::Compression(error.to_string()),
+        ))
+    })?;
 
     // The child's context: same provider and bus, its own session, and the depth it must respect.
     let child_session: Arc<dyn Session> = Arc::new(MemorySession::new());
@@ -356,7 +363,7 @@ impl ScriptedDelegator {
         Ok(DelegationResult {
             text,
             turns: 1,
-            child_id: AgentId("scripted-child".to_owned()),
+            child_id: AgentId::new("scripted-child").expect("constant is valid"),
         })
     }
 }

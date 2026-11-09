@@ -207,6 +207,30 @@ Rust 侧的三个选项：
 
 三项全部完成：服务隔离、作用域事件过滤、配置 schema 校验。
 
-**下一个动作**：M1 值域层。上游 `brand`（65 处 `brandString`）、`util-values`、`util`（7.8k）、
-`schemastery`（1.0k）、`json-value`。目标是把 `SessionId`/`ToolCallId`/`AgentId` 这类
-品牌类型建成编译期不可混用的 newtype 体系，并补齐 JSON 无损往返。
+## M1 进度记录
+
+上游 86 个 `Branded<'...'>` 类型。M1 先建**机制**和当前代码真正用到的五个，
+其余属于 M3-M6 的领域，在那里随领域一起加——提前声明只会产生和最终归属不一致的孤儿类型。
+
+已完成：
+
+- [x] **`Id<B>` + `Brand` trait**。newtype 而非类型别名，构造只能走 `Id::new`，丢失品牌只能走
+      `into_string`，两个都是显式的。
+- [x] **构造时校验**。空、超长（>512）、非法字符都拒绝。允许的字符集是字母数字加
+      `- _ . : / +`，因为上游 id 是复合的（agent id 是 `parent/child`，scope key 带 `:`，
+      base64url token 带 `- _`）。
+- [x] **序列化不改变线格式**。`SessionId` 在 JSON 里仍是 `"abc"`，这是品牌可以加到已有字段上
+      而不需要迁移的前提。反序列化同样校验，畸形 id 不能从 JSON 进来。
+- [x] 五个品牌：`SessionId` / `ToolCallId` / `AgentId` / `WorkspaceId` / `MessageId`。
+
+**比 TS 幻影类型强的地方**：TS 的 brand 在运行时被擦除，`brandString()` 是无校验的断言；
+Rust 的 newtype 构造器不公开时，非法 id 根本造不出来。
+
+**一个刻意的限制**：`Id` 不实现 `Deref<Target = str>`。实现它会让「传 `&str` 再转回另一个
+品牌」变得太容易，而那正是品牌要防的事。`as_str()` 和 `into_string()` 都是显式的。
+
+**一处实现细节**：`base64url` 无填充，所以 `=` 被拒绝。我最初的测试期望里有 `"a+b="`，
+被测试自己抓出来——如果允许 `=`，同一个 token 会有两种合法拼写。
+
+**下一个动作**：M1 剩余（`util-values` 的 JSON 无损往返、`util` 的路径与字符串辅助），
+然后进 M2 基础设施。

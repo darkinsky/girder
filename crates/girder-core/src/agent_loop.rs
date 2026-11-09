@@ -127,7 +127,7 @@ pub struct LoopContext {
     /// Model id to request.
     pub model: String,
     /// Which agent this loop runs for.
-    pub agent_id: crate::tools::AgentId,
+    pub agent_id: crate::brand::AgentId,
     /// Maximum turns before the loop stops on its own.
     pub max_turns: u32,
     /// How far this agent is from the root, for delegation budgeting.
@@ -151,7 +151,7 @@ impl LoopContext {
         session: Arc<dyn Session>,
         bus: Arc<EventBus>,
         model: impl Into<String>,
-        agent_id: crate::tools::AgentId,
+        agent_id: crate::brand::AgentId,
     ) -> Self {
         Self {
             provider,
@@ -355,7 +355,7 @@ fn turn_stream<'a>(
 fn tool_calls<'a>(
     context: &'a Arc<LoopContext>,
     messages: &'a mut Vec<Message>,
-    calls: Vec<(String, &'a str, &'a str)>,
+    calls: Vec<(crate::brand::ToolCallId, &'a str, &'a str)>,
     cancel: &'a CancellationToken,
 ) -> impl Stream<Item = Result<LoopStep, LoopError>> + Send + 'a {
     async_stream::stream! {
@@ -365,7 +365,7 @@ fn tool_calls<'a>(
                 return;
             }
             yield Ok(LoopStep::ToolStarted {
-                id: id.clone(),
+                id: id.to_string(),
                 name: name.to_owned(),
             });
 
@@ -402,7 +402,7 @@ fn tool_calls<'a>(
                 })
                 .await;
             yield Ok(LoopStep::ToolFinished {
-                id: id.clone(),
+                id: id.to_string(),
                 is_error,
             });
 

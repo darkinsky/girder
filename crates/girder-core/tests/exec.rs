@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use girder_core::{
-    ExecError, ExecOptions, PathPolicy, has_program, read_file, run_bash, run_shell,
+    ExecError, ExecOptions, PathPolicy, ToolCallId, has_program, read_file, run_bash, run_shell,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -418,10 +418,10 @@ async fn the_bash_tool_runs_a_command_and_reports_success() {
     let tool = girder_core::bash_tool(PathPolicy::new(&dir));
     let context = girder_core::ToolRunContext {
         execution: girder_core::ToolExecution {
-            call_id: "c1".to_owned(),
+            call_id: ToolCallId::new("c1").expect("valid test id"),
             name: "bash".to_owned(),
             arguments: serde_json::json!({ "command": "echo tool-ran" }).to_string(),
-            agent_id: girder_core::AgentId("a".to_owned()),
+            agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
     };
@@ -441,10 +441,10 @@ async fn the_bash_tool_reports_a_nonzero_exit_as_an_error() {
     let tool = girder_core::bash_tool(PathPolicy::new(&dir));
     let context = girder_core::ToolRunContext {
         execution: girder_core::ToolExecution {
-            call_id: "c1".to_owned(),
+            call_id: ToolCallId::new("c1").expect("valid test id"),
             name: "bash".to_owned(),
             arguments: "{}".to_owned(),
-            agent_id: girder_core::AgentId("a".to_owned()),
+            agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
     };

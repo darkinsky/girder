@@ -51,6 +51,7 @@
 //! ```
 
 mod agent_loop;
+mod brand;
 mod config;
 mod events;
 mod exec;
@@ -67,6 +68,10 @@ mod subagent;
 mod tools;
 
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
+pub use brand::{
+    AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
+    SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
+};
 pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
     FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,
@@ -82,7 +87,7 @@ pub use exec::{
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
 pub use llm::{
     AssembleError, AssistantMessage, ChunkStream, ContentBlock, FinishReason, LlmError, LlmKey,
-    LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolCallId, ToolSchema,
+    LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolSchema,
 };
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
@@ -106,7 +111,7 @@ pub use subagent::{
     subagent_tool,
 };
 pub use tools::{
-    AgentId, PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition,
-    ToolError, ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry,
-    ToolRegistryView, ToolResult, ToolRunContext, ToolValue, ToolsKey,
+    PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
+    ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
+    ToolResult, ToolRunContext, ToolValue, ToolsKey,
 };

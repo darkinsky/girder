@@ -25,10 +25,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::{LoopContext, LoopStep};
+use crate::brand::AgentId;
 use crate::events::{Event, EventBus};
 use crate::llm::{ContentBlock, FinishReason, LlmProvider, StreamChunk};
 use crate::session::{Session, SessionEvent};
-use crate::tools::{AgentId, ToolRegistryView};
+use crate::tools::ToolRegistryView;
 
 /// A step the runtime publishes as it runs a turn.
 ///
@@ -257,7 +258,11 @@ impl AgentRuntime {
             session,
             Arc::clone(&self.config.bus),
             self.config.model.clone(),
-            AgentId(session_id.to_owned()),
+            // The session id was already validated when the session was created; an agent id is
+            // built from it, so this cannot fail for a real session.
+            AgentId::new(session_id).unwrap_or_else(|_| {
+                AgentId::new("invalid-session-id").expect("a constant id is valid")
+            }),
         );
         context.max_turns = self.config.max_turns;
         // The prompt was already written by `prompt()`, before the spawn.

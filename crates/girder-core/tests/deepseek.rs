@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use futures::StreamExt as _;
 use girder_core::{
     ContentBlock, DeepSeekConfig, DeepSeekProvider, FinishReason, LlmProvider, LlmRequest, Message,
-    Role, SseEvent, SseParser, StreamChunk, TokenUsage, Translator,
+    Role, SseEvent, SseParser, StreamChunk, TokenUsage, ToolCallId, Translator,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -77,7 +77,7 @@ fn a_tool_call_becomes_a_tool_use_block_with_parsed_input() {
     let messages = vec![Message {
         role: Role::Assistant,
         content: vec![ContentBlock::ToolCall {
-            id: "call-1".to_owned(),
+            id: ToolCallId::new("call-1").expect("valid test id"),
             name: "bash".to_owned(),
             arguments: r#"{"command":"ls"}"#.to_owned(),
         }],
@@ -101,7 +101,7 @@ fn malformed_tool_arguments_do_not_fail_the_request() {
     let messages = vec![Message {
         role: Role::Assistant,
         content: vec![ContentBlock::ToolCall {
-            id: "c".to_owned(),
+            id: ToolCallId::new("c").expect("valid test id"),
             name: "t".to_owned(),
             arguments: "{not json".to_owned(),
         }],
@@ -284,7 +284,7 @@ fn a_tool_use_block_carries_its_id_and_name_on_the_start_event() {
         panic!("expected a tool call delta, got {:?}", chunks[1]);
     };
     assert_eq!(*index, 1);
-    assert_eq!(id, "call-1");
+    assert_eq!(id.as_str(), "call-1");
     assert_eq!(name.as_deref(), Some("bash"));
     assert!(arguments_delta.is_empty(), "arguments stream separately");
 }

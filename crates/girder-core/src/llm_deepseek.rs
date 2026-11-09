@@ -425,10 +425,15 @@ impl Translator {
                 // The id and name arrive complete on the start event; only arguments stream.
                 Ok(StreamChunk::ToolCallDelta {
                     index,
-                    id: json["content_block"]["id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
+                    // A provider id that fails validation becomes a placeholder rather than failing
+                    // the stream: the call is still usable, and dropping the response over a
+                    // malformed id would be worse than an untraceable call.
+                    id: crate::brand::ToolCallId::new(
+                        json["content_block"]["id"].as_str().unwrap_or_default(),
+                    )
+                    .unwrap_or_else(|_| {
+                        crate::brand::ToolCallId::new("invalid").expect("constant is valid")
+                    }),
                     name: Some(
                         json["content_block"]["name"]
                             .as_str()
@@ -458,7 +463,10 @@ impl Translator {
             })],
             "input_json_delta" => vec![Ok(StreamChunk::ToolCallDelta {
                 index,
-                id: String::new(),
+                // Only the start event carries the id; a delta leaves it empty.
+                id: crate::brand::ToolCallId::new("").unwrap_or_else(|_| {
+                    crate::brand::ToolCallId::new("invalid").expect("constant is valid")
+                }),
                 name: None,
                 arguments_delta: delta["partial_json"]
                     .as_str()
