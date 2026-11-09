@@ -50,6 +50,7 @@
 //! assert_eq!(greeter.greet(), "hello");
 //! ```
 
+mod agent;
 mod agent_loop;
 mod attachment;
 mod brand;
@@ -79,6 +80,10 @@ mod subagent;
 mod subprocess;
 mod tools;
 
+pub use agent::{
+    Agent, AgentHandle, AgentOptions, AgentSpec, ModelSelection, ModelSelectionState,
+    ModelSelectionView, SelectionError, SelectionSource, validate as validate_model_selection,
+};
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 pub use attachment::{
     ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore, DecodedImage, EncodedImage, ImageRef,

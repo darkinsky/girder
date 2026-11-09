@@ -395,6 +395,33 @@ provider 挂载两次用不同凭据（个人 key 和组织 key）。路由名�
 **真实 API 验证**：`a_registered_route_serves_a_real_request` 走完整链路
 catalogue → resolve → 真实请求，并断言路由声明了窗口（没有窗口就无法驱动压缩）。
 
+### Agent：身份与模型选择（已完成）
+
+`agent.rs`：`Agent` / `AgentSpec` / `ModelSelectionState` / `ModelSelection`。
+
+**优先级规则是这块唯一有真实语义的部分**：
+
+| 来源 | 何时胜出 |
+|---|---|
+| 已记录的选择 | 调用方为下一步指定了 |
+| 上次请求 | 会话已经路由过 |
+| live options | 其他来源都没有同时给出两半 |
+
+顺序不是随意的。已记录的选择是**明确指令**，必须跨重启存活；上次请求是**什么工作过的证据**；
+live options 只是会话没有历史时的默认值。把 live options 放第一位，会在下一步悄悄撤销调用方
+的显式切换。
+
+**不完整的选择不是选择。** 有 provider 没 model（或反之）不能算；两半都无法单独解析，分开处理
+会把一个来源的 provider 和另一个来源的 model 配在一起。所有候选都是全有或全无。
+
+**`next` 和 `last_used` 分开。** UI 两个都要显示：下一步用什么、上一步用了什么。合并会让切换
+在步骤执行前不可见，也会让失败的切换看起来生效了。
+
+**`CancellationToken` 无法取消取消**，所以 `reset_cancel` 是显式的。藏进 `cancel` 里会让
+「忘记重置」变成一个静默的 bug：每一轮一开始就已经是取消状态。
+
+**24 个测试**覆盖优先级、完整性、view 分离、校验、取消语义（含 keep_inbox 两种行为）。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）
