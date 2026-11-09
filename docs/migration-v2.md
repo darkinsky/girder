@@ -416,5 +416,27 @@ provider 改一次措辞，重试循环就悄悄不再重试了。
 **digest 按 trim 后的内容算。** 指令文件在每次文件系统工具调用后都会重新检查，
 空白改动导致整份重新注入会把上下文塞满副本。
 
-**未完成**：`llm` 的多 provider、`session` 的其余 44 个事件类型、
-`compaction` / `attachment`、`context` 的其余子包（session-reference、time-context 等）。
+### 上下文压缩（已完成范围选择）
+
+`compaction.rs`：`select` / `balances` / `pairing_balanced_at` / `transcript_for_summary`。
+
+**一条不变量主导全部正确性**：切割不能把 tool call 和它的 result 分开。
+
+一条 `tool/call` 活着而 `tool/result` 被压掉的history，不只是不完整——**每个 provider 都会拒绝
+下一次请求**，因为无应答的 tool call 是协议违规。
+
+所以合法的切割点只有「跨切割点的未应答调用数为零」的位置。
+
+**为什么压缩是一个区间而不是过滤器**：单独过滤消息看起来更简单，但是错的。从一轮对话中间丢掉
+一条消息，会让存活的 tool call 和 result 引用一个空洞。区间让存活的前缀和后缀各自内部一致，
+摘要在中间顶上。
+
+**起点也要平衡**：只检查结束点不够。范围若从一对 tool call 中间开始，存活的前缀会剩下一个
+result 而它的 call 被摘要掉了。
+
+**一个被测试纠正的断言**：我最初断言「压缩范围必须在 call 之前结束」，实际实现让它包含整个配对
+（`end=12`，即 result 之后）。两者都合法——真正的不变量是**两侧各自平衡**，而不是范围边界落在哪里。
+测试改成断言前缀和后缀独立一致。
+
+**未完成**：`llm` 的多 provider、`session` 的其余 44 个事件类型、`attachment`、
+`context` 的其余子包、**压缩的摘要器**（需要 provider）。

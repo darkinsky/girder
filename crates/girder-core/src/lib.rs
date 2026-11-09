@@ -52,6 +52,7 @@
 
 mod agent_loop;
 mod brand;
+mod compaction;
 mod config;
 mod events;
 mod exec;
@@ -79,6 +80,11 @@ pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
+};
+pub use compaction::{
+    CompactionError, CompactionOutcome, CompactionRequest, CompactionTrigger, PairingBalance,
+    Selection, SurfaceEntry, balances, needs_compaction, pairing_balanced_at,
+    select as select_compaction, transcript_for_summary,
 };
 pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
