@@ -125,7 +125,18 @@ pub struct LoopContext {
     /// The event bus, for the three tool waterfalls.
     pub bus: Arc<EventBus>,
     /// Model id to request.
+    ///
+    /// Kept alongside the agent rather than read from it on each step: a step must use one selection,
+    /// and re-resolving mid-step would let a concurrent model switch change a request that has
+    /// already started.
     pub model: String,
+
+    /// The agent this loop runs for.
+    ///
+    /// The single source of truth for cancellation, model selection, and pending input. The loop
+    /// holds it rather than duplicating those three as its own fields, because two copies of the same
+    /// state is how a cancel that the UI sees and the loop does not becomes possible.
+    pub agent: Option<Arc<crate::agent::Agent>>,
     /// Which agent this loop runs for.
     pub agent_id: crate::brand::AgentId,
     /// Maximum turns before the loop stops on its own.
@@ -165,6 +176,7 @@ impl LoopContext {
             session,
             bus,
             model: model.into(),
+            agent: None,
             agent_id,
             max_turns: 16,
             depth: crate::subagent::Depth::root(),
@@ -172,6 +184,16 @@ impl LoopContext {
             message_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             record_prompt: true,
         }
+    }
+
+    /// Attaches the agent this loop runs for.
+    ///
+    /// When attached, the loop cancels through it and records the model it used, so a caller's
+    /// selection and cancellation reach the loop instead of living in a second copy.
+    #[must_use]
+    pub fn with_agent(mut self, agent: Arc<crate::agent::Agent>) -> Self {
+        self.agent = Some(agent);
+        self
     }
 
     /// Sets the delegation depth and ceiling.
@@ -216,9 +238,27 @@ pub fn run(
         }
 
         for turn in 1..=u64::from(context.max_turns) {
-            if cancel.is_cancelled() {
+            // The agent's token is a second cancellation source: a UI cancels through the agent, and
+            // a loop that only watched the caller's token would keep running after the user's
+            // interrupt.
+            let agent_cancelled = context
+                .agent
+                .as_ref()
+                .is_some_and(|agent| agent.cancel_token().is_cancelled());
+            if cancel.is_cancelled() || agent_cancelled {
                 yield Err(LoopError::Cancelled);
                 return;
+            }
+
+            // Record the selection this turn actually uses, so "last used" reflects reality rather
+            // than the last thing a caller asked for.
+            if let Some(agent) = &context.agent {
+                agent.note_model_used(crate::agent::ModelSelection::new(
+                    agent
+                        .next_model()
+                        .map_or_else(|| context.model.clone(), |selection| selection.provider),
+                    context.model.clone(),
+                ));
             }
 
             let _ = context.session.append(SessionEvent::TurnStart { turn }).await;
@@ -253,9 +293,30 @@ pub fn run(
                 return;
             }
 
+            // Input queued for the next turn continues the conversation even when this turn ended
+            // without tools. A user who typed while the model was answering expects that message to
+            // be answered, and ending here would silently drop it.
+            let queued = context
+                .agent
+                .as_ref()
+                .map_or_else(Vec::new, |agent| agent.take_queued_turn());
+
+            if !queued.is_empty() {
+                for message in &queued {
+                    let _ = context.session.append(SessionEvent::UserMessage {
+                        message: message.clone(),
+                    }).await;
+                    messages.push(Message::new(
+                        Role::User,
+                        message.content.clone(),
+                    ));
+                }
+                yield Ok(LoopStep::TurnStarted { turn: turn + 1 });
+            }
+
             // A turn that ran tools continues so the model can see the results; a turn that only
-            // answered ends the conversation.
-            if !ran_tools {
+            // answered ends the conversation unless something is queued.
+            if !ran_tools && queued.is_empty() {
                 return;
             }
         }
@@ -263,6 +324,25 @@ pub fn run(
         // The turn budget ran out without the model finishing without tools.
         yield Err(LoopError::Cancelled);
     }
+}
+
+/// Merges two cancellation sources into one token.
+///
+/// A child token that fires when either input fires. Needed because a turn has two cancellation
+/// sources -- the caller's and the agent's -- and a provider only accepts one token.
+fn merge_cancel(first: CancellationToken, second: Option<CancellationToken>) -> CancellationToken {
+    let Some(second) = second else {
+        return first;
+    };
+    let merged = CancellationToken::new();
+    for source in [first, second] {
+        let merged = merged.clone();
+        tokio::spawn(async move {
+            source.cancelled().await;
+            merged.cancel();
+        });
+    }
+    merged
 }
 
 /// Runs one turn: stream, assemble, dispatch tools.
@@ -278,6 +358,15 @@ fn turn_stream<'a>(
 ) -> impl Stream<Item = Result<LoopStep, LoopError>> + Send + 'a {
     async_stream::stream! {
         use futures::StreamExt as _;
+        // Fold the agent's token into this turn's cancellation. A UI cancels through the agent, and a
+        // turn that watched only the caller's token would keep streaming after the interrupt -- which
+        // is what a test with a never-ending provider exposed.
+        let agent_cancel = context
+            .agent
+            .as_ref()
+            .map(|agent| agent.cancel_token());
+        let cancel = merge_cancel(cancel, agent_cancel);
+
         let request = LlmRequest::new(context.model.clone(), messages.clone())
             .with_tools(context.tools.schemas());
         let stream = match context.provider.stream(request, cancel.clone()).await {

@@ -422,6 +422,26 @@ live options 只是会话没有历史时的默认值。把 live options 放第�
 
 **24 个测试**覆盖优先级、完整性、view 分离、校验、取消语义（含 keep_inbox 两种行为）。
 
+### Agent 接入 loop（已完成）
+
+`LoopContext` 增加 `agent` 字段，loop 现在通过 Agent 取消、记录模型、取用排队输入。
+
+**接入抓到两个真实 bug，都是我在写代码时没想到的。**
+
+**Bug 1：读收件箱读了副本。** 第一版用 `inbox_state().take_turn()`——`inbox_state()` 返回的是
+**克隆**，`take_turn()` 排空的是那个副本，agent 的队列没动。结果模型被调用 16 次（达到
+`max_turns`），每次都读到同一条消息。
+
+修法：`take_queued_turn()` 直接在锁内排空。**「返回副本」和「就地修改」的区别，在这里是死循环和
+正常工作的区别。**
+
+**Bug 2：取消没传到 turn 内部。** 我在 turn 循环顶部检查了 agent 的 token，但 `turn_stream` 里
+把**调用方的 token** 传给了 provider。调试时它挂住了 240 秒没退出。
+
+修法：`merge_cancel` 把两个来源合成一个子 token——provider 只接受一个 token，而取消有两个来源。
+
+这个 bug 只有**用永不结束的 provider 写测试**才会暴露，用 OneShot 永远测不出来。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

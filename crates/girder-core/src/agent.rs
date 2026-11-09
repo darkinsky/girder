@@ -418,10 +418,24 @@ impl Agent {
         self.lock_inbox().apply(splice)
     }
 
-    /// The pending inbox state.
+    /// The pending inbox state, as a detached copy.
     #[must_use]
     pub fn inbox_state(&self) -> crate::inbox::Inbox {
         self.lock_inbox().clone()
+    }
+
+    /// Takes the queued next-turn messages, emptying that queue.
+    ///
+    /// A mutate-in-place operation rather than `inbox_state().take_turn()`: the latter drains a
+    /// detached copy and leaves the agent's queue untouched, so a loop that used it would read the
+    /// same messages on every turn and never make progress.
+    pub fn take_queued_turn(&self) -> Vec<crate::message::Message> {
+        self.lock_inbox().take_turn()
+    }
+
+    /// Takes the queued next-step messages, emptying that queue.
+    pub fn take_queued_step(&self) -> Vec<crate::message::Message> {
+        self.lock_inbox().take_step()
     }
 
     /// Cancels the current turn.
