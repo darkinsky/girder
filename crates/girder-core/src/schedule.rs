@@ -37,6 +37,7 @@
 //! this instant", and a scheduler loop is the caller's business. That separation is what makes every
 //! rule testable without waiting or mocking a clock.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Identifies one schedule.
@@ -171,6 +172,12 @@ pub enum Rule {
     After {
         /// The delay.
         delay: Duration,
+        /// When the schedule was created.
+        ///
+        /// Recorded because "N seconds after creation" is not computable from the clock alone: the
+        /// rule must remember the creation instant, or every evaluation would produce a new target
+        /// and the schedule would never actually arrive.
+        created_at: Instant,
     },
 
     /// One shot, at this absolute instant.
@@ -260,6 +267,12 @@ impl Rule {
         Ok(Self::Every { interval, anchor })
     }
 
+    /// Builds a one-shot rule that fires `delay` after `created_at`.
+    #[must_use]
+    pub fn after(delay: Duration, created_at: Instant) -> Self {
+        Self::After { delay, created_at }
+    }
+
     /// Builds a daily rule.
     #[must_use]
     pub fn daily(time: TimeOfDay, offset: Offset) -> Self {
@@ -317,13 +330,18 @@ impl Rule {
     /// skips that date rather than shifting the time.
     pub fn next_after(&self, after: Instant) -> Result<Instant, ScheduleError> {
         match self {
-            Self::After { delay } => {
-                // A one-shot has no origin here; the caller passes creation time as `after`, so the
-                // occurrence is exactly the delay from it.
-                let at = after
+            Self::After { delay, created_at } => {
+                // The occurrence is fixed at creation, not relative to `after`: an `after` rule that
+                // recomputed from each evaluation would always be one delay in the future and never
+                // fire.
+                let at = created_at
                     .checked_add(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
                     .ok_or(ScheduleError::Exhausted)?;
-                Ok(at)
+                if at > after {
+                    Ok(at)
+                } else {
+                    Err(ScheduleError::Exhausted)
+                }
             }
             Self::At { at } => {
                 if *at > after {
@@ -729,4 +747,223 @@ pub fn pause(schedule: &mut Schedule) {
 /// paused for a week does not fire a week of missed occurrences at once.
 pub fn resume(schedule: &mut Schedule) {
     schedule.active = true;
+}
+
+// ---- the scheduler ----------------------------------------------------------------------------
+
+/// A schedule that has fired, ready to become a prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Firing {
+    /// Which schedule.
+    pub id: ScheduleId,
+    /// Its title, for the message the user sees.
+    pub title: String,
+    /// The content to deliver.
+    pub prompt: String,
+    /// When it was due.
+    pub due: Instant,
+}
+
+/// What the scheduler decided to do on one tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tick {
+    /// Schedules that are due now.
+    pub firings: Vec<Firing>,
+    /// When to look again, or `None` when nothing is scheduled.
+    pub next_wake: Option<Instant>,
+}
+
+/// A set of schedules with their next due times.
+///
+/// The scheduler owns no timer. It answers "what is due at this instant and when should I look
+/// again", and the caller decides whether to sleep, poll, or drive it from a test. That is what makes
+/// a year of daily reminders testable in milliseconds.
+#[derive(Debug, Default)]
+pub struct Scheduler {
+    schedules: std::collections::BTreeMap<String, Schedule>,
+    /// The next due instant per schedule, so a tick does not recompute every rule.
+    ///
+    /// Recomputation is cheap for `every` and expensive for `cron`, and a tick happens often.
+    next: std::collections::BTreeMap<String, Instant>,
+}
+
+impl Scheduler {
+    /// Creates an empty scheduler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a schedule and computes its first occurrence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduleError::Exhausted`] for a one-shot whose instant has already passed. A
+    /// schedule that can never fire is a caller mistake worth reporting where it happens, not a
+    /// silent no-op discovered later.
+    pub fn add(&mut self, schedule: Schedule, now: Instant) -> Result<(), ScheduleError> {
+        // A one-shot whose instant has passed can never fire, so it is refused here rather than
+        // stored as a schedule that silently does nothing.
+        let next = schedule
+            .rule
+            .next_after(now)
+            .map_err(|_| ScheduleError::Exhausted)?;
+        self.next.insert(schedule.id.to_string(), next);
+        self.schedules.insert(schedule.id.to_string(), schedule);
+        Ok(())
+    }
+
+    /// The schedules, in id order.
+    #[must_use]
+    pub fn schedules(&self) -> Vec<&Schedule> {
+        self.schedules.values().collect()
+    }
+
+    /// The next due instant of one schedule.
+    #[must_use]
+    pub fn next_due(&self, id: &str) -> Option<Instant> {
+        self.next.get(id).copied()
+    }
+
+    /// Removes a schedule.
+    pub fn remove(&mut self, id: &str) -> Option<Schedule> {
+        self.next.remove(id);
+        self.schedules.remove(id)
+    }
+
+    /// Pauses a schedule, dropping its pending occurrence.
+    ///
+    /// Dropping rather than keeping: a paused schedule that kept its due instant would fire
+    /// immediately on resume, delivering a reminder from a time the user had silenced.
+    pub fn pause(&mut self, id: &str) {
+        if let Some(schedule) = self.schedules.get_mut(id) {
+            pause(schedule);
+            self.next.remove(id);
+        }
+    }
+
+    /// Resumes a schedule, computing its next occurrence from `now`.
+    ///
+    /// From `now`, not from the last firing: a schedule paused for a week must not fire a week of
+    /// missed occurrences at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScheduleError::Exhausted`] when the rule has no future occurrence.
+    pub fn resume(&mut self, id: &str, now: Instant) -> Result<(), ScheduleError> {
+        let Some(schedule) = self.schedules.get_mut(id) else {
+            return Err(ScheduleError::Exhausted);
+        };
+        resume(schedule);
+        let rule = schedule.rule.clone();
+        let next = rule.next_after(now).map_err(|_| ScheduleError::Exhausted)?;
+        self.next.insert(id.to_owned(), next);
+        Ok(())
+    }
+
+    /// Reports what is due at `now` and when to look again.
+    ///
+    /// A due schedule fires once and its next occurrence is computed immediately, so a long gap — a
+    /// machine asleep for a day — does not produce a burst of firings for every missed occurrence.
+    /// That is deliberate: a daily reminder missed twice should arrive once, not twice.
+    pub fn tick(&mut self, now: Instant) -> Tick {
+        let mut firings = Vec::new();
+
+        let due: Vec<String> = self
+            .next
+            .iter()
+            .filter(|(_, next)| **next <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in due {
+            let Some(schedule) = self.schedules.get(&id) else {
+                self.next.remove(&id);
+                continue;
+            };
+            let due_at = self.next.get(&id).copied().unwrap_or(now);
+            firings.push(Firing {
+                id: schedule.id.clone(),
+                title: schedule.title.clone(),
+                prompt: schedule.prompt.clone(),
+                due: due_at,
+            });
+
+            // Compute the next occurrence from now, not from the missed one.
+            if let Ok(next) = schedule.rule.next_after(now) {
+                self.next.insert(id.clone(), next);
+            } else {
+                // A one-shot has fired; drop it so it does not fire again.
+                self.next.remove(&id);
+                if let Some(schedule) = self.schedules.get_mut(&id) {
+                    schedule.active = false;
+                }
+            }
+        }
+
+        // Sorted so two ticks with the same input produce the same order.
+        firings.sort_by(|a, b| a.due.cmp(&b.due).then_with(|| a.id.cmp(&b.id)));
+
+        Tick {
+            firings,
+            next_wake: self.next.values().copied().min(),
+        }
+    }
+}
+
+/// Runs a scheduler, turning each firing into a prompt through `dispatch`.
+///
+/// The loop the caller would otherwise write. It owns the sleeping and the tick, and delegates only
+/// the "deliver this" step — which is what lets a test drive it with a fake clock and a fake dispatch
+/// while production uses a real timer.
+///
+/// Returns when `cancel` fires.
+pub async fn run_scheduler<F, Fut>(
+    scheduler: Arc<std::sync::Mutex<Scheduler>>,
+    mut dispatch: F,
+    cancel: tokio_util::sync::CancellationToken,
+) where
+    F: FnMut(Firing) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    loop {
+        // One tick, not two: calling `tick` twice would fire the same schedule twice and advance its
+        // next occurrence twice, skipping an interval.
+        let (firings, next_wake) = {
+            let mut guard = scheduler
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tick = guard.tick(now_millis());
+            (tick.firings, tick.next_wake)
+        };
+
+        for firing in firings {
+            dispatch(firing).await;
+        }
+
+        let Some(next_wake) = next_wake else {
+            // Nothing scheduled: wait for a change or a cancel rather than spinning.
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => continue,
+            }
+        };
+
+        // A due time in the past means work is pending; don't sleep at all.
+        let wait = next_wake.saturating_sub(now_millis()).max(1);
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep(std::time::Duration::from_millis(wait)) => {}
+        }
+    }
+}
+
+/// The current time in milliseconds since the epoch.
+#[must_use]
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
 }

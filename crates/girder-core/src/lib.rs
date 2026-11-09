@@ -171,9 +171,10 @@ pub use remote::{
 pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
 pub use schedule::{
-    CreateError, CronExpression, Instant as ScheduleInstant, MAX_TITLE_CHARS, MIN_INTERVAL, Offset,
-    Rule, Schedule, ScheduleError, ScheduleId, TimeOfDay, create as create_schedule, next_fire,
-    pause as pause_schedule, resume as resume_schedule,
+    CreateError, CronExpression, Firing, Instant as ScheduleInstant, MAX_TITLE_CHARS, MIN_INTERVAL,
+    Offset, Rule, Schedule, ScheduleError, ScheduleId, Scheduler, Tick, TimeOfDay,
+    create as create_schedule, next_fire, now_millis, pause as pause_schedule,
+    resume as resume_schedule, run_scheduler,
 };
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;

@@ -28,9 +28,7 @@ fn at_time(hour: u32, minute: u32) -> TimeOfDay {
 
 #[test]
 fn an_after_rule_fires_once_after_its_delay() {
-    let rule = Rule::After {
-        delay: Duration::from_secs(90),
-    };
+    let rule = Rule::after(Duration::from_secs(90), EPOCH_2026);
 
     assert_eq!(rule.next_after(EPOCH_2026).unwrap(), EPOCH_2026 + 90_000);
 }
@@ -59,12 +57,7 @@ fn a_passed_at_rule_is_exhausted() {
 #[test]
 fn one_shot_rules_report_themselves() {
     assert!(Rule::At { at: 0 }.is_one_shot());
-    assert!(
-        Rule::After {
-            delay: Duration::from_secs(1)
-        }
-        .is_one_shot()
-    );
+    assert!(Rule::after(Duration::from_secs(1), 0).is_one_shot());
     assert!(!Rule::daily(at_time(9, 0), Offset::UTC).is_one_shot());
 }
 
