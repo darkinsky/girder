@@ -11,6 +11,7 @@ repository = "https://github.com/darkinsky/girder"
 
 [workspace.dependencies]
 girder-core = { path = "crates/girder-core" }
+girder-macros = { path = "crates/girder-macros" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 

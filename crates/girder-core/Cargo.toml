@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+girder-macros = { path = "../girder-macros" }
 async-stream = "0.3.6"
 futures = { version = "0.3", features = ["std"] }
 libc = "0.2.191"

@@ -606,6 +606,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "futures",
+ "girder-macros",
  "libc",
  "nix",
  "reqwest",
@@ -616,6 +617,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "zstd",
+]
+
+[[package]]
+name = "girder-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

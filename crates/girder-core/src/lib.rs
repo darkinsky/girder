@@ -124,6 +124,7 @@ pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
 };
+pub use girder_macros::Typert;
 pub use goal::{
     Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
     Phase, check_reference as check_goal_reference,
