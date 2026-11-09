@@ -1341,3 +1341,87 @@ async fn concurrent_creates_all_return_the_same_id() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- registry consistency -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn every_method_in_one_registry_exists_in_the_other() {
+    // Two constructors exist: one for tests (no runtime) and one for production. They must agree on
+    // which names resolve, or a client's behaviour would depend on which the host happened to build.
+    let dir = std::env::temp_dir().join(format!("girder-registry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let with_runtime = girder_core::registry_with_runtime(Arc::clone(&catalog), runtime);
+    let plain = default_registry(Arc::clone(&catalog));
+
+    // The two constructors differ deliberately: `cancel` needs a runtime. What must not differ is
+    // how an unregistered name is reported -- a client's error handling cannot depend on which
+    // constructor the host chose.
+    let runtime_methods: Vec<String> = with_runtime.names().into_iter().map(|(_, m)| m).collect();
+    for method in &runtime_methods {
+        if plain.names().iter().any(|(_, m)| m == method) {
+            continue;
+        }
+        // Registered by the runtime constructor only: the plain one must call it a gap, not a typo.
+        let error = plain
+            .dispatch("session", method, call(json!({})))
+            .await
+            .expect_err("a method absent from the plain registry must not resolve");
+        assert_eq!(
+            error.code(),
+            "NOT_IMPLEMENTED",
+            "`{method}` must be a declared gap in the plain registry"
+        );
+    }
+
+    // And every name outside that set must report a gap rather than a typo.
+    for probe in ["search", "selectModel", "stream", "projections"] {
+        let error = with_runtime
+            .dispatch("session", probe, call(json!({})))
+            .await
+            .expect_err("an unimplemented method must not resolve");
+        assert_eq!(
+            error.code(),
+            "NOT_IMPLEMENTED",
+            "`{probe}` must be a declared gap, not an unknown name"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_unimplemented_list_does_not_name_an_implemented_method() {
+    // A method present in both lists would answer NOT_IMPLEMENTED after being registered, because
+    // the registry checks the method map first — but the entry would still be a stale claim.
+    let dir = std::env::temp_dir().join(format!("girder-stale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let provider = Arc::new(EchoProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let runtime = runtime_with(provider, Arc::new(EventBus::new()));
+    let registry = girder_core::registry_with_runtime(catalog, runtime);
+
+    let implemented: Vec<String> = registry.names().into_iter().map(|(_, m)| m).collect();
+    for method in &implemented {
+        // Dispatching an implemented method must not answer NOT_IMPLEMENTED.
+        let result = registry.dispatch("session", method, call(json!({}))).await;
+        if let Err(error) = result {
+            assert_ne!(
+                error.code(),
+                "NOT_IMPLEMENTED",
+                "`{method}` is registered but also listed as unimplemented"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

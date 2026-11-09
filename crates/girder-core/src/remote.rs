@@ -626,6 +626,30 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
     })
 }
 
+/// Methods the upstream `session` namespace defines that this build does not implement.
+///
+/// One list, referenced by every registry constructor. Two copies drifted the moment a method was
+/// added — the entry stayed in one list while disappearing from the other, and the only symptom was
+/// a `NOT_IMPLEMENTED` answer for a method that existed.
+const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
+    "search",
+    "selectModel",
+    "modelCatalog",
+    "openWorkspacePath",
+    "workspacePathApplications",
+    "rename",
+    "fork",
+    "attachment",
+    "updateQueue",
+    "projections",
+    "stream",
+    "resume",
+    "archive",
+    "delete",
+    "duplicate",
+    "export",
+];
+
 /// Registers the `session.*` methods this build implements.
 ///
 /// The unimplemented ones are declared so a client gets `NOT_IMPLEMENTED` with a name rather than
@@ -640,27 +664,11 @@ pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn
     register_history(registry, catalog);
     register_prompt(registry);
 
-    registry.declare_unimplemented(
-        "session",
-        &[
-            "search",
-            "selectModel",
-            "modelCatalog",
-            "openWorkspacePath",
-            "workspacePathApplications",
-            "rename",
-            "fork",
-            "attachment",
-            "updateQueue",
-            "projections",
-            "stream",
-            "resume",
-            "archive",
-            "delete",
-            "duplicate",
-            "export",
-        ],
-    );
+    // `cancel` needs a runtime to cancel, so this constructor declares it a gap rather than
+    // registering a handler that could never act. Everything else absent from the upstream surface
+    // comes from the shared list.
+    registry.declare_unimplemented("session", &["cancel"]);
+    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
 }
 
 /// Registers `session.list`.
@@ -797,7 +805,11 @@ fn register_prompt(registry: &mut RemoteRegistry) {
     });
 }
 
-/// Builds a registry with everything this build implements.
+/// Builds a registry with every method this build implements, without a runtime.
+///
+/// Test-only. A production caller wants [`registry_with_runtime`]: without a runtime,
+/// `session.prompt` acknowledges and never runs a turn, which is a lie to a client that then waits
+/// for output. Exposing this publicly invited exactly that mistake, so it is not public.
 #[must_use]
 #[allow(
     clippy::needless_pass_by_value,
@@ -830,27 +842,7 @@ pub fn registry_with_runtime(
     register_prompt_with_runtime(&mut registry, &catalog, &runtime);
     register_cancel(&mut registry, &runtime);
 
-    registry.declare_unimplemented(
-        "session",
-        &[
-            "search",
-            "selectModel",
-            "modelCatalog",
-            "openWorkspacePath",
-            "workspacePathApplications",
-            "rename",
-            "fork",
-            "attachment",
-            "updateQueue",
-            "projections",
-            "stream",
-            "resume",
-            "archive",
-            "delete",
-            "duplicate",
-            "export",
-        ],
-    );
+    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry
 }
 

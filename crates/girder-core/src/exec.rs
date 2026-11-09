@@ -286,6 +286,85 @@ pub async fn run_shell(
     options: &ExecOptions,
     cancel: &CancellationToken,
 ) -> Result<ExecOutput, ExecError> {
+    run_shell_program("sh", script, options, cancel).await
+}
+
+/// Runs a `bash` script, using `bash` when available and `sh` otherwise.
+///
+/// Kept separate from [`run_shell`] so the executor can report which shell it actually used: a
+/// profile that assumes `bash` semantics (process substitution, `[[`) must not silently get `sh`.
+///
+/// # Errors
+///
+/// Same as [`run_shell`].
+pub async fn run_bash(
+    script: &str,
+    options: &ExecOptions,
+    cancel: &CancellationToken,
+) -> Result<ExecOutput, ExecError> {
+    let program = if has_program("bash") { "bash" } else { "sh" };
+    run_shell_program(program, script, options, cancel).await
+}
+
+/// Kills the whole process group led by `pid`.
+///
+/// Falls back to killing just the child when the group signal fails — the group may already be
+/// gone, and a delivery race is not worth surfacing: a kill that finds nothing has already achieved
+/// what it wanted.
+fn kill_group(pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        // SIGTERM first so a well-behaved process can clean up, then SIGKILL. The escalation is
+        // not optional: a shell that ignores SIGTERM would otherwise survive the timeout.
+        // A pid is always positive and fits in i32 on every platform that has POSIX.
+        let Ok(pid) = i32::try_from(pid) else {
+            return;
+        };
+        let group = Pid::from_raw(-pid);
+        let _ = kill(group, Signal::SIGTERM);
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = kill(group, Signal::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows there is no process group; the tree needs `taskkill /T /F`. Not implemented
+        // here because the sandbox and the acceptance criteria are POSIX-only; see the module note.
+        let _ = pid;
+    }
+}
+/// Waits for the child to be reaped, bounded so a stuck wait cannot hang teardown.
+async fn reap(mut child: tokio::process::Child) {
+    // `kill_on_drop` already guarantees no zombie if this times out, but an explicit wait is what
+    // actually collects the exit status.
+    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+}
+async fn abort_all(
+    stdout: tokio::task::JoinHandle<Vec<u8>>,
+    stderr: tokio::task::JoinHandle<Vec<u8>>,
+) {
+    stdout.abort();
+    stderr.abort();
+    let _ = stdout.await;
+    let _ = stderr.await;
+}
+
+/// The shared implementation both entry points call.
+///
+/// One body rather than two near-identical ones: the two differed only in the program name, while
+/// duplicating the pipe draining, the process-group kill, and the timeout race. A fix to any of
+/// those had to be made twice, and the second copy was the one likely to be forgotten.
+async fn run_shell_program(
+    program: &str,
+    script: &str,
+    options: &ExecOptions,
+    cancel: &CancellationToken,
+) -> Result<ExecOutput, ExecError> {
     // Check the declared writes before spawning: refusing after the fact is not refusing.
     if let Some(policy) = &options.policy {
         for path in &options.declared_writes {
@@ -293,7 +372,7 @@ pub async fn run_shell(
         }
     }
 
-    let mut command = Command::new("sh");
+    let mut command = Command::new(program);
     command
         .arg("-c")
         .arg(script)
@@ -328,16 +407,24 @@ pub async fn run_shell(
     }
 
     let mut child = command.spawn().map_err(|source| ExecError::Spawn {
-        program: "sh".to_owned(),
+        program: program.to_owned(),
         source,
     })?;
     let pid = child.id();
 
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let mut stderr = child.stderr.take().expect("stderr is piped");
+    // Guaranteed by the `Stdio::piped()` above; the message says so, because a future edit that
+    // removed it would otherwise panic with no explanation.
+    let mut stdout = child
+        .stdout
+        .take()
+        .expect("stdout is piped by this function; a change to that must update this line");
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("stderr is piped by this function; a change to that must update this line");
 
     // Drain both pipes concurrently with the wait. A pipe whose reader is not pumped fills and
-    // blocks the child, which would then never exit — a deadlock that looks like a slow command.
+    // blocks the child, which would then never exit -- a deadlock that looks like a slow command.
     let stdout_task = tokio::spawn(async move {
         let mut buffer = Vec::new();
         let _ = stdout.read_to_end(&mut buffer).await;
@@ -382,154 +469,6 @@ pub async fn run_shell(
     })
 }
 
-/// Kills the whole process group led by `pid`.
-///
-/// Falls back to killing just the child when the group signal fails — the group may already be
-/// gone, and a delivery race is not worth surfacing: a kill that finds nothing has already achieved
-/// what it wanted.
-fn kill_group(pid: Option<u32>) {
-    let Some(pid) = pid else {
-        return;
-    };
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
-
-        // SIGTERM first so a well-behaved process can clean up, then SIGKILL. The escalation is
-        // not optional: a shell that ignores SIGTERM would otherwise survive the timeout.
-        // A pid is always positive and fits in i32 on every platform that has POSIX.
-        let Ok(pid) = i32::try_from(pid) else {
-            return;
-        };
-        let group = Pid::from_raw(-pid);
-        let _ = kill(group, Signal::SIGTERM);
-        std::thread::sleep(Duration::from_millis(50));
-        let _ = kill(group, Signal::SIGKILL);
-    }
-    #[cfg(not(unix))]
-    {
-        // On Windows there is no process group; the tree needs `taskkill /T /F`. Not implemented
-        // here because the sandbox and the acceptance criteria are POSIX-only; see the module note.
-        let _ = pid;
-    }
-}
-
-/// Waits for the child to be reaped, bounded so a stuck wait cannot hang teardown.
-async fn reap(mut child: tokio::process::Child) {
-    // `kill_on_drop` already guarantees no zombie if this times out, but an explicit wait is what
-    // actually collects the exit status.
-    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
-}
-
-async fn abort_all(
-    stdout: tokio::task::JoinHandle<Vec<u8>>,
-    stderr: tokio::task::JoinHandle<Vec<u8>>,
-) {
-    stdout.abort();
-    stderr.abort();
-    let _ = stdout.await;
-    let _ = stderr.await;
-}
-
-/// Runs a `bash` script, using `bash` when available and `sh` otherwise.
-///
-/// Kept separate from [`run_shell`] so the executor can report which shell it actually used: a
-/// profile that assumes `bash` semantics (process substitution, `[[`) must not silently get `sh`.
-pub async fn run_bash(
-    script: &str,
-    options: &ExecOptions,
-    cancel: &CancellationToken,
-) -> Result<ExecOutput, ExecError> {
-    if !has_program("bash") {
-        return run_shell(script, options, cancel).await;
-    }
-
-    if let Some(policy) = &options.policy {
-        for path in &options.declared_writes {
-            policy.check_write(path)?;
-        }
-    }
-
-    let mut command = Command::new("bash");
-    command
-        .arg("-c")
-        .arg(script)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(cwd) = &options.cwd {
-        command.current_dir(cwd);
-    }
-    #[cfg(unix)]
-    {
-        // SAFETY: see `run_shell`.
-        #[allow(
-            unsafe_code,
-            reason = "pre_exec is the only way to set a process group before exec"
-        )]
-        unsafe {
-            command.pre_exec(|| {
-                nix::unistd::setpgid(nix::unistd::Pid::from_raw(0), nix::unistd::Pid::from_raw(0))
-                    .map_err(std::io::Error::from)?;
-                Ok(())
-            });
-        }
-    }
-
-    let mut child = command.spawn().map_err(|source| ExecError::Spawn {
-        program: "bash".to_owned(),
-        source,
-    })?;
-    let pid = child.id();
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let mut stderr = child.stderr.take().expect("stderr is piped");
-
-    let stdout_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer).await;
-        buffer
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        let _ = stderr.read_to_end(&mut buffer).await;
-        buffer
-    });
-
-    let deadline = tokio::time::sleep(options.timeout);
-    tokio::pin!(deadline);
-
-    let status = tokio::select! {
-        biased;
-        () = cancel.cancelled() => {
-            kill_group(pid);
-            reap(child).await;
-            abort_all(stdout_task, stderr_task).await;
-            return Err(ExecError::Cancelled);
-        }
-        () = &mut deadline => {
-            kill_group(pid);
-            reap(child).await;
-            abort_all(stdout_task, stderr_task).await;
-            return Err(ExecError::Timeout {
-                seconds: options.timeout.as_secs(),
-            });
-        }
-        status = child.wait() => status?,
-    };
-
-    let stdout = stdout_task.await.unwrap_or_default();
-    let stderr = stderr_task.await.unwrap_or_default();
-
-    Ok(ExecOutput {
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
-        code: status.code(),
-    })
-}
-
-/// Whether a program exists on `PATH`.
 #[must_use]
 pub fn has_program(program: &str) -> bool {
     std::env::var_os("PATH")

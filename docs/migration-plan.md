@@ -1626,6 +1626,65 @@ slow reader: got 50 of 50
 - `an_explicit_sync_flushes_the_log` — `sync()` 对存在与不存在的文件都正常
 - `has_user_message_stops_at_the_first_message` — 流式提前终止
 
+## 2.20 补充：一轮缺陷审计（去重与收窄）
+
+2.19 之后我说「没有明确标记的技术债了」，所以这轮改成主动审计：查生产代码里的 panic
+路径、重复实现、以及并存且行为不一致的 API。三处都查到了东西。
+
+### 1. 未实现方法列表有**三份**，且已经不一致
+
+`session` 的未实现方法清单原本有三处拷贝。我用测试比较两个 registry 构造函数的方法集时发现了
+不一致：
+
+```
+left:  [cancel, create, events, list, page, prompt]
+right: [create, events, list, page, prompt]      ← 少了 cancel
+```
+
+`session.cancel` 是 2.16 加的，只加进了 `registry_with_runtime`。测试用的 `default_registry`
+里没有，于是同一个方法名在两种构造下分别报 `UNKNOWN_METHOD` 与 `NOT_IMPLEMENTED`——**客户端
+的错误处理会取决于宿主用了哪个构造函数**。
+
+修法：清单提成一个 `UNIMPLEMENTED_SESSION_METHODS` 常量，`cancel` 单独声明（它需要 runtime，
+两个构造函数里含义不同但都应是「缺口」而非「打错字」）。
+
+### 2. `run_shell` 与 `run_bash` 是 60 行近似重复
+
+两个函数只差程序名（`sh` vs `bash`），却各自复制了：管道并发读取、进程组杀死、超时竞态、
+输出解码。改任何一处都要改两遍，而**第二遍最容易漏**。
+
+合并成 `run_shell_program(program, ...)`，两个公开函数各一行转发。文件从 794 行降到 730 行。
+
+顺带把 `expect("stdout is piped")` 的说明写清楚：它依赖上方的 `Stdio::piped()`，改那行必须
+同步改这行——否则 panic 信息不会告诉你为什么。
+
+### 3. 两个 panic 的判断
+
+审计了所有 `unwrap`/`expect`/`panic!`：
+
+| 位置 | 判断 |
+|---|---|
+| `events.rs` 同名事件注册成不同类型 | **保留**。`const NAME` 语义上唯一，重复是编程错误，静默继续会用错类型读 |
+| `exec.rs` `stdout.take()` | **保留**，但补了说明文字 |
+| `girder-rpc` schema 序列化 | 保留。这些类型不可能序列化失败 |
+| 其余 | 都在测试里 |
+
+### 一次失败的替换，和一次误删
+
+改列表时第一次的文本替换**没匹配上**（函数结尾是 `);\n}` 而非 `);\n    registry\n}`），
+Python 的 `replace` 静默返回原串——和 2.19 那次是同一个陷阱。
+
+另一次：合并 `run_shell`/`run_bash` 时按行号替换，**把夹在两个函数之间的三个辅助函数一起删了**
+（`kill_group` / `reap` / `abort_all`）。编译立刻报错，从 git 取回重插。
+
+教训一致：**按行号或文本做结构性改动，必须用编译器和测试复核，不能凭替换成功就认为改对了。**
+
+### 测试
+
+新增 2 个：
+- `every_method_in_one_registry_exists_in_the_other` — 两个构造函数的差异项必须是「缺口」而非「未知」
+- `the_unimplemented_list_does_not_name_an_implemented_method` — 清单里不能有已实现的方法
+
 # 附录：验证清单
 
 所有结论均经本机编译运行确认：
