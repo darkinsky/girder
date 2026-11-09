@@ -59,6 +59,7 @@ mod events;
 mod exec;
 mod fiber;
 mod fs;
+mod inbox;
 mod instructions;
 mod json;
 mod llm;
@@ -109,6 +110,7 @@ pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
 };
+pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use instructions::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_TOTAL_BYTES, HARNESS_GLOBAL_DIRECTORY,
     INSTRUCTION_FILE_NAME, InstructionFile, InstructionLimits, InstructionState, LoadedInstruction,
