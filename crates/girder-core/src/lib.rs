@@ -63,6 +63,7 @@ mod llm_deepseek;
 mod paths;
 mod registry;
 mod remote;
+mod retry;
 mod runtime;
 mod scope;
 mod service;
@@ -118,6 +119,7 @@ pub use remote::{
     SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_session_methods,
     registry_with_runtime,
 };
+pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;

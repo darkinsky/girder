@@ -316,3 +316,30 @@ Rust 的 newtype 构造器不公开时，非法 id 根本造不出来。
 但行为等同 `Single`。如果假装支持，调用方会以为大记录不再重写整个 unit。
 
 **未完成**：`sandbox` 内核实现（本机无 Landlock）、`PerRecord` 布局。
+
+## M3 进度记录
+
+### 重试策略（已完成）
+
+`retry.rs`：`RetryPolicy` / `Backoff` / `run_with_retry`。
+
+上游 `llm` 15k 行里，重试策略是**独立可验证**的一块，所以先做。语义与上游一致：
+指数退避、对称抖动、按稳定错误码决定是否重试。
+
+三个设计点：
+
+**按错误码而非消息决定重试。** 消息是给人看的，码是给策略看的。按散文匹配的结果是
+provider 改一次措辞，重试循环就悄悄不再重试了。
+
+**抖动由调用方提供随机数。** `jittered(base, draw)` 接受 `[0,1)` 的抽样，而不是内部调
+`rand`。这样调度可测，库也不需要引入随机数依赖。
+
+**单次延迟有上限，总时长可计算。** `worst_case_total()` 让调用方在请求前就能判断
+「这个策略我能不能接受」。没有这个数，调参只能靠试。
+
+测试里两条值得说：
+
+- `jitter_never_produces_zero` —— 零延迟是重试风暴，正是抖动要防的东西
+- `a_large_attempt_number_does_not_overflow` —— `2u32.pow(31)` 在 debug 下会 panic，位移是饱和的
+
+**未完成**：`llm` 的多 provider、`session` 的事件全集、`context` / `compaction` / `attachment`。
