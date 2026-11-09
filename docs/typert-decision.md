@@ -179,12 +179,34 @@ Rust 侧需要相近甚至更多，因为要做 TypeChecker 不做的事——�
 
 我倾向 A，但我不会假装它比实际便宜。
 
-## 如果选 A，第一步是什么
+## 第一步已实现（可回退）
 
-不是写 proc macro。先做**最小可行的类型提取**：
+`typert.rs`：`Schema` / `ObjectSchema` / `Field` / `Method` / `Catalogue`，25 个测试。
 
-1. 定义一个 trait `TypertType`，手写实现几个类型（不生成）
-2. 用它生成一份 JSON Schema，和手写版本对比
-3. 确认 schema 形状正确后，再引入 proc macro 自动化
+**没有 proc macro。** 按计划先手写 trait 的实现，用证据确定 schema 形状，而不是让未来的
+macro 决定形状。
 
-这一步约 400–600 行，能在两三轮内验证方向对不对。如果方向错，损失可控。
+**`Schema` 是枚举而不是裸 `Value`。** 从 `Value` 构造的 schema 可以是任何东西，包括错的，
+而编译器帮不上忙。枚举只能表示存在的形状。
+
+**发现一个 JSON Schema 表达不了的东西：revision 兼容性。**
+
+一个客户端必须能**省略它从没听说过的字段**。所以「在 revision 2 引入的字段」对 revision 1
+的客户端是可省的——哪怕它在服务端是必需的。
+
+这个事实无法放进 schema，只能记在旁边：`Field::added_in` + `ObjectSchema::required_at(revision)`。
+
+这是本轮唯一的新设计，也是不做这件事就发现不了的。
+
+## 如果选 A，下一步是什么
+
+第一步已完成（见上）。下一步才引入 proc macro：
+
+1. 写 `#[derive(Typert)]`，展开为 `Schema` 构造
+2. 用它替换手写的 `ObjectSchema::new(...)`
+3. 断言 macro 生成的结果与手写版本**逐字节相同**
+
+第 3 步是关键：手写版本是「标准答案」，macro 必须匹配它。如果 macro 生成的结果不同，
+是 macro 错了，不是标准答案错了。
+
+这一步约 1,200–1,800 行。

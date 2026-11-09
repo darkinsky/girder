@@ -84,6 +84,7 @@ mod subagent;
 mod subagent_providers;
 mod subprocess;
 mod tools;
+mod typert;
 
 pub use agent::{
     Agent, AgentHandle, AgentOptions, AgentSpec, ModelSelection, ModelSelectionState,
@@ -209,3 +210,4 @@ pub use tools::{
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
     ToolResult, ToolRunContext, ToolValue, ToolsKey,
 };
+pub use typert::{Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant};
