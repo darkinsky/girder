@@ -67,6 +67,7 @@ mod runtime;
 mod scope;
 mod service;
 mod session;
+mod storage;
 mod subagent;
 mod subprocess;
 mod tools;
@@ -122,6 +123,10 @@ pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;
 pub use session::{
     MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, read_session_file,
+};
+pub use storage::{
+    FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
+    is_valid_record_key, is_valid_unit_name,
 };
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,

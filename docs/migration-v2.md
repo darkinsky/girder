@@ -299,4 +299,20 @@ Rust 的 newtype 构造器不公开时，非法 id 根本造不出来。
 2. `a_large_output_does_not_deadlock` —— 20,000 行输出，管道必须并发排空
 3. `a_killed_command_leaves_no_zombie` —— 读 `/proc` 统计本进程的 `Z` 状态子进程
 
-**未完成**：`sandbox` 内核实现（本机无 Landlock）、`storage`。
+### storage seam（已完成）
+
+`storage.rs`：`KvBackend` trait + `FileBackend`（单文档布局）。
+
+**最要紧的是版本门禁**。一个 unit 声明格式版本；后端读到声明之外的版本必须拒绝，而不是读。
+理由：旧文档在新 schema 下读出来会**静默产生错误数据**，那比失败更糟。
+
+测试 `a_document_from_a_newer_build_is_refused` 钉住这条：用 v2 写，用 v1 打开，必须报
+`VersionMismatch`。
+
+`compatible_with()` 是逃生口：owner 可以担保旧记录在当前 schema 下仍可读。
+
+**一个刻意留下的缺口**：`PerRecord` 布局在词汇里声明了，但**没有实现**。测试
+`the_per_record_layout_is_declared_but_not_implemented` 明确记录这件事——现在后端接受它
+但行为等同 `Single`。如果假装支持，调用方会以为大记录不再重写整个 unit。
+
+**未完成**：`sandbox` 内核实现（本机无 Landlock）、`PerRecord` 布局。
