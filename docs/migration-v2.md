@@ -191,7 +191,22 @@ Rust 侧的三个选项：
    无作用域的派发不该被任何子树看到——`an_unscoped_dispatch_reaches_only_global_listeners`
    抓到了。
 
-未完成：
+- [x] **配置 schema 校验**（`ConfigSchema` / `FieldRule`）。这是 `schemastery` 的替代。
 
-- [ ] **配置 schema 校验**。`config.rs` 只验证 patch 结构，不验证插件配置本身。
-      上游用 `schemastery`（1.0k 行），需要决定是照搬还是用 `schemars` 派生。
+      `schemastery` 做两件事：**校验** 和 **从同一份定义派生 TypeScript 类型**。Rust 的类型
+      来自 `serde` 派生，所以只剩校验那一半。规则做成**数据**（`FieldRule` 枚举）而不是
+      builder，好处是 schema 可以被列举、比对、生成文档。
+
+      覆盖面与上游一致：默认值、数值范围、步长（`.step(1024)`）、枚举取值、必填、未知字段
+      拒绝。**一次报告所有问题**，不是一个一个报——三个拼写错误应该一次看到三个。
+
+      校验发生在 **patch 合层之后**，因为一个 mode bundle 有权修正 base bundle 设错的值。
+      测试 `composition_before_validation_lets_a_later_layer_fix_a_bad_value` 钉住这条。
+
+## M0 完成
+
+三项全部完成：服务隔离、作用域事件过滤、配置 schema 校验。
+
+**下一个动作**：M1 值域层。上游 `brand`（65 处 `brandString`）、`util-values`、`util`（7.8k）、
+`schemastery`（1.0k）、`json-value`。目标是把 `SessionId`/`ToolCallId`/`AgentId` 这类
+品牌类型建成编译期不可混用的 newtype 体系，并补齐 JSON 无损往返。

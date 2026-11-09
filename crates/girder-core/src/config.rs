@@ -26,12 +26,19 @@
 //! That is the whole point: a config that cannot be evaluated must fail loudly at load, because
 //! silently treating the expression as false would disable a plugin the user believes is on.
 //!
-//! # What this module does not do
+//! # Validation
 //!
-//! It does not validate a plugin's own config against a schema. Node uses zod/schemastery per
-//! plugin; Rust will use `serde` derives on each plugin's config type, which belongs with the
-//! plugins rather than here. This module validates the *patch structure* — the part every bundle
-//! shares.
+//! Two layers, matching the two things that can be wrong:
+//!
+//! - **Structure** — is this a patch list at all, are fields spelled right. `serde` with
+//!   `deny_unknown_fields` covers it on parse.
+//! - **Values** — is `maxTokens` a positive multiple of one, is `thinking` one of two words.
+//!   [`ConfigSchema`] covers it, and reports every problem at once.
+//!
+//! [`ConfigSchema`] is the substitute for upstream's `schemastery`. That library is a
+//! constructor-call DSL that both validates *and* derives a TypeScript type; Rust derives the type
+//! from `serde`, so what remains is the validation half. Keeping the rules as data rather than a
+//! builder means a schema can be listed, compared, and generated into a document.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -817,4 +824,291 @@ fn collect_disabled<'a>(entries: &'a [Entry], env: &Environment, out: &mut Vec<&
             out.push(id);
         }
     }
+}
+
+// ---- schema validation (schemastery's role) -----------------------------------------------------
+
+/// A validation failure for one field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldError {
+    /// Dotted path to the offending field, e.g. `config.maxTokens`.
+    pub path: String,
+    /// What was wrong.
+    pub message: String,
+}
+
+impl fmt::Display for FieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path, self.message)
+    }
+}
+
+/// What a config field accepts.
+///
+/// Upstream expresses this with `schemastery` — `z.number().min(1).step(1).default(8)` — a
+/// constructor-call DSL that also derives a TypeScript type. Rust derives the type from `serde`, so
+/// what is left is the *validation* half: the constraints and the default. This enum is that half,
+/// deliberately as data rather than a builder so a schema can be listed and diffed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldRule {
+    /// A string, optionally bounded in length and drawn from a fixed set.
+    Text {
+        /// Allowed values, when the field is an enumeration.
+        one_of: Option<Vec<String>>,
+        /// Minimum length.
+        min_len: Option<usize>,
+        /// Maximum length.
+        max_len: Option<usize>,
+    },
+    /// An integer with an optional range and step.
+    Integer {
+        /// Minimum, inclusive.
+        min: Option<i64>,
+        /// Maximum, inclusive.
+        max: Option<i64>,
+        /// Values must be a multiple of this, matching schemastery's `step`.
+        step: Option<i64>,
+    },
+    /// A number with an optional range.
+    Number {
+        /// Minimum, inclusive.
+        min: Option<f64>,
+        /// Maximum, inclusive.
+        max: Option<f64>,
+    },
+    /// A boolean.
+    Flag,
+}
+
+/// One field of a plugin's config.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldSchema {
+    /// Field name, matching the YAML key.
+    pub name: &'static str,
+    /// What it accepts.
+    pub rule: FieldRule,
+    /// Whether the field must be present.
+    pub required: bool,
+    /// Value substituted when absent. Ignored when `required`.
+    pub default: Option<serde_json::Value>,
+}
+
+/// A plugin's config schema.
+///
+/// Rows not listed are rejected: upstream's `schemastery` objects are closed by default, and an
+/// unknown key is a typo the loader should report rather than carry into a plugin that ignores it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfigSchema {
+    /// The plugin this schema describes, for error messages.
+    pub plugin: String,
+    /// Its fields.
+    pub fields: Vec<FieldSchema>,
+}
+
+impl ConfigSchema {
+    /// Builds a schema for `plugin`.
+    #[must_use]
+    pub fn new(plugin: impl Into<String>) -> Self {
+        Self {
+            plugin: plugin.into(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// Adds a field.
+    #[must_use]
+    pub fn field(mut self, field: FieldSchema) -> Self {
+        self.fields.push(field);
+        self
+    }
+
+    /// Validates `config`, returning the value with defaults applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns every problem found, not only the first: a config with three typos should report
+    /// three, otherwise a user fixes them one reload at a time.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the two variants are different shapes that happen to validate identically"
+    )]
+    pub fn validate(&self, config: &ConfigValue) -> Result<ConfigValue, Vec<FieldError>> {
+        // A mapping may arrive as `Map` (parsed from YAML) or as `Json(Object)` (built by a caller);
+        // both are the same thing to validate.
+        let input = match config {
+            ConfigValue::Map(map) => map,
+            ConfigValue::Json(serde_json::Value::Object(map)) => map,
+            // A group row carries child entries, not plugin config; validating it as settings
+            // would report every child as an unknown field.
+            ConfigValue::Entries(_) => return Ok(config.clone()),
+            ConfigValue::Json(other) => {
+                return Err(vec![FieldError {
+                    path: self.plugin.clone(),
+                    message: format!("expected a mapping, got {other}"),
+                }]);
+            }
+        };
+
+        let mut errors = Vec::new();
+        let mut out = serde_json::Map::new();
+
+        for field in &self.fields {
+            match input.get(field.name) {
+                Some(value) => match check(&field.rule, value) {
+                    Ok(()) => {
+                        out.insert(field.name.to_owned(), value.clone());
+                    }
+                    Err(message) => errors.push(FieldError {
+                        path: format!("{}.{}", self.plugin, field.name),
+                        message,
+                    }),
+                },
+                None => {
+                    if field.required {
+                        errors.push(FieldError {
+                            path: format!("{}.{}", self.plugin, field.name),
+                            message: "required".to_owned(),
+                        });
+                    } else if let Some(default) = &field.default {
+                        out.insert(field.name.to_owned(), default.clone());
+                    }
+                }
+            }
+        }
+
+        for key in input.keys() {
+            if !self.fields.iter().any(|field| field.name == key) {
+                errors.push(FieldError {
+                    path: format!("{}.{key}", self.plugin),
+                    message: "unknown field".to_owned(),
+                });
+            }
+        }
+        if errors.is_empty() {
+            Ok(ConfigValue::Map(out))
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Checks one value against one rule.
+fn check(rule: &FieldRule, value: &serde_json::Value) -> Result<(), String> {
+    match rule {
+        FieldRule::Text {
+            one_of,
+            min_len,
+            max_len,
+        } => {
+            let Some(text) = value.as_str() else {
+                return Err(format!("expected a string, got {value}"));
+            };
+            if let Some(allowed) = one_of {
+                if !allowed.iter().any(|candidate| candidate == text) {
+                    return Err(format!("`{text}` is not one of {}", allowed.join(", ")));
+                }
+            }
+            if let Some(min) = min_len {
+                if text.chars().count() < *min {
+                    return Err(format!("must be at least {min} characters"));
+                }
+            }
+            if let Some(max) = max_len {
+                if text.chars().count() > *max {
+                    return Err(format!("must be at most {max} characters"));
+                }
+            }
+            Ok(())
+        }
+        FieldRule::Integer { min, max, step } => {
+            let Some(number) = value.as_i64() else {
+                return Err(format!("expected an integer, got {value}"));
+            };
+            if let Some(min) = min {
+                if number < *min {
+                    return Err(format!("must be at least {min}"));
+                }
+            }
+            if let Some(max) = max {
+                if number > *max {
+                    return Err(format!("must be at most {max}"));
+                }
+            }
+            if let Some(step) = step {
+                if *step > 0 && number % step != 0 {
+                    return Err(format!("must be a multiple of {step}"));
+                }
+            }
+            Ok(())
+        }
+        FieldRule::Number { min, max } => {
+            let Some(number) = value.as_f64() else {
+                return Err(format!("expected a number, got {value}"));
+            };
+            if let Some(min) = min {
+                if number < *min {
+                    return Err(format!("must be at least {min}"));
+                }
+            }
+            if let Some(max) = max {
+                if number > *max {
+                    return Err(format!("must be at most {max}"));
+                }
+            }
+            Ok(())
+        }
+        FieldRule::Flag => {
+            if value.is_boolean() {
+                Ok(())
+            } else {
+                Err(format!("expected a boolean, got {value}"))
+            }
+        }
+    }
+}
+
+impl ConfigSchema {
+    /// Validates every row of an entry list that names `plugin`, merging problems into one report.
+    ///
+    /// # Errors
+    ///
+    /// Returns every field error across every matching row.
+    pub fn validate_rows(&self, list: &EntryList) -> Result<(), Vec<FieldError>> {
+        let mut errors = Vec::new();
+        for entry in walk_entries(list.entries()) {
+            if entry.name.as_deref() != Some(self.plugin.as_str()) {
+                continue;
+            }
+            let Some(config) = &entry.config else {
+                // No config is not an error unless a required field exists, which `validate`
+                // reports for an empty mapping too.
+                if let Err(found) = self.validate(&ConfigValue::Map(serde_json::Map::new())) {
+                    errors.extend(found);
+                }
+                continue;
+            };
+            if let Err(found) = self.validate(config) {
+                errors.extend(found);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Every entry, including the children of groups.
+fn walk_entries(entries: &[Entry]) -> Vec<&Entry> {
+    let mut out = Vec::new();
+    for entry in entries {
+        out.push(entry);
+        if entry.group == Some(true) {
+            if let Some(ConfigValue::Entries(children)) = &entry.config {
+                out.extend(walk_entries(children));
+            }
+        }
+    }
+    out
 }

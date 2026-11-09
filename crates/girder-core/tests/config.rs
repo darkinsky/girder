@@ -606,3 +606,356 @@ fn group_children_are_evaluated_with_their_parent() {
         "the whole group is skipped"
     );
 }
+
+// ---- schema validation (schemastery's role) -----------------------------------------------------
+
+use girder_core::{ConfigSchema, FieldError, FieldRule, FieldSchema};
+
+fn integer(name: &'static str, min: i64, max: i64, step: i64, default: i64) -> FieldSchema {
+    FieldSchema {
+        name,
+        rule: FieldRule::Integer {
+            min: Some(min),
+            max: Some(max),
+            step: Some(step),
+        },
+        required: false,
+        default: Some(serde_json::json!(default)),
+    }
+}
+
+fn text(name: &'static str, allowed: &[&str], default: &str) -> FieldSchema {
+    FieldSchema {
+        name,
+        rule: FieldRule::Text {
+            one_of: Some(allowed.iter().map(|s| (*s).to_owned()).collect()),
+            min_len: None,
+            max_len: None,
+        },
+        required: false,
+        default: Some(serde_json::json!(default)),
+    }
+}
+
+fn schema() -> ConfigSchema {
+    ConfigSchema::new("dsh-llm-deepseek")
+        .field(integer("maxTokens", 1, 1_000_000, 1, 8192))
+        .field(text("thinking", &["enabled", "disabled"], "enabled"))
+        .field(FieldSchema {
+            name: "baseURL",
+            rule: FieldRule::Text {
+                one_of: None,
+                min_len: None,
+                max_len: None,
+            },
+            required: false,
+            default: Some(serde_json::json!("")),
+        })
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "call sites build a literal inline; taking a reference would add a binding to each"
+)]
+fn config(value: serde_json::Value) -> ConfigValue {
+    ConfigValue::Map(value.as_object().cloned().unwrap_or_default())
+}
+
+#[test]
+fn a_valid_config_keeps_its_values() {
+    let validated = schema()
+        .validate(&config(
+            serde_json::json!({"maxTokens": 4096, "thinking": "disabled"}),
+        ))
+        .expect("valid");
+
+    let ConfigValue::Map(map) = validated else {
+        panic!("expected a map");
+    };
+    assert_eq!(map["maxTokens"], serde_json::json!(4096));
+    assert_eq!(map["thinking"], serde_json::json!("disabled"));
+}
+
+#[test]
+fn an_absent_field_takes_its_default() {
+    // schemastery's `.default(...)`: a missing setting is not an error, it is a value.
+    let validated = schema()
+        .validate(&config(serde_json::json!({})))
+        .expect("defaults fill in");
+
+    let ConfigValue::Map(map) = validated else {
+        panic!("expected a map");
+    };
+    assert_eq!(map["maxTokens"], serde_json::json!(8192));
+    assert_eq!(map["thinking"], serde_json::json!("enabled"));
+}
+
+#[test]
+fn an_unknown_field_is_rejected() {
+    // Upstream's schemastery objects are closed: an unknown key is a typo the loader reports.
+    let errors = schema()
+        .validate(&config(serde_json::json!({"maxToken": 4096})))
+        .expect_err("an unknown field must be refused");
+
+    assert!(
+        errors
+            .iter()
+            .any(|e: &FieldError| e.message == "unknown field" && e.path.ends_with(".maxToken")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_value_below_the_minimum_is_rejected() {
+    let errors = schema()
+        .validate(&config(serde_json::json!({"maxTokens": 0})))
+        .expect_err("zero is below the minimum");
+
+    assert!(errors[0].message.contains("at least 1"), "{errors:?}");
+    assert_eq!(errors[0].path, "dsh-llm-deepseek.maxTokens");
+}
+
+#[test]
+fn a_value_above_the_maximum_is_rejected() {
+    let errors = schema()
+        .validate(&config(serde_json::json!({"maxTokens": 9_999_999})))
+        .expect_err("above the maximum");
+
+    assert!(errors[0].message.contains("at most"), "{errors:?}");
+}
+
+#[test]
+fn a_step_violation_is_rejected() {
+    // schemastery's `.step(1)` on an integer is the common case, but `.step(1024)` exists too.
+    let stepped = ConfigSchema::new("p").field(integer("size", 0, 1_000_000, 1024, 0));
+    let errors = stepped
+        .validate(&config(serde_json::json!({"size": 1000})))
+        .expect_err("1000 is not a multiple of 1024");
+
+    assert!(errors[0].message.contains("multiple of 1024"), "{errors:?}");
+}
+
+#[test]
+fn an_enum_value_outside_the_set_is_rejected() {
+    let errors = schema()
+        .validate(&config(serde_json::json!({"thinking": "maybe"})))
+        .expect_err("not one of the allowed values");
+
+    assert!(
+        errors[0].message.contains("enabled") && errors[0].message.contains("disabled"),
+        "the error must list what is allowed: {errors:?}"
+    );
+}
+
+#[test]
+fn every_problem_is_reported_at_once() {
+    // A config with three typos should report three; otherwise the user fixes them one reload at a
+    // time.
+    let errors = schema()
+        .validate(&config(serde_json::json!({
+            "maxTokens": 0,
+            "thinking": "maybe",
+            "bogus": true
+        })))
+        .expect_err("three problems");
+
+    assert_eq!(errors.len(), 3, "{errors:?}");
+}
+
+#[test]
+fn a_required_field_must_be_present() {
+    let strict = ConfigSchema::new("p").field(FieldSchema {
+        name: "apiKey",
+        rule: FieldRule::Text {
+            one_of: None,
+            min_len: Some(1),
+            max_len: None,
+        },
+        required: true,
+        default: None,
+    });
+
+    let errors = strict
+        .validate(&config(serde_json::json!({})))
+        .expect_err("a required field must be present");
+    assert_eq!(errors[0].message, "required");
+}
+
+#[test]
+fn a_wrong_type_is_reported_with_the_value() {
+    let errors = schema()
+        .validate(&config(serde_json::json!({"maxTokens": "many"})))
+        .expect_err("a string is not an integer");
+
+    assert!(
+        errors[0].message.contains("expected an integer"),
+        "{errors:?}"
+    );
+    assert!(
+        errors[0].message.contains("many"),
+        "the value must be shown"
+    );
+}
+
+#[test]
+fn a_group_row_is_not_validated_as_settings() {
+    // A group's `config` holds child entries; validating it as plugin settings would report every
+    // child as an unknown field.
+    let group = ConfigValue::Entries(vec![Entry {
+        id: Some("child".to_owned()),
+        name: Some("child-plugin".to_owned()),
+        ..Entry::default()
+    }]);
+
+    assert!(schema().validate(&group).is_ok());
+}
+
+#[test]
+fn a_non_mapping_config_is_rejected() {
+    let errors = schema()
+        .validate(&ConfigValue::Json(serde_json::json!("a string")))
+        .expect_err("a plugin config must be a mapping");
+
+    assert!(
+        errors[0].message.contains("expected a mapping"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn rows_are_validated_by_plugin_name() {
+    let list = EntryList::new(vec![
+        Entry {
+            id: Some("llm".to_owned()),
+            name: Some("dsh-llm-deepseek".to_owned()),
+            config: Some(config(serde_json::json!({"maxTokens": 0}))),
+            ..Entry::default()
+        },
+        Entry {
+            id: Some("other".to_owned()),
+            name: Some("unrelated".to_owned()),
+            config: Some(config(serde_json::json!({"nonsense": true}))),
+            ..Entry::default()
+        },
+    ]);
+
+    let errors = schema()
+        .validate_rows(&list)
+        .expect_err("the llm row is invalid");
+    assert_eq!(
+        errors.len(),
+        1,
+        "only the matching plugin is checked: {errors:?}"
+    );
+    assert!(errors[0].path.contains("maxTokens"));
+}
+
+#[test]
+fn a_row_with_no_config_gets_defaults_not_an_error() {
+    let list = EntryList::new(vec![Entry {
+        id: Some("llm".to_owned()),
+        name: Some("dsh-llm-deepseek".to_owned()),
+        ..Entry::default()
+    }]);
+
+    schema()
+        .validate_rows(&list)
+        .expect("all fields are optional, so defaults apply");
+}
+
+#[test]
+fn group_children_are_validated() {
+    let list = EntryList::new(vec![Entry {
+        id: Some("group".to_owned()),
+        group: Some(true),
+        config: Some(ConfigValue::Entries(vec![Entry {
+            id: Some("inner".to_owned()),
+            name: Some("dsh-llm-deepseek".to_owned()),
+            config: Some(config(serde_json::json!({"maxTokens": -5}))),
+            ..Entry::default()
+        }])),
+        ..Entry::default()
+    }]);
+
+    let errors = schema()
+        .validate_rows(&list)
+        .expect_err("a group child is still a row");
+    assert!(errors[0].message.contains("at least 1"), "{errors:?}");
+}
+
+#[test]
+fn the_real_deepseek_schema_accepts_its_own_defaults() {
+    // The shape of upstream's `deepSeekConfigFields`: numeric bounds, an enum, a plain string.
+    let real = ConfigSchema::new("dsh-llm-deepseek")
+        .field(integer("maxTokens", 1, i64::MAX, 1, 8192))
+        .field(integer("defaultContextWindow", 1, i64::MAX, 1, 128_000))
+        .field(text(
+            "reasoningEffort",
+            &["off", "low", "high", "max"],
+            "high",
+        ))
+        .field(text("thinking", &["enabled", "disabled"], "enabled"));
+
+    // No config at all must resolve to the documented defaults.
+    let validated = real
+        .validate(&config(serde_json::json!({})))
+        .expect("defaults are valid");
+    let ConfigValue::Map(map) = validated else {
+        panic!("expected a map");
+    };
+    assert_eq!(map["maxTokens"], serde_json::json!(8192));
+    assert_eq!(map["reasoningEffort"], serde_json::json!("high"));
+}
+
+// ---- validation in the load path ----------------------------------------------------------------
+
+/// Loads and validates in one step, as a loader would.
+fn load_and_validate(yaml: &str, schema: &ConfigSchema) -> Result<EntryList, Vec<FieldError>> {
+    let patches = parse_patches(yaml).expect("parse");
+    let mut list = EntryList::new(patches[0].insert.clone().unwrap_or_default());
+    schema.validate_rows(&list)?;
+    // A second layer may fix a value the first got wrong; validation runs after composition.
+    let _ = &mut list;
+    Ok(list)
+}
+
+#[test]
+fn a_bad_value_in_a_real_patch_is_reported_with_its_path() {
+    let yaml = "- insert:\n    - id: llm\n      name: dsh-llm-deepseek\n      config:\n        maxTokens: 0\n";
+
+    let errors = load_and_validate(yaml, &schema()).expect_err("zero is below the minimum");
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].path, "dsh-llm-deepseek.maxTokens");
+    assert!(errors[0].message.contains("at least 1"));
+}
+
+#[test]
+fn composition_before_validation_lets_a_later_layer_fix_a_bad_value() {
+    // The reason validation belongs after patch composition, not per file: a mode bundle is allowed
+    // to correct what a base bundle set.
+    let base = parse_patches(
+        "- insert:\n    - id: llm\n      name: dsh-llm-deepseek\n      config:\n        maxTokens: 0\n",
+    )
+    .unwrap();
+    let mut list = EntryList::new(base[0].insert.clone().unwrap());
+    assert!(
+        schema().validate_rows(&list).is_err(),
+        "the base alone is invalid"
+    );
+
+    let fix = parse_patches("- id: llm\n  config:\n    maxTokens: 4096\n").unwrap();
+    list.apply(&fix, 1);
+
+    schema()
+        .validate_rows(&list)
+        .expect("the overlay repaired the value");
+}
+
+#[test]
+fn a_valid_patch_passes_through_the_loader() {
+    let yaml = "- insert:\n    - id: llm\n      name: dsh-llm-deepseek\n      config:\n        maxTokens: 4096\n        thinking: disabled\n";
+
+    let list = load_and_validate(yaml, &schema()).expect("valid");
+    assert_eq!(list.len(), 1);
+}

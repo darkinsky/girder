@@ -68,8 +68,8 @@ mod tools;
 
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 pub use config::{
-    ConfigError, ConfigValue, Entry, EntryList, Environment, Owner, Patch, PatchWarning, Template,
-    When, parse_entries, parse_patches,
+    ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
+    FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,
 };
 pub use events::{
     Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, ListenerScope, Next,
