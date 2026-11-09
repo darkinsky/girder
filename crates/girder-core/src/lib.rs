@@ -69,6 +69,7 @@ mod llm;
 mod llm_deepseek;
 mod message;
 mod paths;
+mod projection;
 mod providers;
 mod registry;
 mod remote;
@@ -155,6 +156,10 @@ pub use paths::{
     AGENTS_HOME_DISPLAY, AGENTS_HOME_ENV, HARNESS_HOME_DISPLAY, HARNESS_HOME_ENV, Root,
     RootEnvironment, RootError, abbreviate_home, agents_home, expand_home, harness_home, home_dir,
     join_within,
+};
+pub use projection::{
+    ModelSelectionProjection, Projection, ProjectionError, ProjectionHandle, ProjectionRegistry,
+    Seq as ProjectionSeq, TitleProjection, TurnBoundary,
 };
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
