@@ -224,3 +224,126 @@ fn an_empty_struct_renders_an_empty_object() {
             .is_some_and(serde_json::Map::is_empty)
     );
 }
+
+// ---- discriminated unions ---------------------------------------------------------------------
+
+/// A union of two shapes, with one variant carrying fields.
+#[derive(Typert)]
+enum Outcome {
+    Completed,
+    Failed {
+        reason: String,
+        #[typert(added_in = 2)]
+        code: Option<u32>,
+    },
+}
+
+#[test]
+fn an_enum_becomes_a_discriminated_union() {
+    let schema = Outcome::typert_schema();
+
+    let Schema::OneOf(variants) = schema else {
+        panic!("an enum must be a union");
+    };
+    assert_eq!(variants.len(), 2);
+    assert_eq!(variants[0].tag, "completed");
+    assert_eq!(variants[1].tag, "failed");
+}
+
+#[test]
+fn a_unit_variant_has_only_its_tag() {
+    let Schema::OneOf(variants) = Outcome::typert_schema() else {
+        panic!("expected a union");
+    };
+    let Schema::Object(object) = &variants[0].schema else {
+        panic!("expected an object");
+    };
+
+    assert!(object.fields.is_empty(), "a unit variant carries no fields");
+}
+
+#[test]
+fn a_struct_variant_carries_its_fields() {
+    let Schema::OneOf(variants) = Outcome::typert_schema() else {
+        panic!("expected a union");
+    };
+    let Schema::Object(object) = &variants[1].schema else {
+        panic!("expected an object");
+    };
+
+    assert_eq!(object.fields.len(), 2);
+    assert_eq!(object.fields[0].name, "reason");
+    assert!(object.fields[0].required);
+    assert_eq!(
+        object.required_at(1),
+        vec!["reason"],
+        "code arrived in revision 2"
+    );
+    assert_eq!(object.required_at(2), vec!["reason"]);
+}
+
+#[test]
+fn the_rendered_union_constrains_each_tag() {
+    // The property a client relies on: narrowing on `kind` needs no other check.
+    let json = Outcome::typert_schema().to_json();
+
+    assert_eq!(json["oneOf"][0]["properties"]["kind"]["const"], "completed");
+    assert_eq!(json["oneOf"][1]["properties"]["kind"]["const"], "failed");
+}
+
+#[test]
+fn a_variant_tag_is_kebab_case_of_the_rust_name() {
+    // Matching the event tags this codebase already writes: a client reads `turn-end`.
+    let Schema::OneOf(variants) = Outcome::typert_schema() else {
+        panic!("expected a union");
+    };
+
+    assert_eq!(variants[1].tag, "failed");
+}
+
+#[derive(Typert)]
+enum RenamedEnum {
+    #[typert(rename = "wire-tag")]
+    Variant,
+}
+
+#[test]
+fn a_rename_overrides_the_default_tag() {
+    let Schema::OneOf(variants) = RenamedEnum::typert_schema() else {
+        panic!("expected a union");
+    };
+
+    assert_eq!(variants[0].tag, "wire-tag");
+}
+
+#[derive(Typert)]
+/// An enum with documentation.
+enum DocumentedEnum {
+    /// The only branch.
+    Only,
+}
+
+#[test]
+fn a_variant_registers_its_branch() {
+    // Each variant renders as a named object so a `$ref` target is legible.
+    let Schema::OneOf(variants) = DocumentedEnum::typert_schema() else {
+        panic!("expected a union");
+    };
+    let Schema::Object(object) = &variants[0].schema else {
+        panic!("expected an object");
+    };
+
+    assert_eq!(object.name, "DocumentedEnumOnly");
+    assert_eq!(object.docs.as_deref(), Some("The only branch."));
+}
+
+#[test]
+fn an_enum_and_a_struct_never_share_a_schema_shape() {
+    // A struct is an ObjectSchema; an enum is a Schema::OneOf. Keeping them apart is why the two
+    // expansions are separate functions rather than branches of one.
+    let struct_schema: ObjectSchema = SessionSummary::typert_schema();
+    let enum_schema: Schema = Outcome::typert_schema();
+
+    assert!(matches!(enum_schema, Schema::OneOf(_)));
+    assert_eq!(struct_schema.name, "SessionSummary");
+}

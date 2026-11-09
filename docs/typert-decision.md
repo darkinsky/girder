@@ -212,6 +212,24 @@ JSON 也相等。
 **我修正的是参考值，不是 macro。** 因为把 doc 注释带进 schema 是正确行为——生成客户端的
 文档正是这么来的。这是一个具体例子，说明为什么要有手写标准答案：没有它，我会以为两边一致。
 
+### enum 派生（已完成）
+
+enum 展开成判别联合，14 个新测试（共 21 个）。
+
+**struct 和 enum 是两个独立的展开函数，不是一个函数的两个分支。**
+struct 产出 `ObjectSchema`，enum 产出 `Schema::OneOf`——类型不同，硬塞进一个函数会让两个分支
+都无法完整表达。
+
+**每个分支把 `kind` 固定到自己的 tag**，所以客户端按 `kind` 收窄时不需要检查别的东西。
+测试 `the_rendered_union_constrains_each_tag` 断言的是 `"const"` 而不是枚举列表。
+
+**默认 tag 是 Rust 名字的 kebab-case**（`Failed` → `failed`），和这个代码库已经写出的事件 tag
+一致。客户端读的是 `turn-end`，不是 `TurnEnd`。
+
+**tuple variant 被拒绝。** 它没有字段名，叫它们 `0`/`1` 会产出一个客户端无法解释的 schema。
+
+**每个变体渲染成有名字的对象**（`DocumentedEnumOnly`），这样 `$ref` 指向的目标是可读的。
+
 ### 实测的行数
 
 | 部分 | 实际 |
@@ -228,7 +246,7 @@ JSON 也相等。
 
 前两步已完成（见上）。剩余：
 
-1. **enum 的派生**——判别联合，需要 `Schema::OneOf` 展开。约 300–500 行。
+1. ~~enum 的派生~~（已完成，约 150 行）
 2. **`#[remote]` 属性宏**——把方法签名变成 `Method`。约 400–600 行。
 3. **客户端桩生成**——把 `Catalogue` 渲染成 TypeScript 或 Rust 客户端。约 800–1,200 行。
 
