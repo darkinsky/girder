@@ -114,6 +114,35 @@ pub struct Message {
     pub role: Role,
     /// Its blocks.
     pub content: Vec<ContentBlock>,
+    /// For a `tool` message, the call it answers.
+    ///
+    /// Required by the Messages protocol rather than advisory: every `tool_use` block must be
+    /// answered by a `tool_result` in the immediately following message, and the only thing that
+    /// links them is this id. Omitting it produces a request the API rejects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<ToolCallId>,
+}
+
+impl Message {
+    /// Builds a message with no tool correlation.
+    #[must_use]
+    pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
+        Self {
+            role,
+            content,
+            tool_call_id: None,
+        }
+    }
+
+    /// Builds a tool message answering `call_id`.
+    #[must_use]
+    pub fn tool_result(call_id: ToolCallId, content: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::Tool,
+            content,
+            tool_call_id: Some(call_id),
+        }
+    }
 }
 
 /// A JSON-schema description of a tool, as sent to the model.
@@ -300,7 +329,23 @@ impl AssistantMessage {
                 }
                 StreamChunk::BlockEnd { index, block } => {
                     ensure_len(&mut slots, index);
-                    slots[index] = Some(block);
+                    // A `block-end` may carry the assembled content or an empty placeholder,
+                    // depending on the provider. An empty one must not overwrite what the deltas
+                    // accumulated: the DeepSeek adapter emits an empty block and relies on the
+                    // deltas, so taking it verbatim produced an assistant message with no text.
+                    // A textual block with no text is the placeholder shape; any other block (a
+                    // tool call, an image reference) is real content even when small.
+                    let is_placeholder = matches!(
+                        &block,
+                        ContentBlock::Text { text } | ContentBlock::Reasoning { text }
+                            if text.is_empty()
+                    );
+                    // A placeholder never lands in a slot. When no `block-end` content arrived the
+                    // materialization step below builds the block from the accumulated deltas, which
+                    // is the only path that has them.
+                    if !is_placeholder {
+                        slots[index] = Some(block);
+                    }
                 }
                 StreamChunk::Usage(accounting) => usage = Some(accounting),
                 StreamChunk::Finish { reason } => finish = Some(reason),

@@ -36,26 +36,53 @@ fn the_body_uses_the_messages_api_shape() {
 }
 
 #[test]
-fn a_tool_role_becomes_a_user_turn() {
-    // The Messages API has no `tool` role; tool results ride on a user turn.
-    let messages = vec![Message {
-        role: Role::Tool,
-        content: vec![ContentBlock::Text {
+fn a_tool_role_becomes_a_user_turn_holding_a_tool_result() {
+    // The Messages API has no `tool` role; tool results ride on a user turn. The block must be a
+    // `tool_result`, not plain text: every `tool_use` has to be answered by one in the immediately
+    // following message, and the API rejects the request otherwise. This was caught by running
+    // against the real endpoint -- a mock server did not check the protocol.
+    let call_id = girder_core::ToolCallId::new("call-1").expect("valid");
+    let messages = vec![Message::tool_result(
+        call_id,
+        vec![ContentBlock::Text {
             text: "result".to_owned(),
         }],
-    }];
+    )];
     let body = provider().body(&LlmRequest::new("m", messages));
 
     assert_eq!(body["messages"][0]["role"], "user");
-    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(
+        body["messages"][0]["content"][0]["type"], "tool_result",
+        "a tool answer must be a tool_result block, not text"
+    );
+    assert_eq!(
+        body["messages"][0]["content"][0]["tool_use_id"], "call-1",
+        "the block must name the call it answers"
+    );
+}
+
+#[test]
+fn a_tool_message_without_a_call_id_is_still_serialized() {
+    // Defensive: a caller that builds one by hand gets an empty id rather than a panic. The loop
+    // always attaches one, so this only guards the seam.
+    let messages = vec![Message::new(
+        Role::Tool,
+        vec![ContentBlock::Text {
+            text: "result".to_owned(),
+        }],
+    )];
+    let body = provider().body(&LlmRequest::new("m", messages));
+
+    assert_eq!(body["messages"][0]["content"][0]["type"], "tool_result");
+    assert_eq!(body["messages"][0]["content"][0]["tool_use_id"], "");
 }
 
 #[test]
 fn reasoning_blocks_are_not_sent_back() {
     // The API does not accept reasoning as input; sending it would be rejected.
-    let messages = vec![Message {
-        role: Role::Assistant,
-        content: vec![
+    let messages = vec![Message::new(
+        Role::Assistant,
+        vec![
             ContentBlock::Reasoning {
                 text: "thinking".to_owned(),
             },
@@ -63,7 +90,7 @@ fn reasoning_blocks_are_not_sent_back() {
                 text: "answer".to_owned(),
             },
         ],
-    }];
+    )];
     let body = provider().body(&LlmRequest::new("m", messages));
 
     let content = body["messages"][0]["content"].as_array().unwrap();
@@ -74,14 +101,14 @@ fn reasoning_blocks_are_not_sent_back() {
 
 #[test]
 fn a_tool_call_becomes_a_tool_use_block_with_parsed_input() {
-    let messages = vec![Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolCall {
+    let messages = vec![Message::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolCall {
             id: ToolCallId::new("call-1").expect("valid test id"),
             name: "bash".to_owned(),
             arguments: r#"{"command":"ls"}"#.to_owned(),
         }],
-    }];
+    )];
     let body = provider().body(&LlmRequest::new("m", messages));
 
     let block = &body["messages"][0]["content"][0];
@@ -98,14 +125,14 @@ fn a_tool_call_becomes_a_tool_use_block_with_parsed_input() {
 fn malformed_tool_arguments_do_not_fail_the_request() {
     // A malformed accumulator becomes an empty object; the tool executor reports the bad arguments
     // to the model, which is more useful than dropping the whole turn.
-    let messages = vec![Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolCall {
+    let messages = vec![Message::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolCall {
             id: ToolCallId::new("c").expect("valid test id"),
             name: "t".to_owned(),
             arguments: "{not json".to_owned(),
         }],
-    }];
+    )];
     let body = provider().body(&LlmRequest::new("m", messages));
 
     assert_eq!(
@@ -474,12 +501,12 @@ async fn the_provider_posts_to_messages_and_streams_chunks() {
 
     let request = LlmRequest::new(
         "deepseek-chat",
-        vec![Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
+        vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
                 text: "hello".to_owned(),
             }],
-        }],
+        )],
     );
 
     let stream = provider

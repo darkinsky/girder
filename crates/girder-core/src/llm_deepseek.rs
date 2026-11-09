@@ -129,15 +129,36 @@ impl DeepSeekProvider {
             .iter()
             .map(|message| {
                 // The Messages API has no `tool` role: a tool result is a `user` turn holding a
-                // `tool_result` block.
+                // `tool_result` block. That block is not optional — every `tool_use` must be
+                // answered by one in the immediately following message, and the API rejects the
+                // request otherwise.
                 let role = match message.role {
                     Role::Tool | Role::User => "user",
                     Role::Assistant => "assistant",
                 };
-                serde_json::json!({
-                    "role": role,
-                    "content": message.content.iter().map(block_to_wire).collect::<Vec<_>>(),
-                })
+                let content = if message.role == Role::Tool {
+                    let call_id = message.tool_call_id.as_ref().map_or("", |id| id.as_str());
+                    let text: String = message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    vec![serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": call_id,
+                        "content": [{ "type": "text", "text": text }],
+                    })]
+                } else {
+                    message
+                        .content
+                        .iter()
+                        .map(block_to_wire)
+                        .collect::<Vec<_>>()
+                };
+                serde_json::json!({ "role": role, "content": content })
             })
             .collect();
 

@@ -194,10 +194,7 @@ pub fn run(
     let prompt = prompt.into();
     async_stream::stream! {
         use futures::StreamExt as _;
-        let mut messages = vec![Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text { text: prompt.clone() }],
-        }];
+        let mut messages = vec![Message::new(Role::User, vec![ContentBlock::Text { text: prompt.clone() }])];
 
         // The first user message is durable before any turn starts, unless the caller already
         // recorded it.
@@ -344,10 +341,7 @@ fn turn_stream<'a>(
             return;
         }
 
-        messages.push(Message {
-            role: Role::Assistant,
-            content: assistant.content.clone(),
-        });
+        messages.push(Message::new(Role::Assistant, assistant.content.clone()));
 
         let mut tool_steps = Box::pin(tool_calls(context, messages, calls, &cancel));
         while let Some(step) = tool_steps.next().await {
@@ -427,10 +421,10 @@ fn tool_calls<'a>(
                 is_error,
             });
 
-            messages.push(Message {
-                role: Role::Tool,
-                content: result.content,
-            });
+            // A tool message records which call it answers. Without the call id the provider cannot
+            // emit a `tool_result` block, and the API rejects the following request: every
+            // `tool_use` must be answered by the very next message.
+            messages.push(Message::tool_result(id.clone(), result.content));
         }
     }
 }

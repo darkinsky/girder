@@ -317,6 +317,43 @@ Rust 的 newtype 构造器不公开时，非法 id 根本造不出来。
 
 **未完成**：`sandbox` 内核实现（本机无 Landlock）、`PerRecord` 布局。
 
+## 真实 API 验证（M3 闭环）
+
+拿到 key 后做的第一件事是**用真实端点验证 provider**，结果抓到两个只有真实 API 才会暴露的 bug。
+
+### Bug 1：tool 结果没序列化成 `tool_result`
+
+真实 API 直接拒绝：
+
+```
+messages.2: `tool_use` ids were found without `tool_result` blocks immediately after
+```
+
+Messages 协议要求每个 `tool_use` 由**紧邻的下一条消息**里的 `tool_result` 应答。我的 provider 把
+tool 消息平铺成 `text`，本地 mock 服务器不校验，所以**全套测试通过而真实调用必然失败**。
+
+修法：`llm::Message` 增加 `tool_call_id`（协议必需信息，不是可选装饰），provider 序列化时生成
+`tool_result` 块。
+
+### Bug 2：空 `block-end` 覆盖了累积文本
+
+真实响应里模型回了 `OK`，我的 `AssistantMessage` 却是空字符串。
+
+原因：DeepSeek 在 `content_block_stop` 发的是**空块占位**（内容靠 delta 累积），而我的 assembler
+把占位写进了 slot，覆盖了 delta 累积的文本。
+
+修法：占位块**永不落盘**——它不携带内容，落到 slot 只会遮蔽现有内容。
+
+### 这两个 bug 的共性
+
+**mock 服务器只验证我让它验证的东西。** 它返回我构造的 SSE，所以我的解析器遇到的输入恰好是
+我预期的那种。真实 API 会：
+- 校验协议（`tool_result` 必须存在）
+- 发出我没预料到的形状（空占位块）
+
+现在有一个 `tests/live_provider.rs`，**无 key 时全部跳过**，有 key 时跑 4 个真实场景
+（纯文本、工具请求、tool_result 回传、取消）。这是唯一能覆盖这类 bug 的测试。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）
