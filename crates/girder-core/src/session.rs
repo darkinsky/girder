@@ -35,12 +35,71 @@ use crate::brand::ToolCallId;
 use crate::llm::{ContentBlock, FinishReason};
 use crate::scope::BoxFut;
 
+/// Why a turn ended.
+///
+/// A tagged union rather than a reuse of [`FinishReason`]: a turn can end for reasons a model never
+/// reports — a cancellation, a blocked step, a tool that failed to activate. Overloading the model's
+/// stop reason would make "the model finished" and "the user pressed Ctrl-C" the same value in the
+/// log, and a replay could not tell them apart.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TurnEndReason {
+    /// The model finished its work.
+    Completed,
+
+    /// The caller cancelled.
+    Aborted {
+        /// Why, so a replay can distinguish a user request from a timeout.
+        cause: String,
+    },
+
+    /// A step was blocked before it could run.
+    Blocked,
+
+    /// The turn failed.
+    Failed {
+        /// The failure, flattened to text and a code.
+        message: String,
+        /// A stable code a reader can branch on.
+        code: String,
+    },
+}
+
+impl From<FinishReason> for TurnEndReason {
+    fn from(reason: FinishReason) -> Self {
+        match reason {
+            FinishReason::Stop | FinishReason::ToolCalls => Self::Completed,
+            FinishReason::Length => Self::Failed {
+                message: "the model reached its output limit".to_owned(),
+                code: "MAX_TOKENS".to_owned(),
+            },
+            FinishReason::Aborted => Self::Aborted {
+                cause: "aborted".to_owned(),
+            },
+            FinishReason::Error { message } => Self::Failed {
+                message,
+                code: "UNKNOWN".to_owned(),
+            },
+        }
+    }
+}
+
 /// One durable session event.
 ///
-/// The discriminant list is the minimum that makes a conversation replayable: turn boundaries, both
-/// message authors, a tool call, its result, and why the turn ended. Upstream has 60+ variants;
-/// adding one here is a compile error at every `match`, which is the point — a new event type must
-/// be handled by the log writer, not silently dropped.
+/// The list carries everything a replay needs to reconstruct a conversation and explain how it got
+/// there. Upstream has 54 event types across 30 domains; this is the conversation core — turn, step,
+/// message, tool — which is what every other domain's events attach to.
+///
+/// # Why `step` exists
+///
+/// A turn is not one model call. It is a sequence of steps, each one model call plus the tool
+/// executions that call requested. Recording only turns would lose which tool call answered which
+/// step, and a replay could not reconstruct the model's view at any point mid-turn.
+///
+/// # Adding a variant
+///
+/// A new variant is a compile error at every `match`, which is the point: the log writer must
+/// handle it rather than drop it silently.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SessionEvent {
@@ -51,32 +110,74 @@ pub enum SessionEvent {
         turn: u64,
     },
 
-    /// The user sent a message.
+    /// A turn ended.
+    #[serde(rename = "turn/end")]
+    TurnEnd {
+        /// Turn number.
+        turn: u64,
+        /// Why it stopped.
+        reason: TurnEndReason,
+    },
+
+    /// A step began: one model call plus the tools it requested.
+    #[serde(rename = "step/start")]
+    StepStart {
+        /// Turn it belongs to.
+        turn: u64,
+        /// Step number within the turn, starting at 1.
+        step: u64,
+    },
+
+    /// A step ended.
+    #[serde(rename = "step/end")]
+    StepEnd {
+        /// Turn it belongs to.
+        turn: u64,
+        /// Step number.
+        step: u64,
+    },
+
+    /// A user-role message on the model-visible surface.
+    ///
+    /// One event for the person's prompt, a synthetic injection, and a relayed peer message: the
+    /// role is the same, and the message's `source` tells them apart. Splitting into three events
+    /// would make every consumer match three cases to read one turn.
     #[serde(rename = "user/message")]
     UserMessage {
-        /// Its blocks.
-        content: Vec<ContentBlock>,
+        /// The message, with its identity and provenance preserved.
+        message: crate::message::Message,
     },
 
-    /// The model responded.
+    /// A developer-role message: a tool addition or removal riding the turn.
+    #[serde(rename = "developer/message")]
+    DeveloperMessage {
+        /// Turn it was admitted at.
+        turn: u64,
+        /// Step it was admitted at.
+        step: u64,
+        /// The message.
+        message: crate::message::Message,
+    },
+
+    /// The model's response for one step.
     #[serde(rename = "assistant/message")]
     AssistantMessage {
-        /// Its blocks.
-        content: Vec<ContentBlock>,
+        /// The message, carrying provider identity for replay.
+        message: crate::message::Message,
     },
 
-    /// The model requested a tool.
+    /// A tool was invoked.
     #[serde(rename = "tool/call")]
     ToolCall {
         /// Provider-issued call id.
         id: ToolCallId,
         /// Tool name.
         name: String,
-        /// Raw JSON arguments.
+        /// Raw JSON arguments, exactly as the model produced them.
         arguments: String,
     },
 
-    /// A tool finished.
+    /// A tool produced a result.
     #[serde(rename = "tool/result")]
     ToolResult {
         /// The call this answers.
@@ -87,13 +188,17 @@ pub enum SessionEvent {
         is_error: bool,
     },
 
-    /// The turn ended.
-    #[serde(rename = "turn/end")]
-    TurnEnd {
-        /// Turn number.
-        turn: u64,
-        /// Why it stopped.
-        reason: FinishReason,
+    /// An LLM request is about to be attempted.
+    ///
+    /// Recorded because a retry makes the log otherwise unexplainable: two assistant messages for
+    /// one step look like a protocol violation without the attempts between them.
+    #[serde(rename = "llm/retry")]
+    LlmRetry {
+        /// Which attempt this is, starting at 1.
+        attempt: u32,
+        /// Why the previous one failed, when this is a retry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 }
 
@@ -103,11 +208,32 @@ impl SessionEvent {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::TurnStart { .. } => "turn/start",
+            Self::TurnEnd { .. } => "turn/end",
+            Self::StepStart { .. } => "step/start",
+            Self::StepEnd { .. } => "step/end",
             Self::UserMessage { .. } => "user/message",
+            Self::DeveloperMessage { .. } => "developer/message",
             Self::AssistantMessage { .. } => "assistant/message",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
-            Self::TurnEnd { .. } => "turn/end",
+            Self::LlmRetry { .. } => "llm/retry",
+        }
+    }
+
+    /// The turn this event belongs to, when it names one.
+    #[must_use]
+    pub fn turn(&self) -> Option<u64> {
+        match self {
+            Self::TurnStart { turn }
+            | Self::TurnEnd { turn, .. }
+            | Self::StepStart { turn, .. }
+            | Self::StepEnd { turn, .. }
+            | Self::DeveloperMessage { turn, .. } => Some(*turn),
+            Self::UserMessage { .. }
+            | Self::AssistantMessage { .. }
+            | Self::ToolCall { .. }
+            | Self::ToolResult { .. }
+            | Self::LlmRetry { .. } => None,
         }
     }
 }
@@ -460,4 +586,41 @@ pub fn read_session_file(path: impl AsRef<Path>) -> Result<Vec<SessionEvent>, Se
         events.push(event);
     }
     Ok(events)
+}
+
+impl SessionEvent {
+    /// Builds a user-message event from text.
+    ///
+    /// A constructor rather than a literal at each call site: every user message needs an id and a
+    /// source, and repeating that at ten call sites is how one of them ends up with a duplicated id.
+    #[must_use]
+    pub fn user_text(id: &str, text: impl Into<String>) -> Self {
+        let message = crate::message::Message::new(
+            crate::brand::MessageId::new(id).unwrap_or_else(|_| {
+                crate::brand::MessageId::new("msg-invalid").expect("constant is valid")
+            }),
+            crate::message::Role::User,
+            crate::message::MessageSource::User { form: None },
+            vec![ContentBlock::Text { text: text.into() }],
+        );
+        Self::UserMessage { message }
+    }
+
+    /// Builds an assistant-message event from text.
+    #[must_use]
+    pub fn assistant_text(id: &str, text: impl Into<String>, provider: &str) -> Self {
+        let message = crate::message::Message::new(
+            crate::brand::MessageId::new(id).unwrap_or_else(|_| {
+                crate::brand::MessageId::new("msg-invalid").expect("constant is valid")
+            }),
+            crate::message::Role::Assistant,
+            crate::message::MessageSource::Model {
+                provider: provider.to_owned(),
+                model: provider.to_owned(),
+                replay_state: None,
+            },
+            vec![ContentBlock::Text { text: text.into() }],
+        );
+        Self::AssistantMessage { message }
+    }
 }

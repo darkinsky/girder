@@ -613,19 +613,11 @@ fn the_session_round_trips_through_zstd_jsonl() {
 
     let events = vec![
         SessionEvent::TurnStart { turn: 1 },
-        SessionEvent::UserMessage {
-            content: vec![ContentBlock::Text {
-                text: "hello".to_owned(),
-            }],
-        },
-        SessionEvent::AssistantMessage {
-            content: vec![ContentBlock::Text {
-                text: "hi".to_owned(),
-            }],
-        },
+        SessionEvent::user_text("msg-1", "hello".to_owned()),
+        SessionEvent::assistant_text("msg-2", "hi".to_owned(), "test"),
         SessionEvent::TurnEnd {
             turn: 1,
-            reason: FinishReason::Stop,
+            reason: girder_core::TurnEndReason::Completed,
         },
     ];
     for event in &events {
@@ -854,11 +846,7 @@ fn has_user_message_stops_at_the_first_message() {
     );
 
     store
-        .append(&SessionEvent::UserMessage {
-            content: vec![ContentBlock::Text {
-                text: "hello".to_owned(),
-            }],
-        })
+        .append(&SessionEvent::user_text("msg-1", "hello".to_owned()))
         .unwrap();
     assert!(store.has_user_message().unwrap());
 

@@ -366,4 +366,26 @@ provider 改一次措辞，重试循环就悄悄不再重试了。
 **一处换算细节**：`bound_context_summary` 按**字符**而非字节截断。CJK 摘要是 N 个字符但 3N 字节，
 按字节限制会砍到三分之一。
 
-**未完成**：`llm` 的多 provider、`session` 的事件全集、`context` / `compaction` / `attachment`。
+### session 事件词汇（对话核心已完成）
+
+`session.rs`：10 个事件类型，覆盖对话核心。
+
+上游 `known-event-types.ts` 有 **54 个事件类型、30 个领域**。这轮做的是对话核心
+（turn / step / message / tool / retry），其他领域（compaction、team、subagent、approval…）
+的事件挂在它们上面，属于后续批次。
+
+**加了 `step` 层。** 这是我之前的设计缺口：一个 turn 不是一次模型调用，而是一串 step，
+每个 step 是一次模型调用加上它请求的工具执行。只记 turn 会丢失「哪个工具调用属于哪一步」，
+重放时无法重建模型在 turn 中途看到的东西。
+
+**`TurnEndReason` 与 `FinishReason` 分开。** turn 可以因为模型从不报告的原因结束——取消、
+被拦、工具激活失败。复用模型的 stop reason 会让「模型说完了」和「用户按了 Ctrl-C」
+在日志里是同一个值。
+
+**`user/message` 改成一个变体承载三种来源。** 本人输入、合成注入、中继消息都是 user 角色，
+`message.source` 区分它们。拆成三个事件会让每个消费者为读一轮对话而匹配三种情况。
+
+**`llm/retry` 事件。** 没有它，一次重试留下的两个 assistant 消息看起来像协议违规。
+
+**未完成**：`llm` 的多 provider、`session` 的其余 44 个事件类型、
+`context` / `compaction` / `attachment`。

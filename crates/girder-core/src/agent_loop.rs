@@ -134,6 +134,12 @@ pub struct LoopContext {
     pub depth: crate::subagent::Depth,
     /// How many nested delegations this agent may make.
     pub max_depth: u32,
+    /// Counter for minting message ids.
+    ///
+    /// A message id must be unique within a session, and a loop-local counter is enough: two loops
+    /// never write to one session, because the runtime refuses a concurrent prompt.
+    pub message_counter: Arc<std::sync::atomic::AtomicU64>,
+
     /// Whether the loop writes the prompt as a user message.
     ///
     /// True for a direct caller that owns the conversation (the CLI). False when the caller already
@@ -163,6 +169,7 @@ impl LoopContext {
             max_turns: 16,
             depth: crate::subagent::Depth::root(),
             max_depth: 2,
+            message_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             record_prompt: true,
         }
     }
@@ -195,11 +202,15 @@ pub fn run(
         // The first user message is durable before any turn starts, unless the caller already
         // recorded it.
         if context.record_prompt {
+            let prompt = crate::message::Message::new(
+                context.next_message_id(),
+                crate::message::Role::User,
+                crate::message::MessageSource::User { form: None },
+                messages[0].content.clone(),
+            );
             if let Err(error) = context
                 .session
-                .append(SessionEvent::UserMessage {
-                    content: messages[0].content.clone(),
-                })
+                .append(SessionEvent::UserMessage { message: prompt })
                 .await
             {
                 yield Err(LoopError::Session(error));
@@ -301,10 +312,20 @@ fn turn_stream<'a>(
                 return;
             }
         };
+        let assistant_message = crate::message::Message::new(
+            context.next_message_id(),
+            crate::message::Role::Assistant,
+            crate::message::MessageSource::Model {
+                provider: context.model.clone(),
+                model: context.model.clone(),
+                replay_state: None,
+            },
+            assistant.content.clone(),
+        );
         let _ = context
             .session
             .append(SessionEvent::AssistantMessage {
-                content: assistant.content.clone(),
+                message: assistant_message,
             })
             .await;
         yield Ok(LoopStep::AssistantMessage(assistant.clone()));
@@ -316,7 +337,7 @@ fn turn_stream<'a>(
                 .session
                 .append(SessionEvent::TurnEnd {
                     turn,
-                    reason: reason.clone(),
+                    reason: crate::session::TurnEndReason::from(reason.clone()),
                 })
                 .await;
             yield Ok(LoopStep::TurnEnded { turn, reason });
@@ -341,7 +362,7 @@ fn turn_stream<'a>(
             .session
             .append(SessionEvent::TurnEnd {
                 turn,
-                reason: FinishReason::ToolCalls,
+                reason: crate::session::TurnEndReason::Completed,
             })
             .await;
         yield Ok(LoopStep::TurnEnded {
@@ -519,4 +540,19 @@ async fn run_body(
 /// A free function rather than a closure because the waterfall's terminal must be `'static`.
 fn accept_terminal(_args: PostExecuteArgs) -> BoxFut<PostToolDecision> {
     Box::pin(async { PostToolDecision::Accept })
+}
+
+impl LoopContext {
+    /// Mints a message id for this session.
+    ///
+    /// `msg-<n>` rather than a UUID: the counter is per-loop, the loop owns one session, and a
+    /// monotonic id makes a log readable and diffable.
+    #[must_use]
+    pub fn next_message_id(&self) -> crate::brand::MessageId {
+        let value = self
+            .message_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::brand::MessageId::new(format!("msg-{value}"))
+            .unwrap_or_else(|_| crate::brand::MessageId::new("msg-0").expect("constant is valid"))
+    }
 }

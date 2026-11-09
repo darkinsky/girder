@@ -8,9 +8,8 @@
 use std::sync::Arc;
 
 use girder_core::{
-    ContentBlock, DirectoryCatalog, FinishReason, RemoteCall, RemoteError, RemoteRegistry,
-    SessionCatalog, SessionEvent, SessionRecord, SessionSummary, default_registry,
-    register_session_methods,
+    DirectoryCatalog, FinishReason, RemoteCall, RemoteError, RemoteRegistry, SessionCatalog,
+    SessionEvent, SessionRecord, SessionSummary, default_registry, register_session_methods,
 };
 use serde_json::json;
 
@@ -41,11 +40,7 @@ impl SessionCatalog for FixedCatalog {
 fn record(id: &str, updated_at: u64, has_message: bool) -> SessionRecord {
     let mut events = vec![SessionEvent::TurnStart { turn: 1 }];
     if has_message {
-        events.push(SessionEvent::UserMessage {
-            content: vec![ContentBlock::Text {
-                text: "hello".to_owned(),
-            }],
-        });
+        events.push(SessionEvent::user_text("msg-1", "hello".to_owned()));
     }
     SessionRecord {
         id: id.to_owned(),
@@ -347,11 +342,7 @@ async fn a_directory_of_logs_lists_one_row_per_file() {
         let store = girder_core::SessionStore::new(dir.join(format!("{id}.jsonl.zst")));
         store.append(&SessionEvent::TurnStart { turn: 1 }).unwrap();
         store
-            .append(&SessionEvent::UserMessage {
-                content: vec![ContentBlock::Text {
-                    text: "hi".to_owned(),
-                }],
-            })
+            .append(&SessionEvent::user_text("msg-1", "hi".to_owned()))
             .unwrap();
     }
     // A non-log file must be ignored rather than listed as a session.
@@ -381,15 +372,8 @@ async fn a_directory_of_logs_lists_one_row_per_file() {
 
 #[test]
 fn a_summary_reflects_whether_the_session_has_a_message() {
-    let with = SessionSummary::from_events(
-        "s",
-        &[SessionEvent::UserMessage {
-            content: vec![ContentBlock::Text {
-                text: "x".to_owned(),
-            }],
-        }],
-        5,
-    );
+    let with =
+        SessionSummary::from_events("s", &[SessionEvent::user_text("msg-1", "x".to_owned())], 5);
     assert!(!with.blank);
 
     let without = SessionSummary::from_events("s", &[SessionEvent::TurnStart { turn: 1 }], 5);
@@ -404,7 +388,7 @@ fn a_summary_is_not_attached_to_a_live_agent() {
         "s",
         &[SessionEvent::TurnEnd {
             turn: 1,
-            reason: FinishReason::Stop,
+            reason: girder_core::TurnEndReason::Completed,
         }],
         1,
     );
@@ -896,8 +880,8 @@ async fn a_prompt_actually_calls_the_model() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            SessionEvent::UserMessage { content }
-                if content.iter().any(|block| matches!(block, ContentBlock::Text { text } if text == "hello"))
+            SessionEvent::UserMessage { message }
+                if message.text() == "hello"
         )),
         "the user message must be in the log: {events:?}"
     );
@@ -1042,8 +1026,8 @@ async fn the_prompt_is_recorded_exactly_once() {
         .filter(|event| {
             matches!(
                 event,
-                SessionEvent::UserMessage { content }
-                    if content.iter().any(|block| matches!(block, ContentBlock::Text { text } if text == "unique-prompt"))
+                SessionEvent::UserMessage { message }
+                    if message.text() == "unique-prompt"
             )
         })
         .count();

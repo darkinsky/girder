@@ -467,11 +467,10 @@ impl girder_core::SessionCatalog for OneSession {
                 id: "s1".to_owned(),
                 updated_at: 7,
                 blank: false,
-                events: vec![girder_core::SessionEvent::UserMessage {
-                    content: vec![girder_core::ContentBlock::Text {
-                        text: "hi".to_owned(),
-                    }],
-                }],
+                events: vec![girder_core::SessionEvent::user_text(
+                    "msg-1",
+                    "hi".to_owned(),
+                )],
             }]
         })
     }

@@ -129,7 +129,8 @@ pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeErr
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use service::ServiceKey;
 pub use session::{
-    MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, read_session_file,
+    MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, TurnEndReason,
+    read_session_file,
 };
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,

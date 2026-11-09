@@ -206,12 +206,18 @@ impl AgentRuntime {
             .count() as u64
             + 1;
 
+        let prompt = crate::message::Message::new(
+            crate::brand::MessageId::new(format!("msg-{turn}")).unwrap_or_else(|_| {
+                crate::brand::MessageId::new("msg-0").expect("constant is valid")
+            }),
+            crate::message::Role::User,
+            crate::message::MessageSource::User { form: None },
+            vec![ContentBlock::Text {
+                text: text.to_owned(),
+            }],
+        );
         session
-            .append(SessionEvent::UserMessage {
-                content: vec![ContentBlock::Text {
-                    text: text.to_owned(),
-                }],
-            })
+            .append(SessionEvent::UserMessage { message: prompt })
             .await?;
 
         let cancel = this
