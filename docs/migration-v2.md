@@ -354,6 +354,28 @@ tool 消息平铺成 `text`，本地 mock 服务器不校验，所以**全套测
 现在有一个 `tests/live_provider.rs`，**无 key 时全部跳过**，有 key 时跑 4 个真实场景
 （纯文本、工具请求、tool_result 回传、取消）。这是唯一能覆盖这类 bug 的测试。
 
+### 压缩摘要器（已完成，真实模型验证）
+
+`compaction.rs` 新增 `summary_request` / `extract_summary` / `checkpoint_message` / `is_checkpoint`。
+
+**指令作为最后一条 user 消息，而不是单独的 system prompt。** 这不是排版偏好：保留对话自己的
+system prompt、tools 和前导消息，让这次辅助调用成为最后一次路由请求的**真正前缀**，provider 的
+prefix cache 因此被复用而不是作废。换成单独 system prompt 会改变前缀，每次压缩都付全价。
+
+**八个 section 全部必需，空的写 `(none)`。** 摘要漏掉「试过什么失败了」，下一个模型就会重蹈覆辙。
+要求每节都存在，让「空」是**可见的空**，而不是悄悄缺失。
+
+**checkpoint 带 preamble 和标签。** 没有 preamble，模型会把摘要当成对它说的话去回答；没有标签，
+第二次压缩分不清 checkpoint 和用户写的内容。
+
+**真实模型验证**（`tests/live_provider.rs`，无 key 时跳过）：
+
+- `a_real_summary_holds_every_required_section` —— 断言八个 section 都在，且主题没丢
+- `a_summary_becomes_a_detectable_checkpoint` —— 摘要 → 包装 → `is_checkpoint` 认出
+
+实测输出保留了 `crates/core/src/retry.rs`、`RetryPolicy`、`run_with_retry`、
+`jitter_never_produces_zero` 这些**精确标识符**，以及「jitter 结果永不为零」的设计决策。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

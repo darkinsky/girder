@@ -329,3 +329,148 @@ pub fn needs_compaction(measured: u64, window: u64, threshold: f64) -> bool {
     let ratio = measured as f64 / window as f64;
     ratio >= threshold
 }
+
+// ---- summarization ----------------------------------------------------------------------------
+
+/// Tags wrapping a checkpoint in the landed history.
+pub const SUMMARY_OPEN_TAG: &str = "<compacted-summary>";
+/// Closing tag for a checkpoint.
+pub const SUMMARY_CLOSE_TAG: &str = "</compacted-summary>";
+
+/// The preamble that makes a checkpoint read as established background.
+///
+/// Without it the model treats the summary as a message addressed to it and starts answering it,
+/// which loses the whole point: the summary stands in for a conversation, not for a prompt.
+pub const CHECKPOINT_PREAMBLE: &str = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
+
+/// The directive sent as the final user message.
+///
+/// A fixed structure rather than free-form "summarize this": a summary that omits what was tried and
+/// failed makes the next model repeat the failure. Every section is required, with `(none)` for an
+/// empty one, so an omission is visibly empty rather than silently missing.
+pub const COMPACTION_INSTRUCTION: &str = "\
+You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
+
+Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write \"(none)\" for an empty section - never drop a section.
+
+## Primary Request and Intent
+- [the user's original and evolving goals; quote verbatim where the exact wording matters]
+
+## Key Technical Concepts
+- [technologies, frameworks, patterns, and conventions in play]
+
+## Files and Code
+- [exact path: why it matters, key changes or snippets]
+
+## Errors and Fixes
+- [error: how it was resolved, plus any related user feedback]
+
+## Pending Jobs
+- [explicitly requested work not yet completed]
+
+## Current Work
+- [precisely what was in progress at this checkpoint]
+
+## Next Step
+- [the single next action, directly in line with the most recent request, or \"(none)\"]
+
+## Critical Context
+- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
+
+Rules:
+- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Capture user feedback and explicit instructions faithfully, especially corrections.
+- Do NOT mention this summarization request or that the context was compacted.
+- Output only the checkpoint text: do not call any tool or take any other action.
+- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.";
+
+/// Why summarization failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SummaryError {
+    /// The model returned no text.
+    #[error("summarization produced no text")]
+    Empty,
+
+    /// The model reported a failure rather than a summary.
+    #[error("the summarization request failed: {reason}")]
+    Provider {
+        /// The failure.
+        reason: String,
+    },
+}
+
+/// Builds the message list for a summarization request.
+///
+/// The instruction is appended as the final user message rather than passed as a separate system
+/// prompt. That is not cosmetic: keeping the conversation's own system prompt, tools, and leading
+/// messages in front of it makes the auxiliary call a genuine prefix of the last routed request, so
+/// the provider's prefix cache is reused instead of invalidated. A separate system prompt would
+/// change the prefix and pay full price for every compaction.
+#[must_use]
+pub fn summary_request(conversation: Vec<crate::llm::Message>) -> Vec<crate::llm::Message> {
+    let mut messages = conversation;
+    messages.push(crate::llm::Message::new(
+        crate::llm::Role::User,
+        vec![crate::llm::ContentBlock::Text {
+            text: COMPACTION_INSTRUCTION.to_owned(),
+        }],
+    ));
+    messages
+}
+
+/// Extracts the summary text from an assistant message, refusing an empty one.
+///
+/// # Errors
+///
+/// Returns [`SummaryError::Empty`] when the model produced whitespace or nothing, and
+/// [`SummaryError::Provider`] when it reported a failure instead of answering.
+pub fn extract_summary(message: &crate::llm::AssistantMessage) -> Result<String, SummaryError> {
+    match &message.finish {
+        Some(crate::llm::FinishReason::Error { message: reason }) => {
+            return Err(SummaryError::Provider {
+                reason: reason.clone(),
+            });
+        }
+        Some(crate::llm::FinishReason::Aborted) => {
+            return Err(SummaryError::Provider {
+                reason: "aborted".to_owned(),
+            });
+        }
+        _ => {}
+    }
+
+    let text = message.text();
+    if text.trim().is_empty() {
+        return Err(SummaryError::Empty);
+    }
+    Ok(text)
+}
+
+/// Wraps a summary as the checkpoint message that replaces the compacted span.
+///
+/// The preamble and tags are what make the checkpoint usable: without the preamble the model reads
+/// the summary as a request, and without the tags a second compaction cannot tell a checkpoint from
+/// something the user wrote.
+#[must_use]
+pub fn checkpoint_message(summary: &str, id: crate::brand::MessageId) -> crate::message::Message {
+    let text =
+        format!("{CHECKPOINT_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}\n{summary}\n{SUMMARY_CLOSE_TAG}");
+    crate::message::Message::new(
+        id,
+        crate::message::Role::User,
+        crate::message::MessageSource::User {
+            form: Some(crate::message::ContextForm::Recall),
+        },
+        vec![crate::llm::ContentBlock::Text { text }],
+    )
+}
+
+/// Whether a message is a prior checkpoint.
+///
+/// A second compaction must merge into an existing checkpoint rather than nesting one inside another,
+/// and detecting it needs the tags rather than a heuristic on the text.
+#[must_use]
+pub fn is_checkpoint(message: &crate::message::Message) -> bool {
+    let text = message.text();
+    text.contains(SUMMARY_OPEN_TAG) && text.contains(SUMMARY_CLOSE_TAG)
+}

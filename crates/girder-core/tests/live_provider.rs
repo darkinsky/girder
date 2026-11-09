@@ -228,3 +228,99 @@ async fn a_cancelled_request_stops() {
 
     assert!(seen > 0, "at least one chunk must arrive before cancelling");
 }
+
+#[tokio::test]
+async fn a_real_summary_holds_every_required_section() {
+    // The prompt's structure is the point: a summary missing a section silently loses the fact that
+    // the section was empty. This asserts the model actually follows the shape rather than
+    // paraphrasing it.
+    let provider = live!();
+    let model = std::env::var("GIRDER_MODEL").unwrap_or_else(|_| "deepseek-chat".to_owned());
+
+    let conversation = vec![
+        Message::new(
+            girder_core::Role::User,
+            vec![girder_core::ContentBlock::Text {
+                text: "Add a retry helper to crates/core/src/retry.rs with exponential backoff."
+                    .to_owned(),
+            }],
+        ),
+        Message::new(
+            girder_core::Role::Assistant,
+            vec![girder_core::ContentBlock::Text {
+                text:
+                    "I added the retry module. Tests cover the doubling schedule and the ceiling."
+                        .to_owned(),
+            }],
+        ),
+        Message::new(
+            girder_core::Role::User,
+            vec![girder_core::ContentBlock::Text {
+                text: "Also make sure jitter can never produce a zero delay.".to_owned(),
+            }],
+        ),
+    ];
+
+    let request =
+        LlmRequest::new(model, girder_core::summary_request(conversation)).with_max_tokens(2000);
+
+    let stream = provider
+        .stream(request, CancellationToken::new())
+        .await
+        .expect("accepted");
+    let chunks: Vec<StreamChunk> = stream.collect().await;
+    let message = girder_core::AssistantMessage::from_chunks(chunks).expect("assembled");
+
+    let summary = girder_core::extract_summary(&message).expect("a usable summary");
+
+    for section in [
+        "Primary Request and Intent",
+        "Key Technical Concepts",
+        "Files and Code",
+        "Errors and Fixes",
+        "Pending Jobs",
+        "Current Work",
+        "Next Step",
+        "Critical Context",
+    ] {
+        assert!(
+            summary.contains(section),
+            "the summary dropped the `{section}` section:\n{summary}"
+        );
+    }
+    // A fact worth carrying must survive.
+    assert!(
+        summary.contains("retry") || summary.contains("Retry"),
+        "the summary lost the subject:\n{summary}"
+    );
+}
+
+#[tokio::test]
+async fn a_summary_becomes_a_detectable_checkpoint() {
+    // End to end: summarize, wrap, and confirm a second compaction would recognise it.
+    let provider = live!();
+    let model = std::env::var("GIRDER_MODEL").unwrap_or_else(|_| "deepseek-chat".to_owned());
+
+    let conversation = vec![Message::new(
+        girder_core::Role::User,
+        vec![girder_core::ContentBlock::Text {
+            text: "We are porting a TypeScript project to Rust.".to_owned(),
+        }],
+    )];
+
+    let request =
+        LlmRequest::new(model, girder_core::summary_request(conversation)).with_max_tokens(1500);
+    let stream = provider
+        .stream(request, CancellationToken::new())
+        .await
+        .expect("accepted");
+    let chunks: Vec<StreamChunk> = stream.collect().await;
+    let message = girder_core::AssistantMessage::from_chunks(chunks).expect("assembled");
+    let summary = girder_core::extract_summary(&message).expect("summary");
+
+    let checkpoint =
+        girder_core::checkpoint_message(&summary, girder_core::MessageId::new("cp-1").unwrap());
+
+    assert!(girder_core::is_checkpoint(&checkpoint));
+    assert!(checkpoint.text().contains("porting"));
+}

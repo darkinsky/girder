@@ -89,9 +89,11 @@ pub use brand::{
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
 };
 pub use compaction::{
-    CompactionError, CompactionOutcome, CompactionRequest, CompactionTrigger, PairingBalance,
-    Selection, SurfaceEntry, balances, needs_compaction, pairing_balanced_at,
-    select as select_compaction, transcript_for_summary,
+    CHECKPOINT_PREAMBLE, COMPACTION_INSTRUCTION, CompactionError, CompactionOutcome,
+    CompactionRequest, CompactionTrigger, PairingBalance, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG,
+    Selection, SummaryError, SurfaceEntry, balances, checkpoint_message, extract_summary,
+    is_checkpoint, needs_compaction, pairing_balanced_at, select as select_compaction,
+    summary_request, transcript_for_summary,
 };
 pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
