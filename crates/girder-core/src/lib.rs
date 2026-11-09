@@ -57,6 +57,7 @@ mod events;
 mod exec;
 mod fiber;
 mod fs;
+mod instructions;
 mod json;
 mod llm;
 mod llm_deepseek;
@@ -95,6 +96,12 @@ pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec}
 pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
+};
+pub use instructions::{
+    DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_TOTAL_BYTES, HARNESS_GLOBAL_DIRECTORY,
+    INSTRUCTION_FILE_NAME, InstructionFile, InstructionLimits, InstructionState, LoadedInstruction,
+    RenderedInstructions, TruncatedInstruction, USER_GLOBAL_DIRECTORY, digest,
+    discover as discover_instructions, load as load_instructions, render as render_instructions,
 };
 pub use json::{
     JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,
