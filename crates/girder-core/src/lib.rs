@@ -87,6 +87,7 @@ mod llm_deepseek;
 mod lsp;
 mod mcp;
 mod message;
+mod observation;
 mod patch;
 mod paths;
 mod permissions;
@@ -228,6 +229,10 @@ pub use mcp::{
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
     MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
+};
+pub use observation::{
+    Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
+    Version as FileVersion, replace_exactly_once, replace_lines,
 };
 pub use patch::{
     Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
