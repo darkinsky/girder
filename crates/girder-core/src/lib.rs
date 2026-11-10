@@ -81,6 +81,7 @@ mod inbox;
 mod instructions;
 mod jobs;
 mod json;
+mod limits;
 mod llm;
 mod llm_deepseek;
 mod lsp;
@@ -104,6 +105,7 @@ mod session_query;
 mod shell;
 mod skill;
 mod spill;
+mod spill_policy;
 mod ssh;
 mod storage;
 mod subagent;
@@ -205,6 +207,7 @@ pub use json::{
     JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,
     number_from_f64, number_from_u64,
 };
+pub use limits::{Budget, Ceiling, Session as SessionBudget};
 pub use llm::{
     AssembleError, AssistantMessage, ChunkStream, ContentBlock, FinishReason, LlmError, LlmKey,
     LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolSchema,
@@ -292,6 +295,10 @@ pub use skill::{
 pub use spill::{
     LocalStore as LocalSpillStore, Reference as SpillReference, SaveRequest as SpillSaveRequest,
     SpillError, Store as SpillStore, Unavailable as UnavailableSpillStore, should_spill,
+};
+pub use spill_policy::{
+    Action as SpillAction, Context as SpillContext, Reason as SpillReason, decide as decide_spill,
+    omitted as spill_omitted,
 };
 pub use ssh::{
     Client as SshClient, Command as SshCommand, DEFAULT_PORT as SSH_DEFAULT_PORT,
