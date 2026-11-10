@@ -229,6 +229,15 @@ impl RemoteRegistry {
         }
     }
 
+    /// The declared gaps: methods a client will get `NOT_IMPLEMENTED` for.
+    ///
+    /// Exposed so a list builder can report them alongside the implemented ones; a caller that had to
+    /// duplicate this list would drift from the registry the moment a method was added.
+    #[must_use]
+    pub fn unimplemented(&self) -> Vec<(String, String)> {
+        self.known_unimplemented.clone()
+    }
+
     /// Registered method names, for diagnosis and schema listing.
     #[must_use]
     /// Looks up one method's callable.
@@ -349,6 +358,30 @@ pub trait SessionCatalog: Send + Sync {
     /// deliberate: prompting a session that does not exist should fail, not silently mint one.
     fn open(&self, _id: &str) -> Option<Arc<dyn crate::session::Session>> {
         None
+    }
+
+    /// Renames a session.
+    ///
+    /// A default that reports the gap rather than a compile error: a catalog backed by something other
+    /// than a directory may not support titles, and forcing every implementation to stub it would make
+    /// adding a catalog harder than adding a method.
+    fn rename(&self, _id: &str, _title: &str) -> BoxFut<Result<String, RemoteError>> {
+        Box::pin(async {
+            Err(RemoteError::NotImplemented {
+                namespace: "session".to_owned(),
+                method: "rename".to_owned(),
+            })
+        })
+    }
+
+    /// Deletes a session.
+    fn delete(&self, _id: &str) -> BoxFut<Result<bool, RemoteError>> {
+        Box::pin(async {
+            Err(RemoteError::NotImplemented {
+                namespace: "session".to_owned(),
+                method: "delete".to_owned(),
+            })
+        })
     }
 }
 
@@ -556,6 +589,59 @@ impl SessionCatalog for DirectoryCatalog {
         Box::pin(async move { read_record(&path, id) })
     }
 
+    /// Renames a session by writing a companion file beside its log.
+    ///
+    /// A companion rather than an event: a rename is not part of the conversation, and appending one to
+    /// the log would make every history read carry a record the model never saw. The file is small
+    /// enough that reading it per row costs nothing next to decoding a log.
+    fn rename(&self, id: &str, title: &str) -> BoxFut<Result<String, RemoteError>> {
+        let path = self.root.join(format!("{id}.title"));
+        let id = id.to_owned();
+        let title = title.trim().to_owned();
+        let log = self.root.join(format!("{id}.jsonl.zst"));
+        Box::pin(async move {
+            if title.is_empty() {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "rename".to_owned(),
+                    message: "a title cannot be blank".to_owned(),
+                });
+            }
+            if !log.is_file() {
+                return Err(RemoteError::UnknownMethod {
+                    // A missing session is not an unknown method, but the error enum has no NotFound;
+                    // the message names the id so a reader can tell which one was missing.
+                    namespace: "session".to_owned(),
+                    method: format!("rename `{id}`"),
+                });
+            }
+            std::fs::write(&path, title.as_bytes())
+                .map_err(|error| RemoteError::Failed(error.to_string()))?;
+            Ok(title)
+        })
+    }
+
+    /// Deletes a session's log and its title.
+    ///
+    /// Returns whether anything was removed, so a client distinguishes a deletion from a no-op without
+    /// an error. A missing title file is not a failure: most sessions never had one.
+    fn delete(&self, id: &str) -> BoxFut<Result<bool, RemoteError>> {
+        let log = self.root.join(format!("{id}.jsonl.zst"));
+        let title = self.root.join(format!("{id}.title"));
+        let id = id.to_owned();
+        Box::pin(async move {
+            let _ = id;
+            let removed = match std::fs::remove_file(&log) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => return Err(RemoteError::Failed(error.to_string())),
+            };
+            // A title with no log is stale, so it goes either way.
+            let _ = std::fs::remove_file(&title);
+            Ok(removed)
+        })
+    }
+
     fn open(&self, id: &str) -> Option<Arc<dyn crate::session::Session>> {
         let path = self.root.join(format!("{id}.jsonl.zst"));
         // Only an existing session opens: a prompt to an unknown id must fail, not mint a log.
@@ -648,15 +734,12 @@ const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
     "modelCatalog",
     "openWorkspacePath",
     "workspacePathApplications",
-    "rename",
     "fork",
     "attachment",
     "updateQueue",
-    "projections",
     "stream",
     "resume",
     "archive",
-    "delete",
     "duplicate",
     "export",
 ];
@@ -674,6 +757,8 @@ pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn
     register_create(registry, catalog);
     register_history(registry, catalog);
     register_prompt(registry);
+    register_rename(registry, catalog);
+    register_delete(registry, catalog);
 
     // `cancel` needs a runtime to cancel, so this constructor declares it a gap rather than
     // registering a handler that could never act. Everything else absent from the upstream surface
@@ -852,6 +937,11 @@ pub fn registry_with_runtime(
     register_history(&mut registry, &catalog);
     register_prompt_with_runtime(&mut registry, &catalog, &runtime);
     register_cancel(&mut registry, &runtime);
+    // Every method the plain registry serves must exist here too, or `serve` would answer
+    // `UNKNOWN_METHOD` for something the schema advertises. This list drifted once already: rename and
+    // delete were added to the plain path and not this one.
+    register_rename(&mut registry, &catalog);
+    register_delete(&mut registry, &catalog);
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry
@@ -1089,30 +1179,39 @@ pub fn register_job_methods(
 /// the same registration functions the server uses, so the two cannot drift.
 #[must_use]
 pub fn registered_method_names() -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-
-    // The session methods come from the unimplemented list plus the implemented ones; the registry
-    // is the authority, so a bare registry is asked what it would contain.
+    // Built from the same registration functions the server uses, so the list cannot drift from what
+    // a server actually serves. An earlier version hand-copied the session names here and went stale
+    // the moment `delete` was added -- a page offered a method the list denied existed.
     let mut registry = RemoteRegistry::new();
-    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
-    for (namespace, method) in registry.names() {
-        names.push(format!("{namespace}.{method}"));
-    }
-    for method in [
-        "create",
-        "list",
-        "page",
-        "prompt",
-        "cancel",
-        "events",
-        "projections",
-    ] {
-        names.push(format!("session.{method}"));
-    }
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(std::env::temp_dir()));
+    register_session_methods(&mut registry, &catalog);
+    register_job_methods(
+        &mut registry,
+        &Arc::new(crate::jobs::JobRegistry::new(4096)),
+    );
+    register_projection_methods(
+        &mut registry,
+        &Arc::new(crate::projection::ProjectionRegistry::new()),
+    );
+
+    let mut names: Vec<String> = registry
+        .names()
+        .into_iter()
+        .map(|(namespace, method)| format!("{namespace}.{method}"))
+        .chain(
+            registry
+                .unimplemented()
+                .into_iter()
+                .map(|(namespace, method)| format!("{namespace}.{method}")),
+        )
+        .collect();
     for method in crate::api_job::job_methods() {
         names.push(method.qualified());
     }
     for method in crate::api_session::session_methods() {
+        names.push(method.qualified());
+    }
+    for method in crate::api_config::workspace_methods() {
         names.push(method.qualified());
     }
     names.sort();
@@ -1234,4 +1333,60 @@ fn simple_hash(text: &str) -> String {
         hash = hash.wrapping_mul(16_777_619);
     }
     format!("{hash:08x}")
+}
+
+/// Registers `session.rename`.
+fn register_rename(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "rename", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        Box::pin(async move {
+            let session_id = call
+                .args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "rename".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                })?
+                .to_owned();
+            let title = call
+                .args
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "rename".to_owned(),
+                    message: "`title` is required".to_owned(),
+                })?
+                .to_owned();
+
+            let stored = catalog.rename(&session_id, &title).await?;
+            Ok(serde_json::json!({ "title": stored }))
+        })
+    });
+}
+
+/// Registers `session.delete`.
+fn register_delete(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "delete", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        Box::pin(async move {
+            let session_id = call
+                .args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "delete".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                })?
+                .to_owned();
+
+            let deleted = catalog.delete(&session_id).await?;
+            Ok(serde_json::json!({ "deleted": deleted }))
+        })
+    });
 }

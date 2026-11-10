@@ -213,7 +213,17 @@ fn starting_a_new_conversation_keeps_the_old_one() {
     let html = girder_rpc::INDEX_HTML;
 
     assert!(html.contains("startNew"));
-    assert!(!html.contains("session', 'delete'"), "new must not delete");
+    // `startNew` must not call delete. A delete exists on the row, which is a different action with
+    // its own confirmation; the assertion is that the *new* handler does not use it.
+    let start_new = html
+        .split("async function startNew")
+        .nth(1)
+        .expect("startNew exists");
+    let body = start_new.split('}').next().unwrap_or_default();
+    assert!(
+        !body.contains("'delete'"),
+        "startNew must not delete: {body}"
+    );
 }
 
 #[test]
@@ -225,4 +235,18 @@ fn the_page_renders_both_log_and_stream_shapes() {
     assert!(html.contains("'user/message'"));
     assert!(html.contains("'assistant/message'"));
     assert!(html.contains("'textDelta'"));
+}
+
+#[test]
+fn the_page_can_rename_and_delete_a_session() {
+    // Both act on a row, so each needs a target: rename and delete belong on the row rather than in a
+    // global toolbar.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(html.contains("session', 'rename'"));
+    assert!(html.contains("session', 'delete'"));
+    assert!(
+        html.contains("window.confirm"),
+        "a delete must be confirmed"
+    );
 }

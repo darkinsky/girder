@@ -1382,7 +1382,9 @@ async fn every_method_in_one_registry_exists_in_the_other() {
     }
 
     // And every name outside that set must report a gap rather than a typo.
-    for probe in ["search", "selectModel", "stream", "projections"] {
+    // `projections`, `rename`, and `delete` were on this list until they were implemented; a name
+    // that works must not be probed as a gap.
+    for probe in ["search", "selectModel", "stream", "fork"] {
         let error = with_runtime
             .dispatch("session", probe, call(json!({})))
             .await

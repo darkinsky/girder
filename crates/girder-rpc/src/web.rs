@@ -42,6 +42,11 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
   #sessions li:hover { background: color-mix(in srgb, currentColor 7%, transparent); }
   #sessions li.on { background: color-mix(in srgb, currentColor 13%, transparent); font-weight: 600; }
   #sessions li .meta { display: block; font-size: .7rem; color: var(--muted); font-weight: 400; }
+  #sessions li { position: relative; }
+  #sessions li .rowtools { position: absolute; right: .25rem; top: .25rem; display: none; gap: .1rem; }
+  #sessions li:hover .rowtools { display: flex; }
+  #sessions li .rowtools button { padding: 0 .3rem; font-size: .7rem; line-height: 1.4;
+                                  border: none; background: color-mix(in srgb, currentColor 12%, transparent); }
   h1 { font-size: 1rem; font-weight: 600; margin: 0 0 .25rem; }
   .sub { color: var(--muted); font-size: .8rem; margin-bottom: 1.25rem; }
   textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .6rem; min-height: 4.5rem;
@@ -169,6 +174,46 @@ async function refreshSessions() {
     meta.textContent = new Date(item.updatedAt).toLocaleString();
     li.append(name, meta);
     li.addEventListener('click', () => openSession(item.sessionId));
+
+    // Rename and delete sit on the row rather than in a global toolbar: an action that needs a target
+    // selected first is one the user has to think about.
+    const tools = document.createElement('span');
+    tools.className = 'rowtools';
+    const renameBtn = document.createElement('button');
+    renameBtn.textContent = '✎';
+    renameBtn.title = 'rename';
+    renameBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const title = window.prompt('Title', item.sessionId.slice(-8));
+      if (!title) return;
+      try {
+        await call('session', 'rename', { sessionId: item.sessionId, title });
+        refreshSessions();
+      } catch (error) {
+        setStatus(String(error.message ?? error), 'bad');
+      }
+    });
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = '×';
+    deleteBtn.title = 'delete';
+    deleteBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      // A confirmation, because deleting a conversation is not recoverable from this UI.
+      if (!window.confirm('Delete this conversation?')) return;
+      try {
+        await call('session', 'delete', { sessionId: item.sessionId });
+        if (sessionId === item.sessionId) {
+          sessionId = null;
+          log.replaceChildren();
+        }
+        refreshSessions();
+      } catch (error) {
+        setStatus(String(error.message ?? error), 'bad');
+      }
+    });
+    tools.append(renameBtn, deleteBtn);
+    li.append(tools);
+
     sessionsEl.append(li);
   }
 }
