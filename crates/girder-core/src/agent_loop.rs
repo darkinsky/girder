@@ -287,22 +287,10 @@ pub fn run(
 
         // The first user message is durable before any turn starts, unless the caller already
         // recorded it.
-        if context.record_prompt {
-            let prompt = crate::message::Message::new(
-                context.next_message_id(),
-                crate::message::Role::User,
-                crate::message::MessageSource::User { form: None },
-                messages[0].content.clone(),
-            );
-            if let Err(error) = context
-                .session
-                .append(SessionEvent::UserMessage { message: prompt })
-                .await
-            {
-                yield Err(LoopError::Session(error));
-                return;
-            }
-        }
+        // The prompt is durable, but not here: upstream opens `turn/start` *before* claiming the
+        // input, and a `user/message` written first makes a replay show the user speaking before the
+        // turn that carries their message began. It is emitted inside the first iteration instead.
+        let mut prompt_pending = context.record_prompt;
 
         for turn in 1..=u64::from(context.max_turns) {
             // The agent's token is a second cancellation source: a UI cancels through the agent, and
@@ -330,6 +318,29 @@ pub fn run(
 
             let _ = context.session.append(SessionEvent::TurnStart { turn }).await;
             yield Ok(LoopStep::TurnStarted { turn });
+
+            // The prompt lands after `turn/start` and only once: a later turn is a continuation and
+            // must not re-record what the user already said.
+            //
+            // `prompt_pending` is false when the caller already wrote it — the RPC runtime does,
+            // before spawning, so a prompt is durable even if the model never answers.
+            if prompt_pending {
+                prompt_pending = false;
+                let prompt = crate::message::Message::new(
+                    context.next_message_id(),
+                    crate::message::Role::User,
+                    crate::message::MessageSource::User { form: None },
+                    messages[0].content.clone(),
+                );
+                if let Err(error) = context
+                    .session
+                    .append(SessionEvent::UserMessage { message: prompt })
+                    .await
+                {
+                    yield Err(LoopError::Session(error));
+                    return;
+                }
+            }
 
             // Run the turn, forwarding every step it produces. The borrow of `messages` ends with
             // this block so the continuation decision below can read it.
@@ -378,7 +389,9 @@ pub fn run(
                         message.content.clone(),
                     ));
                 }
-                yield Ok(LoopStep::TurnStarted { turn: turn + 1 });
+                // No `TurnStarted` here: the next iteration of the outer loop writes `turn/start`
+                // itself. Yielding one as well produced two `turn/start` records for one
+                // `turn/end`, which a replay reads as a turn that began twice.
             }
 
             // An armed goal keeps going after a turn that would otherwise end. This is what makes a

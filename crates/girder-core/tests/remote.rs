@@ -559,10 +559,11 @@ async fn create_twice_on_a_directory_reuses_the_existing_log() {
         .unwrap();
 
     let events = girder_core::read_session_file(dir.join("reuse.jsonl.zst")).unwrap();
-    assert_eq!(
-        events.len(),
-        1,
-        "a second create must not append a second turn: {events:?}"
+    // A created session holds no events: it has not been prompted, so it has no turn. A placeholder
+    // event here made a fresh session look like it already had one.
+    assert!(
+        events.is_empty(),
+        "a create must not record a turn: {events:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1292,10 +1293,21 @@ async fn concurrent_creates_of_one_id_leave_one_session() {
     }
 
     let events = girder_core::read_session_file(dir.join("dup.jsonl.zst")).unwrap();
+    // The property: one session, not eight. A created session holds no turn because it has not been
+    // prompted; what must not happen is eight separate files or eight creation records.
+    assert!(
+        events.is_empty(),
+        "a created session holds no turn: {events:?}"
+    );
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect();
     assert_eq!(
-        events.len(),
+        files.len(),
         1,
-        "a session created eight times concurrently must hold one turn, got {events:?}"
+        "eight creates must leave one file: {files:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1316,12 +1328,17 @@ async fn concurrent_creates_all_return_the_same_id() {
     }
     for handle in handles {
         let record = handle.await.unwrap().unwrap();
+        // The property: every racer sees the same session. Whether it holds events is not this
+        // test's business -- a created session has none -- but a racer that returned a different
+        // identity would have forked history.
         assert_eq!(record.id, "same");
-        assert!(
-            !record.events.is_empty(),
-            "a losing racer must still read the winner's log"
-        );
     }
+    let files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect();
+    assert_eq!(files.len(), 1, "six racers must leave one log: {files:?}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

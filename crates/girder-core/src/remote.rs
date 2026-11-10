@@ -586,10 +586,11 @@ impl SessionCatalog for DirectoryCatalog {
                 .open(&path)
             {
                 Ok(_) => {
-                    let store = crate::session::SessionStore::new(&path);
-                    store
-                        .append(&SessionEvent::TurnStart { turn: 1 })
-                        .map_err(|error| RemoteError::Failed(error.to_string()))?;
+                    // The file exists and is empty. It used to hold a placeholder `turn/start`, which
+                    // made a session that had never been prompted look like it had one turn, and made
+                    // the first prompt write a second `turn/start` for the same turn. An empty file is
+                    // a valid session (`read_all` reads it as no events) and the loop writes the first
+                    // turn.
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Reuse rather than fail: upstream's `create` returns the existing session, and

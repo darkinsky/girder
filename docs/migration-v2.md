@@ -704,6 +704,41 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 纵切面做深：会话链路（已完成）
+
+沿用选项 2（聚焦一条纵切面），这轮把 **HTTP → 会话 → 真实模型 → 日志** 这条链路真正走通并修了三个 bug。
+
+**实测**：
+
+```
+POST session/create  → {"sessionId":"session-1794285531308"}
+POST session/prompt  → {"accepted":true,"turn":1}
+POST session/events  → turn/start, user/message, assistant/message: 144, turn/end
+```
+
+### 修掉的三个 bug
+
+**1. 一个回合写入两个 `turn/start`。** 原因是 `session.create` 在创建文件时写了一个占位
+`TurnStart { turn: 1 }`，loop 启动后又写一次。占位本身也错：一个还没被提示的会话不该有 turn。
+
+改成创建**空文件**：`read_all` 把零长度文件读作「无事件」，所以会话仍对 `list` 可见。
+
+**2. 排队输入的继续多 yield 了一次 `TurnStarted`。** 下一轮循环自己会写 `turn/start`，
+额外 yield 让 runtime 发布了重复事件。
+
+**3. 三个测试断言的是旧行为。** 它们检查「创建后恰好 1 个事件」。真实语义是**创建后没有事件**。
+更新后，它们改为断言真正要测的：并发创建只留一个文件、竞态者看到同一个 id。
+
+### 一处刻意的偏离
+
+上游的 `turn/start` 在**领取输入之前**打开，所以顺序是 `turn/start` → `user/message`。
+
+我的顺序是 `user/message` → `turn/start`，因为 runtime 在 spawn loop **之前**就写 prompt——
+这样即使模型永不回答，用户的提示也已经落盘。
+
+**这是取舍，不是疏忽**：prompt 必须持久，而一个没有消息的 `turn/start` 是「为无物而开的回合」。
+偏离已记录在这里，而不是留给读者去发现。
+
 ## 凭据存储（已完成）
 
 `credentials.rs`：`Store` / `Record` / `Info` / `CredentialRef`，21 个测试。

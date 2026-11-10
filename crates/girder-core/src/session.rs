@@ -405,7 +405,36 @@ pub(crate) fn path_lock(path: &Path) -> Arc<std::sync::Mutex<()>> {
 }
 
 impl SessionStore {
-    /// Opens a store at `path`. The file is created on first append.
+    /// Creates an empty session file if none exists.
+    ///
+    /// An empty file is a valid session: `read_all` treats a zero-length file as "no events", so a
+    /// created session is visible to `list` before anything happens in it. Writing a placeholder
+    /// event instead was the earlier approach, and it made a session that had never been prompted
+    /// look like it had a turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error when the file cannot be created.
+    pub fn touch(&self) -> Result<bool, SessionError> {
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.path)
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Opens a store at `path`. The file is created on the first append or by [`touch`].
+    ///
+    /// [`touch`]: SessionStore::touch
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {

@@ -216,6 +216,11 @@ impl AgentRuntime {
                 text: text.to_owned(),
             }],
         );
+        // Written before the loop is spawned, which means `user/message` precedes `turn/start` --
+        // upstream opens the turn first. The order is chosen deliberately: a prompt that reached the
+        // server must survive a crash before the model answered, and a `turn/start` with no message
+        // would then be a turn that began for nothing. The deviation is recorded in
+        // `docs/migration-v2.md` rather than left for a reader to notice.
         session
             .append(SessionEvent::UserMessage { message: prompt })
             .await?;
