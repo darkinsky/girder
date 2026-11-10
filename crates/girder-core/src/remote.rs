@@ -856,6 +856,10 @@ fn register_session_core(
     }
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
+
+    // Every constructor gets the command surface: a slash command is available wherever a session is, and a
+    // deployment that could list sessions but not run a command would be a strange half.
+    register_command_methods(registry, &Arc::new(crate::commands::Registry::new()));
 }
 
 /// Registers `session.list`.
@@ -1687,6 +1691,92 @@ pub fn register_attachment_method(
                 },
                 "data": crate::attachment::encode_base64(&image.data),
             }))
+        })
+    });
+}
+
+/// Registers the `command.*` methods.
+///
+/// A slash command is typed by a person, not called by a model, so it needs its own namespace: a client that offered
+/// commands under `session.*` would have to guess which names were model-facing and which were not.
+pub fn register_command_methods(
+    registry: &mut RemoteRegistry,
+    commands: &Arc<crate::commands::Registry>,
+) {
+    let catalog = Arc::clone(commands);
+    registry.register("command", "list", move |_call: RemoteCall| {
+        let catalog = Arc::clone(&catalog);
+        Box::pin(async move {
+            let definitions: Vec<serde_json::Value> = catalog
+                .definitions()
+                .into_iter()
+                .map(|definition| {
+                    serde_json::json!({
+                        "name": definition.name,
+                        "description": definition.description,
+                        "input": {
+                            "kind": match definition.input {
+                                crate::commands::Input::None => "none",
+                                crate::commands::Input::Text { .. } => "text",
+                                crate::commands::Input::Files { .. } => "files",
+                                crate::commands::Input::Choice { .. } => "choice",
+                            },
+                            "label": definition.input.label(),
+                        },
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "commands": definitions }))
+        })
+    });
+
+    let run = Arc::clone(commands);
+    registry.register("command", "run", move |call: RemoteCall| {
+        let run = Arc::clone(&run);
+        Box::pin(async move {
+            let name = call
+                .args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "command".to_owned(),
+                    method: "run".to_owned(),
+                    message: "`name` is required".to_owned(),
+                })?
+                .to_owned();
+
+            // The argument kind is derived from what the client sent rather than from the declaration: a client that
+            // sent `text` to a command asking for a choice made a mistake the registry will name.
+            let arguments = match call.args.get("arguments") {
+                None | Some(serde_json::Value::Null) => crate::commands::Arguments::None,
+                Some(serde_json::Value::String(text)) => {
+                    crate::commands::Arguments::Text(text.clone())
+                }
+                Some(serde_json::Value::Array(values)) => crate::commands::Arguments::Files(
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                ),
+                Some(other) => {
+                    return Err(RemoteError::InvalidArguments {
+                        namespace: "command".to_owned(),
+                        method: "run".to_owned(),
+                        message: format!("`arguments` must be a string or an array, got {other}"),
+                    });
+                }
+            };
+
+            match run.execute(&name, arguments).await {
+                Ok(message) => Ok(serde_json::json!({ "message": message, "isError": false })),
+                Err(error) => Ok(serde_json::json!({
+                    // A command failure is a result a client renders, not a transport error: the person typed
+                    // something and deserves to see why it did not work.
+                    "message": error.to_string(),
+                    "isError": true,
+                })),
+            }
         })
     });
 }
