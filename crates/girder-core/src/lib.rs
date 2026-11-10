@@ -102,6 +102,7 @@ mod session;
 mod session_query;
 mod shell;
 mod skill;
+mod ssh;
 mod storage;
 mod subagent;
 mod subagent_providers;
@@ -111,6 +112,7 @@ mod time;
 mod tools;
 mod typert;
 mod web;
+mod workflow;
 mod workspace_path;
 
 pub use agent::{
@@ -284,6 +286,11 @@ pub use skill::{
     Definition as SkillDefinition, Provider as SkillProvider, Registry as SkillRegistry,
     SkillError, Static as StaticSkills, Summary as SkillSummary,
 };
+pub use ssh::{
+    Client as SshClient, Command as SshCommand, DEFAULT_PORT as SSH_DEFAULT_PORT,
+    DEFAULT_TIMEOUT as SSH_DEFAULT_TIMEOUT, Host as SshHost, Outcome as SshOutcome, SshError,
+    Transport as SshTransport, Unavailable as UnavailableSsh,
+};
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,
@@ -322,6 +329,11 @@ pub use typert::{
 pub use web::{
     FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider, SearchRequest,
     SearchResult, SearchSource, Web, WebError,
+};
+pub use workflow::{
+    AgentRecord as WorkflowAgentRecord, Engine as WorkflowEngine, Event as WorkflowEvent,
+    Phase as WorkflowPhase, Registry as WorkflowRegistry, Run as WorkflowRun, RunId,
+    StartRequest as WorkflowStartRequest, Status as WorkflowStatus, WorkflowError,
 };
 pub use workspace_path::{
     contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,
