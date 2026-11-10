@@ -704,6 +704,41 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 输出保留策略（已完成）
+
+`retention.rs`：`ItemRetainer` / `TextRetainer`，20 个测试。
+
+**只回答一个机械问题**：留了什么、略了什么、多少。不管头部、行号、退出码，也不写
+「输出被截断了，请用 grep」这种话——**只有工具知道截断意味着「文件太长」还是「我因为预算停止读取」**，
+合并两者会产生对其中一个说谎的消息。
+
+### 关键区分：`truncated` 不是「输出不完整」
+
+权限失败、候选不可读、provider 提前停止，**都是不完整，但都不是保留决策**。
+
+`Omitted` 只描述这一层丢了什么，所以调用方能报告「还有 12 个匹配」而**不暗示工具失败了**。
+
+### 为什么是两个 retainer
+
+它们约束不同资源：
+
+- `ItemRetainer` 约束有序单元，**单元是原子的**——半个匹配不是匹配
+- `TextRetainer` 约束字节，**必须切在字符边界**——半个 UTF-8 序列不是文本
+
+### 一个我自己写错又修掉的边界函数
+
+`floor_char_boundary` 第一版在 `index == bytes.len()` 时直接返回，导致**截断点可能落在字符中间**。
+
+修法是从 `len - 1` 开始回退，然后检查该字符的宽度是否完整落在缓冲区内：
+
+```rust
+let width = char_width(bytes[index]);
+if index + width <= bytes.len() { index + width } else { index }
+```
+
+测试 `a_mixed_script_cut_stays_valid` 用 `"aé字字"`（1+2+3+3 字节）配 8 字节预算，
+正好落在最后一个字符中间。
+
 ## 原子写入与写者锁（已完成）
 
 `atomic_write.rs`：`write_atomic` / `with_lock`，12 个测试。

@@ -85,6 +85,7 @@ mod projection;
 mod providers;
 mod registry;
 mod remote;
+mod retention;
 mod retry;
 mod runtime;
 mod schedule;
@@ -208,6 +209,9 @@ pub use remote::{
     SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_job_methods,
     register_projection_methods, register_session_methods, register_workspace_methods,
     registered_method_names, registry_with_runtime,
+};
+pub use retention::{
+    ItemRetainer, ItemStrategy, Omitted, RetainedItems, RetainedText, TextRetainer, TextStrategy,
 };
 pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
