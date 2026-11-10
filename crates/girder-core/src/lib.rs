@@ -87,6 +87,7 @@ mod llm_deepseek;
 mod lsp;
 mod mcp;
 mod message;
+mod patch;
 mod paths;
 mod permissions;
 mod projection;
@@ -227,6 +228,11 @@ pub use mcp::{
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
     MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
+};
+pub use patch::{
+    Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
+    Operation as PatchOperation, ParseError as PatchParseError, Reason as PatchFailureReason,
+    apply as apply_patch, parse as parse_patch,
 };
 pub use paths::{
     AGENTS_HOME_DISPLAY, AGENTS_HOME_ENV, HARNESS_HOME_DISPLAY, HARNESS_HOME_ENV, Root,
