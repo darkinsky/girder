@@ -24,6 +24,7 @@
 //! generated methods this crate does not implement.
 
 pub mod server;
+mod stream;
 mod web;
 
 pub use server::{
@@ -38,6 +39,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The exact WebSocket route carrying every remote stream.
+pub use stream::{
+    EndReason, SUBSCRIBABLE_METHODS, SubscribeError, Subscription, SubscriptionFrame,
+    SubscriptionId, Subscriptions, is_subscribable,
+};
 pub use web::{INDEX_HTML, WEB_INDEX_PATH};
 
 pub const REMOTE_STREAM_MUX_PATH: &str = "/api/remote.mux";
