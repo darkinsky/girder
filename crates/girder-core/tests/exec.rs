@@ -424,6 +424,7 @@ async fn the_bash_tool_runs_a_command_and_reports_success() {
             agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
+        ..Default::default()
     };
 
     let result = (tool.execute)(serde_json::json!({ "command": "echo tool-ran" }), context)
@@ -447,6 +448,7 @@ async fn the_bash_tool_reports_a_nonzero_exit_as_an_error() {
             agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
+        ..Default::default()
     };
 
     let result = (tool.execute)(serde_json::json!({ "command": "exit 7" }), context)
@@ -477,4 +479,86 @@ impl ToText for girder_core::ToolResult {
             })
             .collect()
     }
+}
+
+// ---- permission enforcement -------------------------------------------------------------------
+
+/// A tool context carrying a read-only permission state.
+fn read_only_context() -> girder_core::ToolRunContext {
+    let catalogue = girder_core::PermissionCatalogue::builtin();
+    let mut state = girder_core::PermissionState::default();
+    state.apply(&catalogue, "read-only").expect("applied");
+
+    girder_core::ToolRunContext {
+        execution: girder_core::ToolExecution {
+            call_id: ToolCallId::new("c1").expect("valid test id"),
+            name: "bash".to_owned(),
+            arguments: serde_json::json!({ "command": "echo blocked" }).to_string(),
+            agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
+        },
+        cancel: CancellationToken::new(),
+        permissions: Some(std::sync::Arc::new(state)),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_read_only_session_may_not_run_a_shell_command() {
+    // A shell command can write whatever it likes, so no path check inside the harness would catch it: the only
+    // useful answer is that the command does not run.
+    // A policy rooted somewhere this command does not touch, so the refusal comes from the permission layer rather
+    // than the path check: the assertion is about the permission layer.
+    let policy = PathPolicy::new(scratch("read-only-policy"));
+    let tool = girder_core::bash_tool(policy);
+    let context = read_only_context();
+
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "echo should-not-run" }),
+        context,
+    )
+    .await
+    .expect("a refusal is a result, not an error");
+
+    assert!(result.is_error);
+    let text = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            girder_core::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(text.contains("read-only"), "{text}");
+    assert!(
+        !text.contains("should-not-run"),
+        "the command did not run: {text}"
+    );
+}
+
+#[tokio::test]
+async fn a_writable_session_may_run_a_shell_command() {
+    // A policy rooted somewhere this command does not touch, so the refusal comes from the permission layer rather
+    // than the path check: the assertion is about the permission layer.
+    let policy = PathPolicy::new(scratch("read-only-policy"));
+    let tool = girder_core::bash_tool(policy);
+    let catalogue = girder_core::PermissionCatalogue::builtin();
+    let mut state = girder_core::PermissionState::default();
+    state.apply(&catalogue, "workspace-write").expect("applied");
+    let context = girder_core::ToolRunContext {
+        execution: girder_core::ToolExecution {
+            call_id: ToolCallId::new("c1").expect("valid test id"),
+            name: "bash".to_owned(),
+            arguments: serde_json::json!({ "command": "echo tool-ran" }).to_string(),
+            agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
+        },
+        cancel: CancellationToken::new(),
+        permissions: Some(std::sync::Arc::new(state)),
+        ..Default::default()
+    };
+
+    let result = (tool.execute)(serde_json::json!({ "command": "echo tool-ran" }), context)
+        .await
+        .expect("ran");
+
+    assert!(!result.is_error);
 }

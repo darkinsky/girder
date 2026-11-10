@@ -180,6 +180,11 @@ pub struct ExecOptions {
     pub policy: Option<PathPolicy>,
     /// Paths the command declares it will write, checked before spawning.
     pub declared_writes: Vec<PathBuf>,
+    /// Whether to clear the inherited environment before adding `env`.
+    ///
+    /// Off by default because a command usually needs the environment it was started with. A tool that runs
+    /// model-authored commands turns it on, so a child cannot read a credential the harness was launched with.
+    pub clear_environment: bool,
 }
 
 impl Default for ExecOptions {
@@ -189,11 +194,22 @@ impl Default for ExecOptions {
             timeout: Duration::from_secs(120),
             policy: None,
             declared_writes: Vec::new(),
+            clear_environment: false,
         }
     }
 }
 
 impl ExecOptions {
+    /// Clears the inherited environment, leaving only what was added explicitly.
+    ///
+    /// The difference between a child seeing the harness's own credentials and a child seeing only what it was told
+    /// to see. A tool that runs model-authored commands turns it on.
+    #[must_use]
+    pub fn with_cleared_environment(mut self) -> Self {
+        self.clear_environment = true;
+        self
+    }
+
     /// Sets the working directory.
     #[must_use]
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
@@ -330,6 +346,9 @@ async fn run_shell_program(
     if let Some(cwd) = &options.cwd {
         spawn = spawn.with_cwd(cwd.clone());
     }
+    if options.clear_environment {
+        spawn = spawn.with_cleared_environment();
+    }
 
     match crate::subprocess::run(spawn, cancel.clone()).await {
         Ok(outcome) => Ok(ExecOutput {
@@ -384,7 +403,22 @@ pub fn bash_tool(policy: PathPolicy) -> crate::tools::ToolDefinition {
                         return Ok(crate::tools::ToolResult::error("no command given"));
                     }
 
-                    let options = ExecOptions::default().with_policy(policy);
+                    // The permission layer decides whether a shell command may run at all. A session in read-only
+                    // mode must not run one, because a shell command can write whatever it likes and no amount of
+                    // path checking inside the harness would catch it.
+                    if let Some(permissions) = &ctx.permissions {
+                        let knobs = permissions.knobs();
+                        if knobs.sandbox == crate::shell::SandboxMode::ReadOnly {
+                            return Ok(crate::tools::ToolResult::error(
+                                "this session is read-only, so a shell command may not run",
+                            ));
+                        }
+                    }
+
+                    let options = ExecOptions::default()
+                        .with_policy(policy)
+                        // A command a model asked to run must not inherit the harness's own credentials.
+                        .with_cleared_environment();
                     match run_bash(&command, &options, &ctx.cancel).await {
                         Ok(output) => {
                             let text = output.to_text();
@@ -563,6 +597,8 @@ impl Sandbox for AdvisorySandbox {
             timeout: self.timeout,
             policy: Some(policy.clone()),
             declared_writes: Vec::new(),
+            // A test harness that spawns a shell must not hand it the environment the suite was started in.
+            clear_environment: true,
         };
         let script = script.to_owned();
         Box::pin(async move { run_shell(&script, &options, &cancel).await })

@@ -743,7 +743,7 @@ async fn run_body(
         }
     };
 
-    let context = ToolRunContext { execution, cancel };
+    let context = ToolRunContext::new(execution, cancel);
     match (tool.execute)(arguments, context).await {
         Ok(result) => result,
         Err(error) => ToolResult::error(error.to_string()),

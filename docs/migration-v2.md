@@ -704,6 +704,59 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 端到端集成：把权限接入 bash（已完成）
+
+### 一个必须记录的事实
+
+本轮我先测量了**新写的模块被谁引用**：
+
+```
+0 approval      0 chunked_list   0 code_language   0 commands
+0 home_paths    0 launch_env     0 limits          0 lsp
+0 mcp           0 observation    0 patch           0 permissions
+0 questions     0 session_query  0 skill           0 spill
+0 terminal      0 workflow
+```
+
+**18 个模块、约 6,000 行实现、400+ 个测试，生产代码零引用。**
+
+它们编译、测试通过、文档完整——**但没有任何东西在用它们**。
+
+这是「增加模块」策略的真实代价：**行数在涨，可用性没涨。**
+
+### 这轮做了什么
+
+把 `permissions` 接进 `bash` 工具的真实链路。
+
+**`ToolRunContext` 增加两个字段**：
+
+```rust
+pub permissions: Option<Arc<PermissionState>>,
+pub workspace: Option<PathBuf>,
+```
+
+`None` 不是「默认允许」：**需要这个状态的工具在找不到时会拒绝**，
+因为「没人配置策略所以写入发生了」正是策略要防止的失败。
+
+**bash 工具在读只读会话里直接拒绝**：
+
+```rust
+if knobs.sandbox == SandboxMode::ReadOnly {
+    return Ok(ToolResult::error("this session is read-only, so a shell command may not run"));
+}
+```
+
+**为什么是拒绝整个命令而不是检查路径**：shell 命令能写入任何东西，
+**harness 内部的任何路径检查都拦不住它**。唯一有用的答案是「这条命令不跑」。
+
+**同时接上 `env_clear`**：模型要求运行的命令不再继承 harness 启动时的凭据。
+
+### 两个验证真实行为的测试
+
+- `a_read_only_session_may_not_run_a_shell_command` — 断言错误消息含 "read-only"，
+  且**输出里不含 "should-not-run"**（命令确实没跑）
+- `a_writable_session_may_run_a_shell_command` — 对照组
+
 ## 子进程环境清理（已完成，含一次事故记录）
 
 ### 一次真实事故：我覆盖了已有文件

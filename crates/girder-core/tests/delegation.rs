@@ -199,6 +199,7 @@ async fn the_tool_reports_a_refusal_as_a_model_facing_result() {
             agent_id: AgentId::new("agent".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
+        ..Default::default()
     };
 
     let result = (tool.execute)(serde_json::json!({ "prompt": "task" }), run_context)
@@ -230,6 +231,7 @@ async fn the_tool_rejects_an_empty_prompt() {
             agent_id: AgentId::new("agent".to_owned()).expect("valid test id"),
         },
         cancel: CancellationToken::new(),
+        ..Default::default()
     };
 
     let result = (tool.execute)(serde_json::json!({ "prompt": "   " }), run_context)

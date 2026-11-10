@@ -24,6 +24,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::permissions::State as PermissionState;
+
 use crate::brand::{AgentId, ToolCallId};
 use crate::llm::{ContentBlock, ToolSchema};
 use crate::scope::BoxFut;
@@ -49,6 +51,61 @@ pub struct ToolRunContext {
     /// Cancellation. A tool that does work must forward this; a tool that ignores it cannot be
     /// cancelled and will be reported as such.
     pub cancel: CancellationToken,
+    /// The permission state a tool consults before acting.
+    ///
+    /// `None` means the caller mounted no permission layer, and a tool that writes must decide for itself what that
+    /// means. It is not a default that quietly permits: a tool that needs the state and finds none refuses, because a
+    /// write that proceeded because nobody configured a policy is the failure mode the policy exists to prevent.
+    pub permissions: Option<Arc<PermissionState>>,
+    /// Where the session's workspace is, for a tool that must decide whether a path is inside it.
+    pub workspace: Option<std::path::PathBuf>,
+}
+
+impl Default for ToolRunContext {
+    /// A context with nothing attached.
+    ///
+    /// The cancellation token is a fresh one, which is never cancelled. That is right for a test and wrong for a
+    /// turn, which builds its context with [`ToolRunContext::new`] so a cancel actually reaches the tool.
+    fn default() -> Self {
+        Self {
+            execution: ToolExecution {
+                call_id: ToolCallId::new("default").expect("a literal id is valid"),
+                name: String::new(),
+                arguments: "{}".to_owned(),
+                agent_id: AgentId::new("default").expect("a literal id is valid"),
+            },
+            cancel: CancellationToken::new(),
+            permissions: None,
+            workspace: None,
+        }
+    }
+}
+
+impl ToolRunContext {
+    /// Builds a context with only what the turn provides.
+    #[must_use]
+    pub fn new(execution: ToolExecution, cancel: CancellationToken) -> Self {
+        Self {
+            execution,
+            cancel,
+            permissions: None,
+            workspace: None,
+        }
+    }
+
+    /// Attaches a permission state.
+    #[must_use]
+    pub fn with_permissions(mut self, permissions: Arc<PermissionState>) -> Self {
+        self.permissions = Some(permissions);
+        self
+    }
+
+    /// Attaches a workspace root.
+    #[must_use]
+    pub fn in_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
 }
 
 /// A tool's canonical result value.
