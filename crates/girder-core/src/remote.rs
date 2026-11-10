@@ -802,7 +802,6 @@ const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
     "openWorkspacePath",
     "workspacePathApplications",
     "fork",
-    "attachment",
     "updateQueue",
     "stream",
     "resume",
@@ -827,6 +826,7 @@ pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn
     register_rename(registry, catalog);
     register_delete(registry, catalog);
     register_fork(registry, catalog);
+    register_attachment_method(registry, &Arc::new(crate::attachment::MemoryStore::new()));
 
     // `cancel` needs a runtime to cancel, so this constructor declares it a gap rather than
     // registering a handler that could never act. Everything else absent from the upstream surface
@@ -1011,6 +1011,10 @@ pub fn registry_with_runtime(
     register_rename(&mut registry, &catalog);
     register_delete(&mut registry, &catalog);
     register_fork(&mut registry, &catalog);
+    register_attachment_method(
+        &mut registry,
+        &Arc::new(crate::attachment::MemoryStore::new()),
+    );
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry.declare_unimplemented("session", &["modelCatalog", "selectModel"]);
@@ -1041,6 +1045,10 @@ pub fn registry_with_routes(
     register_rename(&mut registry, catalog);
     register_delete(&mut registry, catalog);
     register_fork(&mut registry, catalog);
+    register_attachment_method(
+        &mut registry,
+        &Arc::new(crate::attachment::MemoryStore::new()),
+    );
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry
@@ -1630,6 +1638,61 @@ fn register_fork(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog
 
             let forked = catalog.fork(&session_id, at_seq).await?;
             Ok(serde_json::json!({ "sessionId": forked }))
+        })
+    });
+}
+
+/// Registers `session.attachment`.
+///
+/// Reads one stored image back by reference. The reference is the client's, so this is a lookup and not
+/// a search: a client that lost its id has no way to ask for "the image in this session".
+///
+/// The data is base64 in the response because JSON has no byte array. The encoding is canonical, so a
+/// client comparing two responses for the same image sees identical text.
+pub fn register_attachment_method(
+    registry: &mut RemoteRegistry,
+    store: &Arc<crate::attachment::MemoryStore>,
+) {
+    let store = Arc::clone(store);
+    registry.register("session", "attachment", move |call| {
+        let store = Arc::clone(&store);
+        Box::pin(async move {
+            let attachment =
+                call.args
+                    .get("attachment")
+                    .ok_or_else(|| RemoteError::InvalidArguments {
+                        namespace: "session".to_owned(),
+                        method: "attachment".to_owned(),
+                        message: "`attachment` is required".to_owned(),
+                    })?;
+            let id = attachment
+                .get("attachmentId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "attachment".to_owned(),
+                    message: "`attachment.attachmentId` is required".to_owned(),
+                })?;
+
+            let Some(image) = store.get(id) else {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "attachment".to_owned(),
+                    message: format!("no attachment `{id}`"),
+                });
+            };
+
+            Ok(serde_json::json!({
+                "attachment": {
+                    "attachmentId": id,
+                    // The verified type, not the caller's claim: the store already refused anything
+                    // whose bytes disagreed with its declared type.
+                    "mediaType": image.media_type,
+                    "bytes": image.data.len(),
+                    "name": image.name,
+                },
+                "data": crate::attachment::encode_base64(&image.data),
+            }))
         })
     });
 }
