@@ -193,6 +193,26 @@ pub enum ExtensionError {
         id: String,
     },
 
+    /// A person refused the extension.
+    ///
+    /// Distinct from a failure: the approval system worked, and the answer was no.
+    #[error("extension `{id}` was not approved")]
+    Denied {
+        /// The id.
+        id: String,
+    },
+
+    /// The approval could not be obtained.
+    ///
+    /// Distinct from a refusal: nobody was asked, or the channel broke.
+    #[error("cannot obtain approval for `{id}`: {reason}")]
+    ApprovalFailed {
+        /// The id.
+        id: String,
+        /// Why.
+        reason: String,
+    },
+
     /// The id is taken.
     #[error("an extension `{id}` already exists")]
     Duplicate {
@@ -338,6 +358,63 @@ impl Registry {
             .ok_or_else(|| ExtensionError::NotFound { id: id.to_owned() })?;
         entry.definition.approved_by = Some(approver.into());
         Ok(())
+    }
+
+    /// Asks a person to approve a definition, and records the answer.
+    ///
+    /// The definition is described to the approver before anything runs: an approval granted for a definition
+    /// nobody looked at is a signature on a blank page, which is what [`Self::approve`] alone would produce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtensionError::NotFound`] for an unknown id, and [`ExtensionError::Denied`] when the person said
+    /// no — a refusal is a decision about this extension, not a failure of the approval system.
+    pub async fn request_approval(
+        &self,
+        id: &str,
+        approver: &dyn crate::approval::Approver,
+    ) -> Result<crate::approval::Decision, ExtensionError> {
+        let definition = {
+            let entries = self.lock();
+            entries
+                .get(id)
+                .map(|entry| entry.definition.clone())
+                .ok_or_else(|| ExtensionError::NotFound { id: id.to_owned() })?
+        };
+
+        let request = crate::approval::Request::new(
+            format!("activate extension `{id}`"),
+            format!(
+                "`{}` from {} wants to run in this session",
+                definition.name, definition.source
+            ),
+        )
+        .map(|request| {
+            // The definition's own description is the detail: it is what the person reads to decide.
+            request.with_detail(definition.description.clone())
+        })
+        .ok_or_else(|| ExtensionError::NotFound { id: id.to_owned() })?;
+
+        let decision =
+            approver
+                .ask(request)
+                .await
+                .map_err(|error| ExtensionError::ApprovalFailed {
+                    id: id.to_owned(),
+                    reason: error.to_string(),
+                })?;
+
+        if !decision.is_approved() {
+            return Err(ExtensionError::Denied { id: id.to_owned() });
+        }
+
+        let by = match decision.decided_by() {
+            crate::approval::DecidedBy::Human => "human",
+            crate::approval::DecidedBy::Policy => "policy",
+            crate::approval::DecidedBy::TimedOut => "timed-out",
+        };
+        self.approve(id, format!("{by} ({})", definition.name))?;
+        Ok(decision)
     }
 
     /// Removes a definition, stopping it first if it runs.
