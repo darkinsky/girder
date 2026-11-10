@@ -704,6 +704,43 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 纵切面做深：实时流（已完成）
+
+把事件转发接到真实 WebSocket，并验证客户端能收到流式增量。
+
+### 发现：默认没有转发任何事件
+
+`serve` 的 `--watch` 为空时，**一个事件都不转发**。所以一个连上来的浏览器看不到模型逐字输出——
+它只能轮询 `session.events`。
+
+而 `agent/turn` 事件里已经带着 `TextDelta`，只是没人订阅。
+
+**修法**：`serve` 默认转发 `agent/turn`。显式 `--watch` 仍然优先，所以部署可以收窄。
+
+```
+$ girder serve
+girder rpc listening on ws://127.0.0.1:PORT/api/remote.mux (watching: agent/turn)
+```
+
+### 一个被自己抓到的说谎的日志行
+
+第一版我把默认值加在了 banner **之后**，于是日志一边打印 "no events forwarded"，
+一边实际转发着 `agent/turn`。
+
+**日志行说了谎**，因为它在决策之前就打印了。修法是把 `selected` 的计算提到 banner 之前。
+
+### 3 个端到端测试
+
+它们用真实 WebSocket 客户端连真实服务器：
+
+| 测试 | 验证 |
+|---|---|
+| `a_dispatched_event_reaches_a_connected_client` | 派发 → 收到 `emit` 帧，含 `agent/turn` 和文本 |
+| `a_client_that_connects_receives_the_ready_frame` | 握手帧带 `clientId` |
+| `a_server_watching_nothing_forwards_no_events` | 空 watch 列表只发握手 |
+
+**这是第一次测到「总线 + mux」的组合**。之前两者各自有测试，合起来没有。
+
 ## 纵切面做深：工具链路（已完成）
 
 用真实模型通过 HTTP 触发工具调用，发现并修掉了**最严重的结构错误**。

@@ -143,7 +143,15 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     let address = listener.local_addr()?;
 
-    if watch.is_empty() {
+    // Resolved before the banner so the banner reports what is actually forwarded: printing "no events
+    // forwarded" and then forwarding one would make the line lie.
+    let selected = if watch.is_empty() {
+        vec![<girder_core::AgentTurn as girder_core::Event>::NAME]
+    } else {
+        resolve_watched(&watch)
+    };
+
+    if selected.is_empty() {
         println!(
             "girder rpc listening on ws://{address}{} (no events forwarded)",
             girder_rpc::REMOTE_STREAM_MUX_PATH
@@ -152,11 +160,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         println!(
             "girder rpc listening on ws://{address}{} (watching: {})",
             girder_rpc::REMOTE_STREAM_MUX_PATH,
-            watch.join(", ")
+            selected.join(", ")
         );
     }
 
-    let selected = resolve_watched(&watch);
     let catalog = session_catalog();
     let provider = resolve_provider(&cli);
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
