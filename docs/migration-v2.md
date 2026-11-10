@@ -686,6 +686,44 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## M5 进度记录
+
+### Session Remote 接口（第一个子系统，已完成）
+
+`api_session.rs`：12 个线上类型、6 个方法、目录构建，23 个测试。
+
+**这是第一条完整跑通的链路**：Rust 类型 → schema → 目录 → TypeScript 客户端。
+
+实测输出：
+
+```typescript
+'session.cancel': {
+  input: z.object({
+    sessionId: z.string(),
+    keepInbox: z.boolean().nullable().optional(),
+  }),
+  output: SessionCancelValueSchema,
+},
+```
+
+### 三个决定
+
+**请求类型刻意窄。** 每个字段都存在，是因为客户端要发送它。照搬服务端结构会泄漏客户端不该设置的字段。
+
+**`SessionId` 在线上是纯字符串。** 品牌标识符是 Rust 侧的保证；JSON 里就是一个字符串，
+schema 说 `string`，而不是假装品牌能穿过 JSON。**保证在能执行的地方执行，不在不能的地方声称。**
+
+**投影用 map 而不是每投影一个字段。** projection 按名字注册，字段化的类型每加一个投影就要改。
+
+### 两个由测试抓到的缺陷
+
+**1. `serde_json::Map` 被映射成 `Ref("Map")`。** 宏不认识它，退化成引用——一个指向客户端
+没有的类型的 `$ref`，schema 静默地什么都没描述。加了 `map_value()` 识别。
+
+**2. `choose_name` 的 `to_owned` 赋值。** clippy 报低效，改成 `clear` + `push_str`，
+同时把 `debug_assert_eq!` 提升为 `assert_eq!`——名字不一致是发布后会静默出错的事，
+不该只在 debug 构建里检查。
+
 ## M4 进度记录
 
 ### 消息收件箱（已完成）

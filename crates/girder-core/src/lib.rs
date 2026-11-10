@@ -52,6 +52,12 @@
 
 mod agent;
 mod agent_loop;
+// The derive emits `::girder_core::…`, which cannot resolve inside `girder-core` itself. This alias
+// lets generated code compile here as well as downstream; it is the supported way to name a crate
+// from within itself.
+extern crate self as girder_core;
+
+pub mod api_session;
 mod attachment;
 mod brand;
 mod compaction;
@@ -91,6 +97,9 @@ pub use agent::{
     ModelSelectionView, SelectionError, SelectionSource, validate as validate_model_selection,
 };
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
+/// The session Remote surface, namespaced because its wire types share names with the
+/// service-side request types in `remote`.
+pub use api_session as session_api;
 pub use attachment::{
     ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore, DecodedImage, EncodedImage, ImageRef,
     Limits as AttachmentLimits, MemoryStore, admit_batch, admit_image, decode_base64_canonical,

@@ -163,6 +163,12 @@ fn schema_for_type(
         let inner_schema = schema_for_type(inner, attrs, schema_crate)?;
         return Ok(quote!(#schema_crate::Schema::Array(Box::new(#inner_schema))));
     }
+    // A JSON object map. Recognised rather than left to become a `Ref`: a reference to `Map` would
+    // name a type no client has, and the schema would silently describe nothing.
+    if let Some(value) = map_value(ty) {
+        let value_schema = schema_for_type(value, attrs, schema_crate)?;
+        return Ok(quote!(#schema_crate::Schema::Map(Box::new(#value_schema))));
+    }
 
     let syn::Type::Path(path) = ty else {
         return Err(syn::Error::new_spanned(
@@ -218,6 +224,26 @@ fn single_generic_arg<'a>(ty: &'a syn::Type, container: &str) -> Option<&'a syn:
     }
     match args.args.first()? {
         syn::GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    }
+}
+
+/// The value type of a `Map<String, V>`.
+fn map_value(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Map" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    // The first argument is the key; the wire only ever uses string keys, so a map with a different
+    // key type is not something a schema can express.
+    match args.args.iter().nth(1)? {
+        syn::GenericArgument::Type(value) => Some(value),
         _ => None,
     }
 }
