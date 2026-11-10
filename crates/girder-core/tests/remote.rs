@@ -1432,3 +1432,68 @@ async fn the_unimplemented_list_does_not_name_an_implemented_method() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn every_constructor_serves_the_same_session_methods() {
+    // The structural guarantee the refactor bought: three constructors, one shared registration. Before
+    // it, seven methods were added to one path and forgotten in another, and a test caught each one.
+    // This asserts the property directly so a future hand-written list breaks it immediately.
+    let dir = std::env::temp_dir().join(format!("girder-constructors-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let mut routes = girder_core::RouteRegistry::new();
+    routes
+        .register(
+            girder_core::Route::new("ds", "deepseek")
+                .with_model(girder_core::ModelInfo::text("m", 100, 10)),
+        )
+        .expect("registered");
+    let routes = Arc::new(routes);
+
+    let runtime = runtime_with(
+        Arc::new(EchoProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        Arc::new(EventBus::new()),
+    );
+
+    let with_routes = girder_core::registry_with_routes(&Arc::clone(&catalog), &runtime, &routes);
+    let with_runtime =
+        girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+    let plain = default_registry(Arc::clone(&catalog));
+
+    let session_methods = |registry: &girder_core::RemoteRegistry| -> Vec<String> {
+        let mut names: Vec<String> = registry
+            .names()
+            .into_iter()
+            .filter(|(namespace, _)| namespace == "session")
+            .map(|(_, method)| method)
+            .collect();
+        names.sort();
+        names
+    };
+
+    let a = session_methods(&with_routes);
+    let b = session_methods(&with_runtime);
+    let c = session_methods(&plain);
+
+    // The runtime path serves everything except the two model methods, which need a route table.
+    let mut expected = a.clone();
+    expected.retain(|method| method != "modelCatalog" && method != "selectModel");
+    assert_eq!(
+        b, expected,
+        "the runtime path must match the routes path minus the model methods"
+    );
+
+    // The plain path additionally lacks `cancel`, which needs a runtime.
+    let mut expected_plain = b.clone();
+    expected_plain.retain(|method| method != "cancel");
+    assert_eq!(
+        c, expected_plain,
+        "the plain path must match the runtime path minus cancel"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

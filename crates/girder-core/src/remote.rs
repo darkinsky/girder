@@ -819,19 +819,42 @@ const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
     reason = "the Arc is cloned into a method closure, so ownership is the point"
 )]
 pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    register_session_core(registry, catalog, None);
+    // No runtime, so a prompt cannot actually run a turn: the handler acknowledges and does nothing.
+    register_prompt(registry);
+}
+
+/// Registers every `session.*` method, given whatever the caller can supply.
+///
+/// One function rather than a list repeated in each constructor. Seven times a method was added to one
+/// path and forgotten in another -- `rename`, `delete`, `fork`, both model methods, `attachment` -- and
+/// a test caught it each time. The test was doing work the structure should have done, and this is that
+/// structure.
+fn register_session_core(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    runtime: Option<&Arc<crate::runtime::AgentRuntime>>,
+) {
     register_list(registry, catalog);
     register_create(registry, catalog);
     register_history(registry, catalog);
-    register_prompt(registry);
     register_rename(registry, catalog);
     register_delete(registry, catalog);
     register_fork(registry, catalog);
     register_attachment_method(registry, &Arc::new(crate::attachment::MemoryStore::new()));
 
-    // `cancel` needs a runtime to cancel, so this constructor declares it a gap rather than
-    // registering a handler that could never act. Everything else absent from the upstream surface
-    // comes from the shared list.
-    registry.declare_unimplemented("session", &["cancel"]);
+    match runtime {
+        Some(runtime) => {
+            register_prompt_with_runtime(registry, catalog, runtime);
+            register_cancel(registry, runtime);
+        }
+        None => {
+            // Declared rather than omitted: a client distinguishes "this build cannot" from "no such
+            // method", and the two call for different handling.
+            registry.declare_unimplemented("session", &["cancel"]);
+        }
+    }
+
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
 }
 
@@ -1003,20 +1026,7 @@ pub fn registry_with_runtime(
     // routes cannot answer a model question, and a picker that listed nothing would be worse than an
     // honest gap. A caller that has routes uses `registry_with_routes`.
     let mut registry = RemoteRegistry::new();
-    register_list(&mut registry, &catalog);
-    register_create(&mut registry, &catalog);
-    register_history(&mut registry, &catalog);
-    register_prompt_with_runtime(&mut registry, &catalog, &runtime);
-    register_cancel(&mut registry, &runtime);
-    register_rename(&mut registry, &catalog);
-    register_delete(&mut registry, &catalog);
-    register_fork(&mut registry, &catalog);
-    register_attachment_method(
-        &mut registry,
-        &Arc::new(crate::attachment::MemoryStore::new()),
-    );
-
-    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
+    register_session_core(&mut registry, &catalog, Some(&runtime));
     registry.declare_unimplemented("session", &["modelCatalog", "selectModel"]);
     registry
 }
@@ -1032,25 +1042,9 @@ pub fn registry_with_routes(
     routes: &Arc<crate::providers::RouteRegistry>,
 ) -> RemoteRegistry {
     let mut registry = RemoteRegistry::new();
+    register_session_core(&mut registry, catalog, Some(runtime));
     register_model_catalog(&mut registry, routes);
     register_select_model(&mut registry, routes);
-    register_list(&mut registry, catalog);
-    register_create(&mut registry, catalog);
-    register_history(&mut registry, catalog);
-    register_prompt_with_runtime(&mut registry, catalog, runtime);
-    register_cancel(&mut registry, runtime);
-    // Every method the plain registry serves must exist here too, or `serve` would answer
-    // `UNKNOWN_METHOD` for something the schema advertises. This list drifted once already: rename and
-    // delete were added to the plain path and not this one.
-    register_rename(&mut registry, catalog);
-    register_delete(&mut registry, catalog);
-    register_fork(&mut registry, catalog);
-    register_attachment_method(
-        &mut registry,
-        &Arc::new(crate::attachment::MemoryStore::new()),
-    );
-
-    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry
 }
 

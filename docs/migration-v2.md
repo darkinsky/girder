@@ -704,6 +704,59 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 重构：消除三份注册列表（已完成）
+
+**这不是加功能，是修掉一个已经犯了 7 次的错误。**
+
+### 问题
+
+三个构造函数（`register_session_methods`、`registry_with_runtime`、`registry_with_routes`）
+各自维护一份**几乎相同**的注册列表。
+
+每次加方法都要改三处，而**没有任何机制强制它们一致**。累计漏掉的：
+`rename`、`delete`、`fork`、`modelCatalog`、`selectModel`、`attachment` —— **7 次**。
+
+每次都是测试抓到的。**测试在做结构本该做的事。**
+
+### 修法
+
+抽出 `register_session_core(registry, catalog, runtime: Option<...>)`：
+
+```rust
+fn register_session_core(registry, catalog, runtime: Option<&Arc<AgentRuntime>>) {
+    register_list(registry, catalog);
+    register_create(registry, catalog);
+    register_history(registry, catalog);
+    register_rename(registry, catalog);
+    register_delete(registry, catalog);
+    register_fork(registry, catalog);
+    register_attachment_method(registry, ...);
+
+    match runtime {
+        Some(rt) => { register_prompt_with_runtime(registry, catalog, rt); register_cancel(registry, rt); }
+        None => registry.declare_unimplemented("session", &["cancel"]),
+    }
+    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
+}
+```
+
+三个构造函数从约 60 行压到约 20 行，**差异变得可见**：
+
+| 构造函数 | 差异 |
+|---|---|
+| `register_session_methods` | 无 runtime → `cancel` 是缺口 |
+| `registry_with_runtime` | 有 runtime，无路由 → 模型方法是缺口 |
+| `registry_with_routes` | 全都有 |
+
+### 新增的结构性测试
+
+`every_constructor_serves_the_same_session_methods` 断言：
+
+- `runtime` 路径 = `routes` 路径 减去模型方法
+- `plain` 路径 = `runtime` 路径 减去 `cancel`
+
+**它验证的不是功能，是三条路径的结构关系。** 将来任何一处手写列表都会立刻破坏它。
+
 ## 会话附件读取（已完成）
 
 `session.attachment`：按引用读回一张存储的图片，7 个测试。
