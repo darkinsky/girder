@@ -686,6 +686,36 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## Workspace 与 Settings 接口（已完成）
+
+`api_config.rs`：13 个线上类型、7 个方法、`WorkspaceRegistry`，28 个测试。
+
+**方法数从 9 增到 12**，实测：
+
+```
+girder rpc exposing 12 Remote method(s): ... workspace.create, workspace.delete, workspace.list
+
+POST workspace/create {"path":"/tmp/demo-proj"}
+→ {"workspace":{"workspace_id":"ws-6bc6e3e1","title":"demo-proj",...}}
+```
+
+### 三个决定
+
+**workspace 是注册而不是目录。** 路径是宿主文件系统的事实；标题和会话顺序不是——它们是用户的
+分组决策。删除注册**不删目录**，这是「关一个标签页」和「丢一个项目」的区别。
+
+**设置是描述而不是暴露。** 客户端拿到的是命名空间、类型、当前值、是否可编辑，而不是整棵配置树。
+知道所有键的客户端会渲染出这个部署不支持的字段，并提供服务器会拒绝的编辑。
+
+**id 从路径派生的哈希。** 同一个目录必须产生同一个 id，这才让重复注册成为拒绝而不是重复条目。
+
+### 一个空测试被修成真测试
+
+`archiving_removes_a_session_from_its_workspace` 最初断言的是**归档失败**——因为注册表根本没有
+「挂载会话」的路径。那个测试测的是「功能不存在」。
+
+补上 `attach_session()` 后，它变成了真测试，并且顺带发现「归档一个未挂载的会话」需要与成功可区分。
+
 ## 最小 Web 客户端（已完成）
 
 `girder-rpc/src/web.rs`：内嵌 HTML 页面 + 7 个测试。

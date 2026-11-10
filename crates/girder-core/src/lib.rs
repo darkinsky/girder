@@ -57,6 +57,7 @@ mod agent_loop;
 // from within itself.
 extern crate self as girder_core;
 
+pub mod api_config;
 pub mod api_job;
 pub mod api_session;
 mod attachment;
@@ -189,8 +190,8 @@ pub use remote::{
     SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
     SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_job_methods,
-    register_projection_methods, register_session_methods, registered_method_names,
-    registry_with_runtime,
+    register_projection_methods, register_session_methods, register_workspace_methods,
+    registered_method_names, registry_with_runtime,
 };
 pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};

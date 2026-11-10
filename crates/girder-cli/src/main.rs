@@ -186,6 +186,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let jobs = Arc::new(girder_core::JobRegistry::new(256 * 1024));
     girder_core::register_job_methods(&mut remote, &jobs);
 
+    // Workspace registrations: the directories a session may run in.
+    let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
+    girder_core::register_workspace_methods(&mut remote, &workspaces);
+
     let remote = Arc::new(remote);
     println!(
         "girder rpc exposing {} Remote method(s): {}",

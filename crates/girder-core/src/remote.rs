@@ -1118,3 +1118,119 @@ pub fn registered_method_names() -> Vec<String> {
     names.dedup();
     names
 }
+
+/// Registers the workspace Remote methods.
+///
+/// The registry is shared: a client that renamed a workspace must see the new title on the next list
+/// without asking again for permission to.
+pub fn register_workspace_methods(
+    registry: &mut RemoteRegistry,
+    workspaces: &std::sync::Arc<crate::api_config::WorkspaceRegistry>,
+) {
+    let workspaces = std::sync::Arc::clone(workspaces);
+
+    registry.register("workspace", "list", {
+        let workspaces = std::sync::Arc::clone(&workspaces);
+        move |_call: RemoteCall| {
+            let workspaces = std::sync::Arc::clone(&workspaces);
+            Box::pin(async move {
+                let now = crate::schedule::now_millis();
+                let views: Vec<serde_json::Value> = workspaces
+                    .list()
+                    .into_iter()
+                    .map(|workspace| {
+                        let view = workspace.view(now);
+                        serde_json::json!({
+                            "workspace_id": view.workspace_id,
+                            "path": view.path,
+                            "title": view.title,
+                            "session_ids": view.session_ids,
+                            "created_at": view.created_at,
+                            "updated_at": view.updated_at,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({ "workspaces": views }))
+            })
+        }
+    });
+
+    registry.register("workspace", "create", {
+        let workspaces = std::sync::Arc::clone(&workspaces);
+        move |call: RemoteCall| {
+            let workspaces = std::sync::Arc::clone(&workspaces);
+            Box::pin(async move {
+                let path = call
+                    .args
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| RemoteError::InvalidArguments {
+                        namespace: "workspace".to_owned(),
+                        method: "create".to_owned(),
+                        message: "`path` is required".to_owned(),
+                    })?;
+                let title = call
+                    .args
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned);
+
+                // The id is derived from the path so a re-registration of the same directory is
+                // refused by the registry rather than producing a second entry.
+                let id = format!("ws-{}", simple_hash(path));
+                let now = crate::schedule::now_millis();
+                let workspace = workspaces
+                    .register(id, path, title, now)
+                    .map_err(|existing| RemoteError::InvalidArguments {
+                        namespace: "workspace".to_owned(),
+                        method: "create".to_owned(),
+                        message: format!("`{path}` is already registered as `{existing}`"),
+                    })?;
+                let view = workspace.view(now);
+                Ok(serde_json::json!({
+                    "workspace": {
+                        "workspace_id": view.workspace_id,
+                        "path": view.path,
+                        "title": view.title,
+                        "session_ids": view.session_ids,
+                        "created_at": view.created_at,
+                        "updated_at": view.updated_at,
+                    }
+                }))
+            })
+        }
+    });
+
+    registry.register("workspace", "delete", {
+        let workspaces = std::sync::Arc::clone(&workspaces);
+        move |call: RemoteCall| {
+            let workspaces = std::sync::Arc::clone(&workspaces);
+            Box::pin(async move {
+                let id = call
+                    .args
+                    .get("workspaceId")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| RemoteError::InvalidArguments {
+                        namespace: "workspace".to_owned(),
+                        method: "delete".to_owned(),
+                        message: "`workspaceId` is required".to_owned(),
+                    })?;
+                let deleted = workspaces.delete(id);
+                Ok(serde_json::json!({ "deleted": deleted }))
+            })
+        }
+    });
+}
+
+/// A stable 32-bit hash of a path, for deriving a workspace id.
+///
+/// FNV-1a rather than a random id: the same directory must produce the same id, which is what makes a
+/// re-registration a refusal instead of a duplicate entry.
+fn simple_hash(text: &str) -> String {
+    let mut hash: u32 = 2_166_136_261;
+    for byte in text.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    format!("{hash:08x}")
+}
