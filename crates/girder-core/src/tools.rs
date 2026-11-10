@@ -24,6 +24,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::observation::{Conflict, Observation, Session as ObservationSession};
 use crate::permissions::State as PermissionState;
 
 use crate::brand::{AgentId, ToolCallId};
@@ -59,6 +60,8 @@ pub struct ToolRunContext {
     pub permissions: Option<Arc<PermissionState>>,
     /// Where the session's workspace is, for a tool that must decide whether a path is inside it.
     pub workspace: Option<std::path::PathBuf>,
+    /// What this session has seen, so a write does not clobber a change nobody looked at.
+    pub observations: Option<Arc<ObservationSession>>,
 }
 
 impl Default for ToolRunContext {
@@ -77,6 +80,7 @@ impl Default for ToolRunContext {
             cancel: CancellationToken::new(),
             permissions: None,
             workspace: None,
+            observations: None,
         }
     }
 }
@@ -90,6 +94,7 @@ impl ToolRunContext {
             cancel,
             permissions: None,
             workspace: None,
+            observations: None,
         }
     }
 
@@ -105,6 +110,61 @@ impl ToolRunContext {
     pub fn in_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = Some(workspace.into());
         self
+    }
+
+    /// Records what this session has now seen of a path.
+    ///
+    /// A no-op without an observation session: a deployment that mounted no observation layer has nothing to
+    /// contradict, and a tool must not refuse to work because a policy is absent.
+    pub fn observe(&self, path: &std::path::Path, observation: Observation) {
+        if let Some(session) = &self.observations {
+            session.observe(path, observation);
+        }
+    }
+
+    /// Forgets a path, after a successful write or a delete.
+    pub fn forget(&self, path: &std::path::Path) {
+        if let Some(session) = &self.observations {
+            session.forget(path);
+        }
+    }
+
+    /// Whether a write to `path` would clobber a change this session did not see.
+    ///
+    /// # Errors
+    ///
+    /// Returns the conflict, which the caller reports rather than swallowing: a write refused without a reason is a
+    /// tool that appears broken.
+    pub fn check_write(&self, path: &std::path::Path) -> Result<(), Conflict> {
+        let Some(session) = &self.observations else {
+            return Ok(());
+        };
+        match session.observed(path) {
+            Some(Observation::Present(expected)) => {
+                // The file on disk is what a write would replace, so the check compares against it rather than
+                // against a cached copy.
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    return Err(Conflict::Deleted);
+                };
+                let current = crate::observation::version_of(&text);
+                if expected.matches(&current) {
+                    Ok(())
+                } else {
+                    Err(Conflict::Changed {
+                        observed: expected,
+                        current,
+                    })
+                }
+            }
+            Some(Observation::Absent) => {
+                if path.exists() {
+                    Err(Conflict::Created)
+                } else {
+                    Ok(())
+                }
+            }
+            None => Ok(()),
+        }
     }
 }
 

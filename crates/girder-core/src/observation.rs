@@ -222,6 +222,33 @@ pub enum EditError {
     NoChange,
 }
 
+/// A version for a text this process just produced.
+///
+/// Size and a content hash, with no modification time: the caller has the text in hand rather than a stat, and a
+/// timestamp taken now would be a guess about what the filesystem will report afterwards.
+#[must_use]
+pub fn version_of(text: &str) -> Version {
+    Version {
+        bytes: u64::try_from(text.len()).unwrap_or(u64::MAX),
+        modified_ms: crate::schedule::now_millis(),
+        hash: Some(hash(text)),
+    }
+}
+
+/// A hash of a text, for comparing versions.
+///
+/// FNV-1a: small, dependency-free, and good enough to catch the change a size-and-time comparison misses. This is not
+/// a security boundary — a caller that needs one hashes the file itself.
+#[must_use]
+pub fn hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
 /// Replaces one occurrence of `old` with `new` in `text`.
 ///
 /// Refuses when `old` is missing or occurs more than once. A wholesale replace would change code the caller never

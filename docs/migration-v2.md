@@ -704,6 +704,43 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 端到端集成：read / write / edit / apply_patch（已完成）
+
+### 之前的缺口
+
+上一轮测量发现 18 个模块零引用。这一轮补上了**更基本的一个缺口**：
+
+**项目里只有 `bash` 和 `subagent` 两个工具，没有任何读写文件的工具。**
+
+一个编码代理**不能读文件**——这不是「模块未接入」，是**核心能力缺失**。
+
+### 这一轮做了什么
+
+新增四个工具，并把三个已有模块接进去：
+
+| 工具 | 接入的模块 | 关键行为 |
+|---|---|---|
+| `read` | `observation` | 行号从 1 起，记录观察 |
+| `write` | `observation` + `permissions` | 写前做冲突检查 |
+| `edit` | `observation` | 精确替换一次 |
+| `apply_patch` | `patch` + `observation` | 多文件，全有或全无 |
+
+### 四个真实行为测试
+
+**`a_write_refuses_to_clobber_a_change_the_session_did_not_see`** — 最重要的一个：
+先读、别人改、再写，断言拒绝且**别人的改动存活**。
+
+**`a_read_numbers_its_lines_from_one`** — 模型引用行号来编辑，行号必须是观察的一部分。
+
+**`an_ambiguous_edit_is_refused`** — 断言文件**没有变化**。
+
+**`a_patch_that_does_not_apply_leaves_every_file_untouched`** — 断言第一个文件没被改。
+
+### 为什么 read 的失败是「结果」不是「错误」
+
+`ToolResult::error` 而不是 `ToolError`：**模型读的是结果**，错误是 harness 对自己说话。
+一个读不到文件的模型需要知道「读不到」，而不是让整轮失败。
+
 ## 端到端集成：把权限接入 bash（已完成）
 
 ### 一个必须记录的事实

@@ -76,6 +76,7 @@ mod events;
 mod exec;
 mod extensions;
 mod fiber;
+mod file_tools;
 mod fs;
 mod goal;
 mod home_paths;
@@ -189,6 +190,7 @@ pub use extensions::{
     Run as ExtensionRun, Runtime as ExtensionRuntime, Status as ExtensionStatus,
 };
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
+pub use file_tools::{MAX_READ_BYTES, edit_tool, patch_tool, read_tool, write_tool};
 pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
