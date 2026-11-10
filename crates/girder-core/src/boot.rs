@@ -375,6 +375,9 @@ impl Booted {
                 bus: self.bus,
                 model: self.model,
                 max_turns: max_turns.unwrap_or(16),
+                // Unlimited unless a deployment sets one: a budget is a billing decision, and inventing a ceiling
+                // here would break a session that was working.
+                token_budget: crate::limits::Ceiling::Unlimited,
             },
         ))
     }

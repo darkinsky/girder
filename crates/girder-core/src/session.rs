@@ -56,6 +56,12 @@ pub enum TurnEndReason {
     /// A step was blocked before it could run.
     Blocked,
 
+    /// The session's token budget ran out.
+    ///
+    /// Distinct from `Blocked`: nothing objected to the step, the session simply had no more to spend. A reader
+    /// investigating a stopped session needs to tell those apart.
+    Budget,
+
     /// The turn failed.
     Failed {
         /// The failure, flattened to text and a code.
@@ -164,6 +170,21 @@ pub enum SessionEvent {
     AssistantMessage {
         /// The message, carrying provider identity for replay.
         message: crate::message::Message,
+    },
+
+    /// What one model call cost.
+    ///
+    /// A separate event rather than a field on the message: a message is content a reader renders, and a cost is
+    /// accounting a reader sums. Folding them together would make every consumer of the content carry a number it
+    /// does not use, and a replay that wanted only the cost would have to parse messages.
+    #[serde(rename = "model/usage")]
+    ModelUsage {
+        /// The model that answered.
+        model: String,
+        /// Tokens the prompt cost.
+        input_tokens: u64,
+        /// Tokens the answer cost.
+        output_tokens: u64,
     },
 
     /// A tool was invoked.
@@ -292,6 +313,7 @@ impl SessionEvent {
             Self::TurnEnd { .. } => "turn/end",
             Self::StepStart { .. } => "step/start",
             Self::StepEnd { .. } => "step/end",
+            Self::ModelUsage { .. } => "model/usage",
             Self::UserMessage { .. } => "user/message",
             Self::DeveloperMessage { .. } => "developer/message",
             Self::AssistantMessage { .. } => "assistant/message",
@@ -320,6 +342,7 @@ impl SessionEvent {
             | Self::SystemMessage { turn, .. } => Some(*turn),
             Self::UserMessage { .. }
             | Self::AssistantMessage { .. }
+            | Self::ModelUsage { .. }
             | Self::ToolCall { .. }
             | Self::ToolResult { .. }
             | Self::ModelSelection { .. }

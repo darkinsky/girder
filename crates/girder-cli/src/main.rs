@@ -180,6 +180,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         bus: Arc::clone(&bus),
         model: cli.model.clone(),
         max_turns: cli.max_turns,
+        token_budget: girder_core::Ceiling::Unlimited,
     });
     // The route table the model picker reads. One route for the configured provider; a deployment with
     // more would register them here rather than in a client.

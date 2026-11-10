@@ -52,6 +52,14 @@ pub enum LoopStep {
 
     /// The assistant's message for this turn is complete.
     AssistantMessage(AssistantMessage),
+    /// The token budget ran out.
+    ///
+    /// A step rather than an error: running out of budget is an outcome a caller reports to a person, and an
+    /// error would make it look like the harness broke.
+    BudgetExhausted {
+        /// How many tokens were spent.
+        spent: u64,
+    },
 
     /// A tool is about to run.
     ToolStarted {
@@ -131,6 +139,17 @@ pub struct LoopContext {
     /// already started.
     pub model: String,
 
+    /// What this turn may spend on tokens.
+    ///
+    /// Unlimited when the caller did not set one: a deployment that does not charge should not acquire a ceiling
+    /// because a field was omitted.
+    pub budget: crate::limits::Ceiling,
+    /// What it has spent so far in this turn.
+    ///
+    /// A counter rather than a `Budget`, because a turn is the unit a ceiling applies to: a budget that outlived
+    /// one turn would refuse a prompt because a previous prompt was expensive.
+    pub spent: std::sync::atomic::AtomicU64,
+
     /// The agent this loop runs for.
     ///
     /// The single source of truth for cancellation, model selection, and pending input. The loop
@@ -190,6 +209,8 @@ impl LoopContext {
             max_depth: 2,
             message_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             record_prompt: true,
+            budget: crate::limits::Ceiling::Unlimited,
+            spent: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -301,6 +322,18 @@ pub fn run(
                 .is_some_and(|agent| agent.cancel_token().is_cancelled());
             if cancel.is_cancelled() || agent_cancelled {
                 yield Err(LoopError::Cancelled);
+                return;
+            }
+
+            // The budget gates the next turn, not the one that already ran: a spend cannot be undone, so the
+            // useful moment to refuse is before more is spent. Refusing mid-turn would leave the log with a
+            // `turn/start` and no `turn/end`.
+            if !context.has_budget() {
+                yield Ok(LoopStep::BudgetExhausted {
+                    spent: context
+                        .spent
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                });
                 return;
             }
 
@@ -555,6 +588,25 @@ fn turn_stream<'a>(
                 message: assistant_message,
             })
             .await;
+
+        // The cost is recorded as its own event rather than a field on the message: a reader that renders content
+        // does not need a number it never shows, and a reader that sums cost should not parse messages to find it.
+        if let Some(usage) = &assistant.usage {
+            let input = usage.input;
+            let output = usage.output;
+            let _ = context
+                .session
+                .append(SessionEvent::ModelUsage {
+                    model: context.model.clone(),
+                    input_tokens: input,
+                    output_tokens: output,
+                })
+                .await;
+
+            // Checked after recording, so a session that overspent says what it spent rather than only that it
+            // stopped. The spend cannot be undone, which is why the next step is the one refused.
+            context.record_spend(input.saturating_add(output));
+        }
         yield Ok(LoopStep::AssistantMessage(assistant.clone()));
 
         let calls = assistant.tool_calls();
@@ -758,6 +810,24 @@ fn accept_terminal(_args: PostExecuteArgs) -> BoxFut<PostToolDecision> {
 }
 
 impl LoopContext {
+    /// Records a spend and reports whether the budget still allows another step.
+    ///
+    /// Called after a step rather than before: the step already happened, and a check that ran first could only
+    /// refuse work the caller had not yet paid for. The refusal this enables is of the *next* step.
+    pub fn record_spend(&self, tokens: u64) -> bool {
+        let total = self
+            .spent
+            .fetch_add(tokens, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(tokens);
+        self.budget.allows(total, 1)
+    }
+
+    /// Whether the budget allows one more step.
+    pub fn has_budget(&self) -> bool {
+        let spent = self.spent.load(std::sync::atomic::Ordering::Relaxed);
+        self.budget.allows(spent, 1)
+    }
+
     /// Mints a message id for this session.
     ///
     /// `msg-<n>` rather than a UUID: the counter is per-loop, the loop owns one session, and a

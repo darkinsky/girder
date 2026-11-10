@@ -816,6 +816,7 @@ fn runtime_with(provider: Arc<dyn LlmProvider>, bus: Arc<EventBus>) -> Arc<Agent
         bus,
         model: "test".to_owned(),
         max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
     })
 }
 

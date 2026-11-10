@@ -125,6 +125,12 @@ pub struct RuntimeConfig {
     pub model: String,
     /// Maximum turns per prompt.
     pub max_turns: u32,
+    /// What this session may spend on tokens.
+    ///
+    /// Unlimited by default: a deployment that does not charge should not acquire a ceiling because a field was
+    /// omitted. A caller that does charge sets it, and the loop refuses a step that would exceed it rather than
+    /// discovering the overshoot afterwards — the spend cannot be undone.
+    pub token_budget: crate::limits::Ceiling,
 }
 
 /// A running turn.

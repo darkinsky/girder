@@ -42,6 +42,7 @@ fn registry(routes: &Arc<RouteRegistry>) -> girder_core::RemoteRegistry {
         bus: Arc::new(girder_core::EventBus::new()),
         model: "deepseek-chat".to_owned(),
         max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
     });
     registry_with_routes(&catalog, &runtime, routes)
 }

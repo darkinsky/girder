@@ -237,6 +237,7 @@ async fn both_registration_paths_serve_the_same_methods() {
         bus: Arc::new(girder_core::EventBus::new()),
         model: "test".to_owned(),
         max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
     });
     let with_runtime = girder_core::registry_with_runtime(catalog, runtime);
 
