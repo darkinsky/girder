@@ -704,6 +704,30 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 会话分叉（已完成）
+
+`session.fork`：从精确的事件序号复制出一个新会话，6 个测试。
+
+### 核心决定：切割点必须落在回合边界
+
+**切割不能把 tool call 和它的 result 分开**——一个 `tool_use` 没有应答的日志会被每个 provider 拒绝。
+
+所以请求的序号会**向前回退到最近的 `turn/end`**。测试 `a_fork_cut_lands_on_a_turn_boundary`
+用「第一回合的第 2 个事件」验证这点：落在回合中间，必须回退。
+
+**省略序号 = 整个日志**，这与「第一个事件」是不同请求，所以用 `Option<u64>` 而不是默认 0。
+
+### 又一次同一个模式
+
+这轮 `fork` 的注册漏了 `register_session_methods`（第三处），被
+`every_method_in_one_registry_exists_in_the_other` 抓到。
+
+**但真正有价值的是第二个探测列表**：它把 `fork` 当作「该报缺口」的名字来探测，
+一旦实现就立刻失败。这个列表已经累计抓出 6 个方法（`projections`、`rename`、`delete`、
+`selectModel`、`modelCatalog`、`fork`）。
+
+**这个测试是我写过的最有用的一个。** 它不验证功能，验证的是「声明与实现是否一致」。
+
 ## 模型目录与选择（已完成）
 
 `session.modelCatalog` / `session.selectModel`，10 个测试。

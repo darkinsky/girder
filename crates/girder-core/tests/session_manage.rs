@@ -255,3 +255,128 @@ async fn both_registration_paths_serve_the_same_methods() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- fork -------------------------------------------------------------------------------------
+
+/// Writes a session holding two complete turns.
+fn seed_two_turns(dir: &std::path::Path, id: &str) {
+    let store = girder_core::SessionStore::new(dir.join(format!("{id}.jsonl.zst")));
+    store.touch().expect("created");
+    for turn in 1..=2u64 {
+        store
+            .append(&SessionEvent::TurnStart { turn })
+            .expect("appended");
+        store
+            .append(&SessionEvent::user_text(&format!("m{turn}"), "hello"))
+            .expect("appended");
+        store
+            .append(&SessionEvent::assistant_text(
+                &format!("a{turn}"),
+                "hi",
+                "test",
+            ))
+            .expect("appended");
+        store
+            .append(&SessionEvent::TurnEnd {
+                turn,
+                reason: girder_core::TurnEndReason::Completed,
+            })
+            .expect("appended");
+    }
+}
+
+#[tokio::test]
+async fn a_fork_copies_the_source_log() {
+    let dir = scratch("fork");
+    seed_two_turns(&dir, "s1");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let forked = catalog.fork("s1", None).await.expect("forked");
+
+    assert_ne!(forked, "s1");
+    let source = girder_core::read_session_file(dir.join("s1.jsonl.zst")).expect("read");
+    let copy =
+        girder_core::read_session_file(dir.join(format!("{forked}.jsonl.zst"))).expect("read");
+    assert_eq!(copy, source, "a fork with no cut copies the whole log");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_fork_cut_lands_on_a_turn_boundary() {
+    // A cut inside a turn would separate a tool call from its result.
+    let dir = scratch("fork-cut");
+    seed_two_turns(&dir, "s1");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    // The first turn is 4 events; asking for 2 lands mid-turn and must back up to the boundary.
+    let forked = catalog.fork("s1", Some(2)).await.expect("forked");
+
+    let copy =
+        girder_core::read_session_file(dir.join(format!("{forked}.jsonl.zst"))).expect("read");
+    assert!(
+        matches!(copy.last(), Some(SessionEvent::TurnEnd { .. }) | None),
+        "a fork must end on a turn boundary: {copy:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_fork_at_the_first_boundary_keeps_one_turn() {
+    let dir = scratch("fork-one");
+    seed_two_turns(&dir, "s1");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let forked = catalog.fork("s1", Some(4)).await.expect("forked");
+
+    let copy =
+        girder_core::read_session_file(dir.join(format!("{forked}.jsonl.zst"))).expect("read");
+    assert_eq!(copy.len(), 4, "the first turn is four events");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_fork_of_an_unknown_session_is_refused() {
+    let dir = scratch("fork-missing");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let error = catalog.fork("nope", None).await.expect_err("missing");
+
+    assert!(matches!(
+        error,
+        girder_core::RemoteError::InvalidArguments { .. }
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_fork_registry_requires_a_session_id() {
+    let dir = scratch("fork-args");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let registry = default_registry(catalog);
+
+    let error = registry
+        .dispatch("session", "fork", call(json!({})))
+        .await
+        .expect_err("missing id");
+
+    assert!(matches!(
+        error,
+        girder_core::RemoteError::InvalidArguments { .. }
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_forked_session_appears_in_the_list() {
+    // A fork the client cannot then open is not a fork.
+    let dir = scratch("fork-list");
+    seed_two_turns(&dir, "s1");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+
+    let forked = catalog.fork("s1", None).await.expect("forked");
+    let records = catalog.list().await;
+
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().any(|record| record.id == forked));
+    let _ = std::fs::remove_dir_all(&dir);
+}

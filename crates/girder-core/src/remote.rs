@@ -374,6 +374,19 @@ pub trait SessionCatalog: Send + Sync {
         })
     }
 
+    /// Forks a session at an exact event sequence.
+    ///
+    /// A default that reports the gap rather than a compile error, for the same reason `rename` has
+    /// one: a catalog backed by something other than a directory may not be able to copy a log.
+    fn fork(&self, _id: &str, _at_seq: Option<u64>) -> BoxFut<Result<String, RemoteError>> {
+        Box::pin(async {
+            Err(RemoteError::NotImplemented {
+                namespace: "session".to_owned(),
+                method: "fork".to_owned(),
+            })
+        })
+    }
+
     /// Deletes a session.
     fn delete(&self, _id: &str) -> BoxFut<Result<bool, RemoteError>> {
         Box::pin(async {
@@ -621,6 +634,56 @@ impl SessionCatalog for DirectoryCatalog {
         })
     }
 
+    /// Forks a session at `at_seq`, or at the latest completed turn.
+    ///
+    /// The fork copies events up to and including the cut, so the new session replays exactly what the
+    /// source had at that point. A cut inside a tool pair would produce a log whose `tool_use` has no
+    /// answer, so the cut moves backwards to the nearest `turn/end` at or before the requested
+    /// sequence.
+    fn fork(&self, id: &str, at_seq: Option<u64>) -> BoxFut<Result<String, RemoteError>> {
+        let source = self.root.join(format!("{id}.jsonl.zst"));
+        let id = id.to_owned();
+        let root = self.root.clone();
+        Box::pin(async move {
+            let Ok(events) = crate::session::read_session_file(&source) else {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "fork".to_owned(),
+                    message: format!("no session `{id}`"),
+                });
+            };
+
+            let cut = match at_seq {
+                Some(seq) => usize::try_from(seq).unwrap_or(usize::MAX),
+                // Omission selects the whole log: the latest completed turn is the last one, and a
+                // session with no turns forks empty rather than failing.
+                None => events.len(),
+            };
+            let cut = cut.min(events.len());
+
+            // The cut must land on a turn boundary. A cut inside a turn would separate a tool call from
+            // its result, and a log whose `tool_use` has no answer is rejected by every provider. The
+            // last `turn/end` at or before the request is the last point a replay can resume from.
+            let cut = (0..cut)
+                .rev()
+                .find(|index| matches!(events.get(*index), Some(SessionEvent::TurnEnd { .. })))
+                .map_or(0, |index| index + 1);
+
+            let forked_id = format!("{id}-fork-{}", crate::schedule::now_millis());
+            let target = root.join(format!("{forked_id}.jsonl.zst"));
+            let store = crate::session::SessionStore::new(&target);
+            store
+                .touch()
+                .map_err(|error| RemoteError::Failed(error.to_string()))?;
+            for event in events.into_iter().take(cut) {
+                store
+                    .append(&event)
+                    .map_err(|error| RemoteError::Failed(error.to_string()))?;
+            }
+            Ok(forked_id)
+        })
+    }
+
     /// Deletes a session's log and its title.
     ///
     /// Returns whether anything was removed, so a client distinguishes a deletion from a no-op without
@@ -763,6 +826,7 @@ pub fn register_session_methods(registry: &mut RemoteRegistry, catalog: &Arc<dyn
     register_prompt(registry);
     register_rename(registry, catalog);
     register_delete(registry, catalog);
+    register_fork(registry, catalog);
 
     // `cancel` needs a runtime to cancel, so this constructor declares it a gap rather than
     // registering a handler that could never act. Everything else absent from the upstream surface
@@ -946,6 +1010,7 @@ pub fn registry_with_runtime(
     register_cancel(&mut registry, &runtime);
     register_rename(&mut registry, &catalog);
     register_delete(&mut registry, &catalog);
+    register_fork(&mut registry, &catalog);
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry.declare_unimplemented("session", &["modelCatalog", "selectModel"]);
@@ -975,6 +1040,7 @@ pub fn registry_with_routes(
     // delete were added to the plain path and not this one.
     register_rename(&mut registry, catalog);
     register_delete(&mut registry, catalog);
+    register_fork(&mut registry, catalog);
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry
@@ -1539,6 +1605,31 @@ pub fn register_select_model(
             Ok(serde_json::json!({
                 "selected": { "provider": selection.provider, "model": selection.model },
             }))
+        })
+    });
+}
+
+/// Registers `session.fork`.
+fn register_fork(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "fork", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        Box::pin(async move {
+            let session_id = call
+                .args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "fork".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                })?
+                .to_owned();
+            // Omitted means "the whole log", which is a different request from "the first event".
+            let at_seq = call.args.get("atSeq").and_then(Value::as_u64);
+
+            let forked = catalog.fork(&session_id, at_seq).await?;
+            Ok(serde_json::json!({ "sessionId": forked }))
         })
     });
 }
