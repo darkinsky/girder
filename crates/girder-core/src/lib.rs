@@ -70,6 +70,7 @@ mod commands;
 mod compaction;
 mod config;
 mod credentials;
+mod deliverable;
 mod events;
 mod exec;
 mod extensions;
@@ -102,6 +103,7 @@ mod session;
 mod session_query;
 mod shell;
 mod skill;
+mod spill;
 mod ssh;
 mod storage;
 mod subagent;
@@ -165,6 +167,7 @@ pub use credentials::{
     CredentialError, CredentialRef, Info as CredentialInfo, Record as CredentialRecord,
     Store as CredentialStore, valid_environment,
 };
+pub use deliverable::{Deliverable, Kind as DeliverableKind, Set as DeliverableSet};
 pub use events::{
     Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, ListenerScope, Next,
     ObservedEvent, Order, Parallel, ScopeKey, Serial, Terminal, Waterfall, child_scope,
@@ -285,6 +288,10 @@ pub use shell::{
 pub use skill::{
     Definition as SkillDefinition, Provider as SkillProvider, Registry as SkillRegistry,
     SkillError, Static as StaticSkills, Summary as SkillSummary,
+};
+pub use spill::{
+    LocalStore as LocalSpillStore, Reference as SpillReference, SaveRequest as SpillSaveRequest,
+    SpillError, Store as SpillStore, Unavailable as UnavailableSpillStore, should_spill,
 };
 pub use ssh::{
     Client as SshClient, Command as SshCommand, DEFAULT_PORT as SSH_DEFAULT_PORT,
