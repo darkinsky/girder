@@ -178,3 +178,51 @@ async fn the_page_and_the_api_share_one_origin() {
         "GET on a POST endpoint must not succeed:\n{api}"
     );
 }
+
+// ---- session management -----------------------------------------------------------------------
+
+#[test]
+fn the_page_lists_sessions_in_a_sidebar() {
+    // A conversation surface that can only hold one conversation is one the user abandons after the
+    // first topic change.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(
+        html.contains(r#"id="sessions""#),
+        "a session list container"
+    );
+    assert!(html.contains("session', 'list'"), "it must load the list");
+}
+
+#[test]
+fn switching_to_a_session_loads_its_transcript() {
+    // A switch that showed an empty page would look like the conversation was lost.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(html.contains("session', 'events'"), "it must read the log");
+    assert!(
+        html.contains("renderEvent"),
+        "it must render durable events"
+    );
+}
+
+#[test]
+fn starting_a_new_conversation_keeps_the_old_one() {
+    // A "new" that discarded the previous conversation would be a destructive action with a benign
+    // name.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(html.contains("startNew"));
+    assert!(!html.contains("session', 'delete'"), "new must not delete");
+}
+
+#[test]
+fn the_page_renders_both_log_and_stream_shapes() {
+    // The durable log holds whole messages; the stream holds deltas. One rendering function keeps a
+    // loaded transcript and a live one looking the same.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(html.contains("'user/message'"));
+    assert!(html.contains("'assistant/message'"));
+    assert!(html.contains("'textDelta'"));
+}

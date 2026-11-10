@@ -32,7 +32,16 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
 <title>girder</title>
 <style>
   :root { color-scheme: light dark; --muted: #888; }
-  body { font: 14px/1.6 ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 1.5rem 2rem 4rem; max-width: 52rem; }
+  body { font: 14px/1.6 ui-sans-serif, system-ui, sans-serif; margin: 0; display: flex; min-height: 100vh; }
+  #side { width: 15rem; flex: 0 0 15rem; border-right: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+          padding: 1.25rem .9rem; box-sizing: border-box; }
+  #main { flex: 1; padding: 1.25rem 2rem 4rem; max-width: 52rem; box-sizing: border-box; }
+  #sessions { list-style: none; margin: .75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .15rem; }
+  #sessions li { padding: .35rem .5rem; border-radius: 5px; cursor: pointer; font-size: .82rem;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sessions li:hover { background: color-mix(in srgb, currentColor 7%, transparent); }
+  #sessions li.on { background: color-mix(in srgb, currentColor 13%, transparent); font-weight: 600; }
+  #sessions li .meta { display: block; font-size: .7rem; color: var(--muted); font-weight: 400; }
   h1 { font-size: 1rem; font-weight: 600; margin: 0 0 .25rem; }
   .sub { color: var(--muted); font-size: .8rem; margin-bottom: 1.25rem; }
   textarea { width: 100%; box-sizing: border-box; font: inherit; padding: .6rem; min-height: 4.5rem;
@@ -60,6 +69,12 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
 </style>
 </head>
 <body>
+<aside id="side">
+  <div class="sub" style="margin:0 0 .5rem">sessions</div>
+  <button id="new" style="width:100%">New</button>
+  <ul id="sessions"></ul>
+</aside>
+<div id="main">
 <h1>girder</h1>
 <div class="sub">A conversation surface over the Remote API. Answers stream from the model's own tokens.</div>
 
@@ -71,6 +86,7 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
 </div>
 
 <div id="log"></div>
+</div>
 
 <script>
 const log = document.getElementById('log');
@@ -82,6 +98,9 @@ const stopBtn = document.getElementById('stop');
 let socket = null;
 let sessionId = null;
 let current = null;   // the assistant row receiving deltas
+
+const sessionsEl = document.getElementById('sessions');
+const newBtn = document.getElementById('new');
 
 // ---- small helpers ----------------------------------------------------------------------------
 
@@ -120,6 +139,100 @@ async function call(namespace, method, args) {
     throw new Error(body.error?.message ?? 'call failed');
   }
   return body.value;
+}
+
+// ---- sessions ---------------------------------------------------------------------------------
+
+/// Reloads the sidebar from the host.
+///
+/// The list is ordered by `updatedAt` descending, which is what a user expects: the conversation they
+/// were just in sits at the top.
+async function refreshSessions() {
+  let items = [];
+  try {
+    const value = await call('session', 'list', {});
+    items = value.items ?? [];
+  } catch (error) {
+    setStatus('cannot list sessions', 'bad');
+    return;
+  }
+  sessionsEl.replaceChildren();
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.dataset.id = item.sessionId;
+    if (item.sessionId === sessionId) li.classList.add('on');
+    const name = document.createElement('span');
+    // A session has no stored title yet, so the id's tail is the only stable label.
+    name.textContent = item.blank ? 'new session' : item.sessionId.slice(-8);
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = new Date(item.updatedAt).toLocaleString();
+    li.append(name, meta);
+    li.addEventListener('click', () => openSession(item.sessionId));
+    sessionsEl.append(li);
+  }
+}
+
+/// Switches to a session and loads its transcript.
+async function openSession(id) {
+  if (id === sessionId) return;
+  sessionId = id;
+  current = null;
+  log.replaceChildren();
+
+  for (const li of sessionsEl.children) {
+    li.classList.toggle('on', li.dataset.id === id);
+  }
+
+  // Load what has already happened. Without this a switch would show an empty page and the user
+  // would think the conversation was lost.
+  try {
+    const page = await call('session', 'events', {
+      address: { kind: 'session', sessionId: id },
+    });
+    for (const record of page.records ?? []) {
+      renderEvent(record.event);
+    }
+  } catch (error) {
+    addRow('err', 'error').textContent = String(error.message ?? error);
+  }
+  promptEl.focus();
+}
+
+/// Renders one durable event into the transcript.
+///
+/// The durable log and the live stream carry different shapes: the log holds whole messages, the
+/// stream holds deltas. Rendering both through one function keeps a loaded transcript and a live one
+/// looking the same.
+function renderEvent(event) {
+  if (!event) return;
+  switch (event.type) {
+    case 'user/message':
+    case 'assistant/message': {
+      const text = (event.message?.content ?? [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
+      if (!text) return;
+      addRow(event.type === 'user/message' ? 'user' : 'model',
+             event.type === 'user/message' ? 'you' : 'assistant').textContent = text;
+      break;
+    }
+    case 'tool/call': {
+      addRow('tool', 'tool · ' + event.name).textContent = event.arguments ?? '';
+      break;
+    }
+    case 'tool/result': {
+      const text = (event.content ?? [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
+      addRow('tool', 'tool result').textContent = text || '(empty)';
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 // ---- the stream -------------------------------------------------------------------------------
@@ -197,6 +310,8 @@ async function send() {
     }
     await call('session', 'prompt', { sessionId, text });
     setStatus('waiting…');
+    // The list is ordered by activity, so this prompt moved the session to the top.
+    refreshSessions();
   } catch (error) {
     addRow('err', 'error').textContent = String(error.message ?? error);
     sendBtn.disabled = false;
@@ -230,6 +345,21 @@ handleTurn = function (event) {
   }
 };
 
+/// Starts a fresh conversation.
+///
+/// The old one stays in the list: a "new" that discarded the previous conversation would make the
+/// button a destructive action with a benign name.
+async function startNew() {
+  sessionId = null;
+  current = null;
+  log.replaceChildren();
+  promptEl.value = '';
+  promptEl.focus();
+  for (const li of sessionsEl.children) li.classList.remove('on');
+  setStatus('new conversation');
+}
+
+newBtn.addEventListener('click', startNew);
 sendBtn.addEventListener('click', send);
 stopBtn.addEventListener('click', stop);
 stopBtn.disabled = true;
@@ -239,6 +369,7 @@ promptEl.addEventListener('keydown', (event) => {
 });
 
 connect();
+refreshSessions();
 </script>
 </body>
 </html>
