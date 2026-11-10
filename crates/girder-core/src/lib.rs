@@ -211,4 +211,6 @@ pub use tools::{
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
     ToolResult, ToolRunContext, ToolValue, ToolsKey,
 };
-pub use typert::{Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant};
+pub use typert::{
+    Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
+};
