@@ -387,6 +387,26 @@ pub struct SessionStore {
     path: PathBuf,
     /// Compression level. 3 is zstd's default and balances speed against size for log text.
     level: i32,
+    /// The last decoded log, while the file has not grown.
+    ///
+    /// Shared between clones so two handles on one path do not each decode: the loop reads the log every step, and
+    /// a log that takes a millisecond to decode would add a millisecond to every step of a long turn.
+    cached: Arc<std::sync::RwLock<Option<Cached>>>,
+}
+
+/// One decoded log, with the file size it was decoded from.
+///
+/// `Clone` rather than a reference: the read path holds it while decoding is skipped, and holding a lock across the
+/// caller's use of the events would block the next append.
+#[derive(Clone)]
+struct Cached {
+    /// The size the file was when this was decoded.
+    ///
+    /// A size rather than a modification time: an append always changes the size, and a rewrite that kept the size
+    /// would also keep the content this cache holds.
+    len: u64,
+    /// The events, as a chunked list so a clone shares the chunks rather than copying the vector.
+    events: crate::chunked_list::List<SessionEvent>,
 }
 
 /// One lock per log path, process-wide.
@@ -463,6 +483,7 @@ impl SessionStore {
         Self {
             path: path.into(),
             level: 3,
+            cached: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -535,6 +556,16 @@ impl SessionStore {
     /// A missing file reads as an empty session rather than an error: a store that has never been
     /// written is not corrupt.
     pub fn read_all(&self) -> Result<Vec<SessionEvent>, SessionError> {
+        // A cached read is returned while the file has not grown. The check is one `metadata` call, and the
+        // alternative is decompressing the whole log again to learn nothing new — which the loop does once per
+        // step, so a long turn paid for it dozens of times.
+        if let Some(cached) = self.cached.read().ok().and_then(|cached| cached.clone()) {
+            let current = std::fs::metadata(&self.path).map_or(0, |meta| meta.len());
+            if current == cached.len {
+                return Ok(cached.events.iter().cloned().collect());
+            }
+        }
+
         let file = match File::open(&self.path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -555,11 +586,26 @@ impl SessionStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let event = serde_json::from_str(&line).map_err(|source| SessionError::Corrupt {
-                line: index + 1,
-                source,
-            })?;
+            let event: SessionEvent =
+                serde_json::from_str(&line).map_err(|source| SessionError::Corrupt {
+                    line: index + 1,
+                    source,
+                })?;
             events.push(event);
+        }
+
+        // Stored as a chunked list so a later append shares every chunk it can rather than copying the vector:
+        // the cached value is read far more often than it is written.
+        let list = events
+            .iter()
+            .fold(crate::chunked_list::List::new(), |list, event| {
+                list.push(event.clone())
+            });
+        if let Ok(mut cached) = self.cached.write() {
+            *cached = Some(Cached {
+                len: std::fs::metadata(&self.path).map_or(0, |meta| meta.len()),
+                events: list,
+            });
         }
         Ok(events)
     }
@@ -646,13 +692,27 @@ impl Session for SessionStore {
     fn append(&self, event: SessionEvent) -> BoxFut<Result<(), SessionError>> {
         let path = self.path.clone();
         let level = self.level;
-        Box::pin(async move { SessionStore { path, level }.append(&event) })
+        Box::pin(async move {
+            SessionStore {
+                path,
+                level,
+                cached: Arc::new(std::sync::RwLock::new(None)),
+            }
+            .append(&event)
+        })
     }
 
     fn replay(&self) -> BoxFut<Result<Vec<SessionEvent>, SessionError>> {
         let path = self.path.clone();
         let level = self.level;
-        Box::pin(async move { SessionStore { path, level }.read_all() })
+        Box::pin(async move {
+            SessionStore {
+                path,
+                level,
+                cached: Arc::new(std::sync::RwLock::new(None)),
+            }
+            .read_all()
+        })
     }
 }
 

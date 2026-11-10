@@ -704,6 +704,46 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 端到端集成：会话读取缓存（已完成）
+
+### 问题
+
+`read_all` 每次都**解压整个日志**。而 agent loop **每一步都读一次**日志——一个长回合把这个成本付了几十次。
+
+### 这一轮做了什么
+
+用 `chunked_list` 做内存缓存：
+
+```rust
+if let Some(cached) = self.cached.read().ok().and_then(|c| c.clone()) {
+    let current = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+    if current == cached.len { return Ok(cached.events.iter().cloned().collect()); }
+}
+```
+
+**有效性用文件大小判断，不用修改时间**：追加一定改变大小，而**一次保持大小的重写也会保持这个缓存的内容**。
+
+**事件存成分块列表**，所以缓存的克隆**共享每个分块而不是复制整个 vector**。
+
+### 缓存的风险只有一个：过期的答案
+
+测试 `an_append_invalidates_the_cache` 就是为此：
+
+```
+读 → 1 个事件
+追加 → 2 个事件
+再读 → 必须是 2
+```
+
+`a_clone_shares_the_cache_without_serving_stale_events` 验证**两个句柄中一个写入、另一个必须看到**。
+
+### 测试没有发现性能数字
+
+我**没有测量缓存带来的实际加速**。测试只证明正确性，不证明它更快。
+
+**这是一个真实的局限**：如果读一次日志只要 1 微秒，这个缓存是多余的复杂度。
+我的判断是它值得，因为日志会增长到上万个事件，但我**没有数字支撑这个判断**。
+
 ## 端到端集成：斜杠命令 RPC（已完成）
 
 ### 之前的状态
