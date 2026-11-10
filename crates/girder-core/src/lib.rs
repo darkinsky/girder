@@ -82,6 +82,7 @@ mod jobs;
 mod json;
 mod llm;
 mod llm_deepseek;
+mod lsp;
 mod mcp;
 mod message;
 mod paths;
@@ -105,6 +106,7 @@ mod storage;
 mod subagent;
 mod subagent_providers;
 mod subprocess;
+mod terminal;
 mod time;
 mod tools;
 mod typert;
@@ -205,6 +207,11 @@ pub use llm::{
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
 };
+pub use lsp::{
+    Answer as LspAnswer, Location as LspLocation, LspError, Operation as LspOperation,
+    Position as LspPosition, Provider as LspProvider, Range as LspRange, Registry as LspRegistry,
+    Request as LspRequest, Static as StaticLsp, utf16_column_to_byte,
+};
 pub use mcp::{
     CallResult as McpCallResult, Catalogue as McpCatalogue, McpError, Registry as McpRegistry,
     Status as McpStatus, Tool as McpTool, Transport as McpTransport,
@@ -292,6 +299,11 @@ pub use subagent_providers::{
 pub use subprocess::{
     ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,
     run as run_process, spawn as spawn_process,
+};
+pub use terminal::{
+    DEFAULT_MAX_BYTES as DEFAULT_TRANSCRIPT_BYTES, Launch as TerminalLaunch,
+    Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,
+    Status as TerminalStatus, TerminalError, Transcript,
 };
 pub use time::{
     Instant as TimeInstant, MAX_FOUR_DIGIT_YEAR, MIN_FOUR_DIGIT_YEAR, MS_PER_DAY, MS_PER_HOUR,
