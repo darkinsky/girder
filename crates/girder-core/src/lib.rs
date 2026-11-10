@@ -188,8 +188,8 @@ pub use remote::{
     DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionAddress,
     SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
-    SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_session_methods,
-    registry_with_runtime,
+    SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_job_methods,
+    register_projection_methods, register_session_methods, registry_with_runtime,
 };
 pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};

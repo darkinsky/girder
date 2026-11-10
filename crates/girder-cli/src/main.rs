@@ -174,7 +174,19 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         model: cli.model.clone(),
         max_turns: cli.max_turns,
     });
-    let remote = Arc::new(girder_core::registry_with_runtime(catalog, runtime));
+    let mut remote = girder_core::registry_with_runtime(catalog, runtime);
+
+    // The projection bridge: a client reads folded session state without replaying the log itself.
+    // Without this the browser would need its own copy of every projection's fold logic, and the two
+    // would drift.
+    let projections = Arc::new(girder_core::ProjectionRegistry::new());
+    girder_core::register_projection_methods(&mut remote, &projections);
+
+    // Background jobs, with the registry the server keeps for this process.
+    let jobs = Arc::new(girder_core::JobRegistry::new(256 * 1024));
+    girder_core::register_job_methods(&mut remote, &jobs);
+
+    let remote = Arc::new(remote);
     println!(
         "girder rpc exposing {} Remote method(s): {}",
         remote.len(),

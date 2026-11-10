@@ -231,6 +231,16 @@ impl RemoteRegistry {
 
     /// Registered method names, for diagnosis and schema listing.
     #[must_use]
+    /// Looks up one method's callable.
+    ///
+    /// Exposed so a test can drive a method through the same `RemoteCall` a socket produces, rather
+    /// than reimplementing the argument shape and drifting from it.
+    pub fn get(&self, namespace: &str, method: &str) -> Option<RemoteMethod> {
+        self.methods
+            .get(&(namespace.to_owned(), method.to_owned()))
+            .cloned()
+    }
+
     pub fn names(&self) -> Vec<(String, String)> {
         self.methods.keys().cloned().collect()
     }
@@ -975,4 +985,99 @@ fn page_of(events: &[SessionEvent], request: &SessionPageRequest) -> SessionEven
         cursor: u64::try_from(end).unwrap_or(u64::MAX),
         records,
     }
+}
+
+// ---- the projection and job Remote methods ----------------------------------------------------
+
+/// Registers the methods a client reads folded session state through.
+///
+/// The bridge between the log and a UI. Without it a client would have to replay events itself,
+/// which means shipping the fold logic to the browser and keeping two implementations in step.
+pub fn register_projection_methods(
+    registry: &mut RemoteRegistry,
+    projections: &std::sync::Arc<crate::projection::ProjectionRegistry>,
+) {
+    let projections = std::sync::Arc::clone(projections);
+    registry.register("session", "projections", move |_call: RemoteCall| {
+        let projections = std::sync::Arc::clone(&projections);
+        Box::pin(async move {
+            // Every registered projection, as the summary a UI lists. A full view would carry a
+            // transcript; the summary is what a session list needs.
+            let value = projections.summary();
+            let mut serialized = serde_json::Map::new();
+            for (key, state) in value {
+                serialized.insert(key, state);
+            }
+            Ok(serde_json::json!({ "projections": serialized }))
+        })
+    });
+}
+
+/// Registers the methods a client manages background jobs through.
+///
+/// The projections and the registry are shared rather than copied: a client that killed a job must
+/// see its status change without asking again.
+pub fn register_job_methods(
+    registry: &mut RemoteRegistry,
+    jobs: &std::sync::Arc<crate::jobs::JobRegistry>,
+) {
+    let jobs = std::sync::Arc::clone(jobs);
+    registry.register("job", "list", {
+        let jobs = std::sync::Arc::clone(&jobs);
+        move |_call: RemoteCall| {
+            let jobs = std::sync::Arc::clone(&jobs);
+            Box::pin(async move {
+                // The whole set, not a delta: a reconnecting client's first frame is already correct.
+                let mut views = Vec::new();
+                for id in jobs.ids() {
+                    if let Ok(job) = jobs.get(&id) {
+                        let view = crate::api_job::project(&job);
+                        views.push(serde_json::json!({
+                            "id": view.id,
+                            "kind": view.kind,
+                            "label": view.label,
+                            "status": view.status,
+                            "code": view.code,
+                        }));
+                    }
+                }
+                Ok(serde_json::json!({ "jobs": views }))
+            })
+        }
+    });
+
+    registry.register("job", "kill", {
+        let jobs = std::sync::Arc::clone(&jobs);
+        move |call: RemoteCall| {
+            let jobs = std::sync::Arc::clone(&jobs);
+            Box::pin(async move {
+                let job_id = call
+                    .args
+                    .get("jobId")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| RemoteError::InvalidArguments {
+                        namespace: "job".to_owned(),
+                        method: "kill".to_owned(),
+                        message: "`jobId` is required".to_owned(),
+                    })?
+                    .to_owned();
+
+                // An unknown job is an invalid argument rather than a distinct variant: the client
+                // sent an id this registry does not hold, which is the same class of mistake as a
+                // missing field.
+                let job = jobs
+                    .get(&job_id)
+                    .map_err(|_| RemoteError::InvalidArguments {
+                        namespace: "job".to_owned(),
+                        method: "kill".to_owned(),
+                        message: format!("no job `{job_id}`"),
+                    })?;
+                let outcome = crate::api_job::kill_outcome(job.status);
+                if job.status.is_live() {
+                    let _ = jobs.request_stop(&job_id);
+                }
+                Ok(serde_json::json!({ "outcome": outcome }))
+            })
+        }
+    });
 }

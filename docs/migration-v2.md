@@ -686,6 +686,34 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 纵切面：投影与作业接入 RPC（已完成）
+
+`register_projection_methods` / `register_job_methods` + 10 个端到端测试。
+
+**这是第一次把新部件接进真实运行的服务**，而不是继续增加孤立模块。
+
+### 真实服务验证
+
+```
+$ girder serve
+girder rpc exposing 9 Remote method(s):
+  job.kill, job.list, session.cancel, session.create, session.events,
+  session.list, session.page, session.projections, session.prompt
+
+POST job/list   → {"status":"ok","value":{"jobs":[]}}
+POST session/projections → {"status":"ok","value":{"projections":{}}}
+POST job/kill (unknown id) → INVALID_ARGUMENTS, 消息里点出 id
+```
+
+**这三个端点之前不存在。**
+
+### 两个设计点
+
+**投影走 summary 而不是 view。** view 会携带完整状态（可能包含 transcript）。
+
+**新增 `RemoteRegistry::get`。** 测试通过它驱动真实方法。在测试里重新实现参数形状会让两边漂移，
+而断言一个漂移过的形状不能证明线上形状。
+
 ## M6 进度记录：启动装配
 
 ### `boot`（已完成）
