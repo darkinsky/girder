@@ -82,6 +82,7 @@ mod jobs;
 mod json;
 mod llm;
 mod llm_deepseek;
+mod mcp;
 mod message;
 mod paths;
 mod permissions;
@@ -99,6 +100,7 @@ mod service;
 mod session;
 mod session_query;
 mod shell;
+mod skill;
 mod storage;
 mod subagent;
 mod subagent_providers;
@@ -203,6 +205,10 @@ pub use llm::{
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
 };
+pub use mcp::{
+    CallResult as McpCallResult, Catalogue as McpCatalogue, McpError, Registry as McpRegistry,
+    Status as McpStatus, Tool as McpTool, Transport as McpTransport,
+};
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
     MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
@@ -266,6 +272,10 @@ pub use shell::{
     DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
     Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,
     Specification as ShellSpecification, split_words, which,
+};
+pub use skill::{
+    Definition as SkillDefinition, Provider as SkillProvider, Registry as SkillRegistry,
+    SkillError, Static as StaticSkills, Summary as SkillSummary,
 };
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
