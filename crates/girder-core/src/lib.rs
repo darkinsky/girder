@@ -65,6 +65,7 @@ mod boot;
 mod brand;
 mod compaction;
 mod config;
+mod credentials;
 mod events;
 mod exec;
 mod extensions;
@@ -128,6 +129,10 @@ pub use compaction::{
 pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
     FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,
+};
+pub use credentials::{
+    CredentialError, CredentialRef, Info as CredentialInfo, Record as CredentialRecord,
+    Store as CredentialStore, valid_environment,
 };
 pub use events::{
     Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, ListenerScope, Next,
