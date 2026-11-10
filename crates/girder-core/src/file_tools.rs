@@ -393,3 +393,128 @@ fn resolve(args: &serde_json::Value, workspace: &Path) -> Result<PathBuf, String
         .ok_or_else(|| "`path` is required".to_owned())?;
     Ok(crate::workspace_path::resolve(Some(workspace), path))
 }
+
+/// Builds the `ask_user` tool.
+///
+/// A model that needs a decision it cannot make — which of two designs, whether to overwrite — should ask rather than
+/// guess. The alternative is a model inventing an answer and building on it, which costs more to undo than a question
+/// costs to answer.
+///
+/// # Why the answer is a result rather than an error
+///
+/// A person declining to answer is information: the model can proceed differently. An error would make the turn look
+/// broken and the model would retry the same question.
+#[must_use]
+pub fn ask_tool(responder: std::sync::Arc<dyn crate::questions::Responder>) -> ToolDefinition {
+    ToolDefinition::new(
+        "ask_user",
+        "Asks the person a question and waits for the answer",
+        json!({
+            "type": "object",
+            "properties": {
+                "question": { "type": "string", "description": "What to ask" },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "The choices to offer; omit for a free-form answer"
+                },
+                "context": { "type": "string", "description": "Why you are asking, to help them decide" },
+                "multiple": {
+                    "type": "boolean",
+                    "description": "Whether more than one option may be chosen"
+                }
+            },
+            "required": ["question"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, _ctx: ToolRunContext| {
+            let responder = std::sync::Arc::clone(&responder);
+            Box::pin(async move { ask_inner(&args, responder).await })
+        }),
+    )
+}
+
+async fn ask_inner(
+    args: &serde_json::Value,
+    responder: std::sync::Arc<dyn crate::questions::Responder>,
+) -> Result<ToolResult, crate::tools::ToolError> {
+    let question = args
+        .get("question")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if question.trim().is_empty() {
+        return Ok(ToolResult::error("`question` is required"));
+    }
+
+    let options: Vec<String> = args
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // A question with one option is a confirmation, and a model that offered one choice meant to ask a yes/no
+    // question without saying so. Treating it as a confirmation gives the person a usable control.
+    let multiple = args
+        .get("multiple")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let choices = || {
+        options
+            .iter()
+            .map(|option| crate::questions::Option_::new(option.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let shape = match (options.len(), multiple) {
+        (0, _) => crate::questions::Shape::Text {
+            label: question.to_owned(),
+            optional: false,
+        },
+        (1, false) => crate::questions::Shape::Confirm {
+            label: question.to_owned(),
+        },
+        (_, true) => crate::questions::Shape::Multiple {
+            label: question.to_owned(),
+            options: choices(),
+            // At least one: a model that offered choices and received none has learned nothing, and would have to ask
+            // again.
+            min: 1,
+            max: options.len(),
+        },
+        (_, false) => crate::questions::Shape::Choice {
+            label: question.to_owned(),
+            options: choices(),
+        },
+    };
+
+    let mut ask = crate::questions::Question::new(shape);
+    if let Some(context) = args.get("context").and_then(serde_json::Value::as_str) {
+        ask = ask.with_context(context.to_owned());
+    }
+
+    match responder.ask(ask).await {
+        Ok(reply) => {
+            let answer = match &reply.answer {
+                crate::questions::Answer::Text(text) => text.clone(),
+                crate::questions::Answer::Chosen(value) => value.clone(),
+                crate::questions::Answer::ChosenMany(values) => values.join(", "),
+                crate::questions::Answer::Confirmed(confirmed) => {
+                    if *confirmed { "yes" } else { "no" }.to_owned()
+                }
+            };
+            // The default case is recorded in the text: a model that treated a timeout's default as a person's answer
+            // would build on consent it never received.
+            Ok(ToolResult::text(if reply.is_human() {
+                answer
+            } else {
+                format!("{answer} (default; nobody answered)")
+            }))
+        }
+        Err(error) => Ok(ToolResult::error(format!("cannot ask: {error}"))),
+    }
+}

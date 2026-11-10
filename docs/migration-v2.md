@@ -704,6 +704,44 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 端到端集成：ask_user 工具（已完成）
+
+### 之前的缺口
+
+**没有 `ask_user` 工具。** 一个需要决策的模型只能猜——而**猜错的代价比问一次高**。
+
+### 这一轮做了什么
+
+新增 `ask_user`，把 `questions` 接进真实工具链路。
+
+### 形状由选项数量决定
+
+| 选项数 | `multiple` | 形状 |
+|---|---|---|
+| 0 | — | 自由文本 |
+| 1 | false | 确认（是/否） |
+| n | false | 单选 |
+| n | true | 多选（至少 1 个） |
+
+**一个选项就是确认**：只提供一个选项的模型想要的是是非问，只是没说出口。
+
+### 最关键的一条：默认值必须标注
+
+```rust
+if reply.is_human() { answer } else { format!("{answer} (default; nobody answered)") }
+```
+
+**一个把超时默认当成用户同意的模型，会基于它从未得到的同意继续建设。** 这比问第二次糟得多。
+
+测试 `a_default_is_labelled_so_a_model_does_not_treat_it_as_consent` 断言文本包含
+"default" 和 "nobody answered"。
+
+### 一个测试暴露的真实缺口
+
+`several_choices_read_as_a_list` 最初失败：工具只构造 `Choice`，而多选答案形状不符。
+
+**这不是测试写错，是工具缺一个能力。** 修法是加 `multiple` 参数和 `Shape::Multiple`。
+
 ## 端到端集成：工具输出溢出（已完成）
 
 ### 之前的缺口
