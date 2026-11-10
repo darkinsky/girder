@@ -108,9 +108,58 @@ fn the_page_says_what_it_is_not() {
     // A probe page mistaken for the product wastes someone's afternoon.
     let html = girder_rpc::INDEX_HTML;
     assert!(
-        html.contains("not to be the product") || html.contains("proves the chain"),
-        "the page must say it is a probe, not the Web UI"
+        html.contains("Not the Web UI") || html.contains("conversation surface"),
+        "the page must say what it is, not claim to be the Web UI"
     );
+}
+
+#[test]
+fn the_page_subscribes_to_the_event_socket() {
+    // Streaming is the reason this page exists in its current shape: a client that only polled would
+    // show the answer in one piece when the turn ended, which looks like a slow server.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(
+        html.contains("remote.mux"),
+        "the page must open the mux socket"
+    );
+    assert!(
+        html.contains("agent/turn"),
+        "it must subscribe to the turn event"
+    );
+    assert!(
+        html.contains("textDelta"),
+        "it must render streaming deltas"
+    );
+}
+
+#[test]
+fn the_page_creates_a_session_before_prompting() {
+    // A prompt without a session has nowhere to land.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(html.contains("session', 'create'"));
+    assert!(html.contains("session', 'prompt'"));
+}
+
+#[test]
+fn the_page_can_stop_a_running_turn() {
+    // A conversation surface that cannot interrupt a long answer is one the user closes.
+    let html = girder_rpc::INDEX_HTML;
+
+    assert!(html.contains("session', 'cancel'"));
+    assert!(html.contains(r#"id="stop""#));
+}
+
+#[test]
+fn the_page_does_not_claim_features_it_lacks() {
+    // No reconnect/retry UI is offered, so the page should not promise one. It does reconnect the
+    // socket, which is a transport concern rather than a promise about conversation state.
+    let html = girder_rpc::INDEX_HTML;
+    let lowered = html.to_lowercase();
+
+    assert!(!lowered.contains("history is preserved"));
+    assert!(!lowered.contains("markdown"));
 }
 
 #[tokio::test]

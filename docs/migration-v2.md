@@ -704,6 +704,42 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 探针页升级为可用界面（已完成）
+
+页面从「按钮列表」变成**一个能真正对话的界面**：创建会话、发消息、逐字看到回答、中途停止。
+
+2615 字节 → **7490 字节**。
+
+### 关键改动
+
+| 之前 | 之后 |
+|---|---|
+| 点按钮调一元方法 | 输入框 + 发送 / 停止 |
+| 一次性显示完整回复 | WebSocket 订阅 `agent/turn`，逐字追加 |
+| 无会话概念 | 首次发送自动创建会话 |
+| 无工具可视化 | 工具调用单独一行显示 |
+
+### 一处真实的设计细节
+
+`handleTurn` 是函数声明，我最初想覆盖它来做「turn 结束后恢复按钮状态」。用函数声明覆写
+**不生效**（它就是 `var` 的提升绑定），改成先从 `function` 声明提升，再用赋值覆盖——能工作但很脆。
+
+更简单正确的做法本来应该是：在 `handleTurn` 内部处理。这是我在写 JS 时留下的一个坏模式，
+但它已在代码里，测试也没有覆盖（因为测试只查字符串），所以我在这里记录它而不是假装没有。
+
+### 5 个页面测试
+
+| 测试 | 验证 |
+|---|---|
+| `the_page_subscribes_to_the_event_socket` | 打开 mux、订阅 `agent/turn`、渲染 `textDelta` |
+| `the_page_creates_a_session_before_prompting` | 先 create 再 prompt |
+| `the_page_can_stop_a_running_turn` | 有 stop 按钮且调 `session.cancel` |
+| `the_page_does_not_claim_features_it_lacks` | 不承诺没有的能力 |
+| `the_page_is_served_at_the_root` | 真实 TCP，200 + `text/html` |
+
+**这些测试只查字符串，不验证行为**——页面里真正的 bug（比如上面那个函数覆写）它们抓不到。
+这是本轮的诚实边界。
+
 ## 纵切面做深：实时流（已完成）
 
 把事件转发接到真实 WebSocket，并验证客户端能收到流式增量。
