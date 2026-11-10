@@ -150,6 +150,15 @@ pub struct LoopContext {
     /// one turn would refuse a prompt because a previous prompt was expensive.
     pub spent: std::sync::atomic::AtomicU64,
 
+    /// Where an oversized tool result is saved.
+    ///
+    /// `None` means this deployment has no spill storage, and an oversized result is returned as it is. That is the
+    /// honest behaviour: truncating it would lose output the model could have read, and refusing to return anything
+    /// would lose it entirely.
+    pub spill: Option<Arc<dyn crate::spill::Store>>,
+    /// How many bytes a tool result may carry before it is spilled.
+    pub spill_limit: usize,
+
     /// The agent this loop runs for.
     ///
     /// The single source of truth for cancellation, model selection, and pending input. The loop
@@ -211,6 +220,8 @@ impl LoopContext {
             record_prompt: true,
             budget: crate::limits::Ceiling::Unlimited,
             spent: std::sync::atomic::AtomicU64::new(0),
+            spill: None,
+            spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
         }
     }
 
@@ -243,6 +254,47 @@ impl LoopContext {
         self.max_depth = max_depth;
         self
     }
+}
+
+/// Saves an oversized tool result and returns the locator that replaces it.
+///
+/// Both halves are needed: the text is written to the store so it is still readable, and the model is told where it
+/// went with a hint about how to read it. Replacing without saving would lose the output; saving without replacing
+/// would put the output in the context window anyway.
+async fn spill_if_needed(context: &LoopContext, blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let Some(store) = &context.spill else {
+        return blocks;
+    };
+
+    let text: String = blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let (action, _reason) = crate::spill_policy::decide(
+        crate::spill_policy::Context {
+            bytes: text.len(),
+            truncated: false,
+        },
+        context.spill_limit,
+    );
+    if !action.should_spill() {
+        return blocks;
+    }
+
+    let Some(request) = crate::spill::SaveRequest::new(text, "tool-output") else {
+        return blocks;
+    };
+    let Ok(reference) = store.save(request).await else {
+        // A store that fails leaves the output in place: losing it would be worse than a large result.
+        return blocks;
+    };
+    vec![ContentBlock::Text {
+        text: reference.to_text(),
+    }]
 }
 
 /// Builds and records a goal-continuation prompt, when the goal says to keep going.
@@ -681,11 +733,16 @@ fn tool_calls<'a>(
             };
             let is_error = result.is_error;
 
+            // An oversized result is saved and replaced by a locator. The decision is made here rather than inside
+            // each tool because every tool produces output and only this layer knows what the session can afford:
+            // a tool that spilled on its own would do it at a threshold of its own choosing.
+            let blocks = spill_if_needed(context, result.content.clone()).await;
+
             let _ = context
                 .session
                 .append(SessionEvent::ToolResult {
                     id: id.clone(),
-                    content: result.content.clone(),
+                    content: blocks.clone(),
                     is_error,
                 })
                 .await;

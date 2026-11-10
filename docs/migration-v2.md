@@ -704,6 +704,47 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 端到端集成：工具输出溢出（已完成）
+
+### 之前的缺口
+
+一个工具返回 1MB 输出时，**它直接进入上下文窗口**。`spill` 模块写好了，但没人调用。
+
+### 这一轮做了什么
+
+在工具结果写入日志的**唯一位置**做决策：
+
+```rust
+let blocks = spill_if_needed(context, result.content.clone()).await;
+```
+
+**决策放在这里而不是每个工具里**，因为每个工具都产生输出，而**只有这一层知道会话能负担多少**。
+一个自己决定溢出的工具会用自己选定的阈值。
+
+### 两个半边缺一不可
+
+**保存而不替换** → 输出还是进了上下文窗口。
+**替换而不保存** → 输出丢了。
+
+所以 `spill_if_needed` 两件都做：写文件，返回定位符。
+
+### 没有 store 时返回原文
+
+`return blocks` 而不是截断或丢弃：**丢掉比一个大结果更糟**，而截断会丢掉模型本可以读的内容。
+
+### 四个测试
+
+- `a_small_result_is_returned_as_it_is`
+- `an_oversized_result_is_replaced_by_a_locator` — 断言结果**小于 1000 字节**且包含文件名
+- `the_saved_file_holds_the_whole_output` — 断言 50,000 字节**全在文件里**
+- `without_a_store_an_oversized_result_is_returned_unchanged` — 断言 50,000 字节**全在结果里**
+
+### 一个测试基础设施的坑
+
+`run()` 在返回前删除了临时目录，而 `the_saved_file_holds_the_whole_output` 之后才去读那个文件。
+
+**清理抢在断言前面。** 修法是**在删除前把内容读出来一起返回**。
+
 ## 端到端集成：扩展审批（已完成）
 
 ### 之前的缺口

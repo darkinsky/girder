@@ -141,6 +141,10 @@ struct Running {
 /// Runs prompts against sessions.
 pub struct AgentRuntime {
     config: RuntimeConfig,
+    /// Where an oversized tool result is saved, when this deployment has storage for it.
+    spill: Option<Arc<dyn crate::spill::Store>>,
+    /// How many bytes a tool result may carry before it is spilled.
+    spill_limit: usize,
     /// One running turn per session id.
     running: Mutex<BTreeMap<String, Running>>,
 }
@@ -152,6 +156,27 @@ impl AgentRuntime {
         Arc::new(Self {
             config,
             running: Mutex::new(BTreeMap::new()),
+            spill: None,
+            spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
+        })
+    }
+
+    /// Builds a runtime that spills oversized tool results.
+    ///
+    /// Separate from [`Self::new`] rather than a field on the config because the store is a capability a deployment
+    /// either has or does not: a builder that accepted `None` would make every caller decide, and most have no
+    /// opinion.
+    #[must_use]
+    pub fn with_spill(
+        config: RuntimeConfig,
+        spill: Option<Arc<dyn crate::spill::Store>>,
+        spill_limit: usize,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config,
+            running: Mutex::new(BTreeMap::new()),
+            spill,
+            spill_limit,
         })
     }
 
@@ -282,6 +307,9 @@ impl AgentRuntime {
             }),
         );
         context.max_turns = self.config.max_turns;
+        context.budget = self.config.token_budget;
+        context.spill = self.spill.clone();
+        context.spill_limit = self.spill_limit;
         // The prompt was already written by `prompt()`, before the spawn.
         context.record_prompt = false;
         let context = Arc::new(context);

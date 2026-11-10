@@ -200,6 +200,12 @@ impl Store for Unavailable {
     }
 }
 
+/// How many bytes a tool result may carry before it is spilled.
+///
+/// 32 KiB: comfortably more than a useful diagnostic and far less than a context window, so a chatty command is
+/// replaced by a locator rather than filling the conversation.
+pub const DEFAULT_SPILL_LIMIT: usize = 32 * 1024;
+
 /// Whether a text is large enough that spilling is better than returning it.
 ///
 /// A threshold rather than a policy: the caller decides the number, and the comparison lives here so two tools
