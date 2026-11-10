@@ -1081,3 +1081,40 @@ pub fn register_job_methods(
         }
     });
 }
+
+/// Every method name this build can register, as `namespace.method`.
+///
+/// A single list so a page or a test can check what it offers against what exists. It is built from
+/// the same registration functions the server uses, so the two cannot drift.
+#[must_use]
+pub fn registered_method_names() -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+
+    // The session methods come from the unimplemented list plus the implemented ones; the registry
+    // is the authority, so a bare registry is asked what it would contain.
+    let mut registry = RemoteRegistry::new();
+    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
+    for (namespace, method) in registry.names() {
+        names.push(format!("{namespace}.{method}"));
+    }
+    for method in [
+        "create",
+        "list",
+        "page",
+        "prompt",
+        "cancel",
+        "events",
+        "projections",
+    ] {
+        names.push(format!("session.{method}"));
+    }
+    for method in crate::api_job::job_methods() {
+        names.push(method.qualified());
+    }
+    for method in crate::api_session::session_methods() {
+        names.push(method.qualified());
+    }
+    names.sort();
+    names.dedup();
+    names
+}

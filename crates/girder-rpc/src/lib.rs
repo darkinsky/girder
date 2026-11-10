@@ -24,6 +24,7 @@
 //! generated methods this crate does not implement.
 
 pub mod server;
+mod web;
 
 pub use server::{
     ClientAnswer, ClientHandle, INVOKE_PATH, RpcServer, TransportError, forward_events, serve,
@@ -37,6 +38,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The exact WebSocket route carrying every remote stream.
+pub use web::{INDEX_HTML, WEB_INDEX_PATH};
+
 pub const REMOTE_STREAM_MUX_PATH: &str = "/api/remote.mux";
 
 /// Gateway-internal logical stream carrying application-selected events.

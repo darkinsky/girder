@@ -686,6 +686,35 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 最小 Web 客户端（已完成）
+
+`girder-rpc/src/web.rs`：内嵌 HTML 页面 + 7 个测试。
+
+**这不是 Web UI，是证明链路通了的探针。**
+
+打开浏览器 → 点按钮 → 调用 Remote 方法 → 显示原始回复。
+
+### 为什么内嵌而不是服务目录
+
+服务目录需要构建步骤、watch 模式和路径穿越检查。内嵌字符串三样都不需要，单文件客户端也没有
+打包器要配。
+
+### 真实验证
+
+```
+$ girder serve
+page: HTTP 200, 2615 bytes
+POST job/list → {"status":"ok","value":{"jobs":[]}}
+```
+
+### 一个测试发现的重复来源问题
+
+我最初想在测试里检查「页面上的按钮名都有对应方法」，但方法名散落在三处：
+`register_session_methods`、`register_job_methods`、`api_job::job_methods`。
+
+所以加了 `registered_method_names()`——**一个列表，从同一批注册函数构建**，页面和测试都对照它。
+两个来源会漂移，一个不会。
+
 ## 纵切面：投影与作业接入 RPC（已完成）
 
 `register_projection_methods` / `register_job_methods` + 10 个端到端测试。

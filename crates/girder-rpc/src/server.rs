@@ -257,12 +257,27 @@ impl RpcServer {
     /// something that is not the mux and then fail confusingly. The invoke endpoint is HTTP because
     /// upstream's unary calls are, and because a method result is not a stream.
     pub fn router(self) -> Router {
-        let mut router = Router::new().route(REMOTE_STREAM_MUX_PATH, get(upgrade));
+        let mut router = Router::new()
+            .route(REMOTE_STREAM_MUX_PATH, get(upgrade))
+            // The probe page. Served from the same process as the API so a browser has no second
+            // origin to configure, and so opening it proves the server is running.
+            .route(crate::WEB_INDEX_PATH, get(web_index));
         if self.remote.is_some() {
             router = router.route(INVOKE_PATH, axum::routing::post(invoke));
         }
         router.with_state(self)
     }
+}
+
+/// Serves the embedded probe page.
+///
+/// A literal HTML response rather than a file: no build step, no path traversal check, and nothing
+/// to keep in sync with a bundler.
+async fn web_index() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        crate::INDEX_HTML,
+    )
 }
 
 /// HTTP endpoint for unary Remote calls.
