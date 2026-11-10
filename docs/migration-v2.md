@@ -686,6 +686,49 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## M6 进度记录：启动装配
+
+### `boot`（已完成）
+
+`boot.rs`：`BootConfig` / `BootReport` / `boot()` / `into_runtime()`，18 个测试。
+
+**这是第一次有「启动」这个概念。** 之前所有部件都是库，`girder` CLI 只是我加的测试入口，
+不是真正的装配。
+
+**关键区分：跳过（Skipped）与失败（Failed）。**
+
+部署**故意**不挂载某个组件是决策，不是故障。报成失败会让每个这样的部署看起来是坏的。
+所以 `Outcome` 有三态：`Mounted` / `Skipped{reason}` / `Failed{reason}`。
+
+**为什么不是「任何失败都致命」**：那会让部分部署不可能。
+**为什么不是「任何失败都不致命」**：那会把坏掉的必要组件藏在一个正在运行的进程后面。
+
+所以按组件显式区分：`provider` 必需，`sessions` 配置了就必需、没配置就跳过。
+
+**报告是一整块，不是一个组件一行散在日志里。** 一个部件的结果离下一个很远，是没人读的日志。
+
+**凭据永不出现在任何 Debug 输出里。** `BootConfig` 的 `Debug` 手动实现，`api_key` 显示为
+`<redacted>`。测试 `the_credential_never_appears_in_debug_output` 断言原始值不出现在格式化结果里。
+
+**实测输出**：
+
+```
+$ girder --boot-report
+  events: mounted
+  provider: skipped (no credential configured)
+  sessions: skipped (no session directory configured; using memory)
+  tools: mounted
+
+$ DEEPSEEK_API_KEY=... girder --boot-report
+  events: mounted
+  provider: mounted
+  sessions: skipped (no session directory configured; using memory)
+  tools: mounted
+```
+
+**一个由编译器发现的问题**：给 `Mode` 加 `BootReport` 变体后，`match` 立刻报
+`non-exhaustive patterns`。这是穷尽性的价值——新变体不会被静默忽略。
+
 ## M5 进度记录
 
 ### Session Remote 接口（第一个子系统，已完成）

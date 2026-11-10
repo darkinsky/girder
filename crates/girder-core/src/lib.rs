@@ -59,6 +59,7 @@ extern crate self as girder_core;
 
 pub mod api_session;
 mod attachment;
+mod boot;
 mod brand;
 mod compaction;
 mod config;
@@ -104,6 +105,10 @@ pub use attachment::{
     ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore, DecodedImage, EncodedImage, ImageRef,
     Limits as AttachmentLimits, MemoryStore, admit_batch, admit_image, decode_base64_canonical,
     detect_media_type, encode_base64, storage_key as attachment_storage_key, store_batch,
+};
+pub use boot::{
+    BootConfig, BootError, BootReport, Booted, DEFAULT_ENDPOINT, DEFAULT_MODEL,
+    Outcome as BootOutcome, boot,
 };
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,

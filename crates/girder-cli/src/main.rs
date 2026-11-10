@@ -45,6 +45,13 @@ struct Cli {
     #[arg(long, default_value_t = 16)]
     max_turns: u32,
 
+    /// Print what boot mounted, skipped, or failed, then exit without sending a prompt.
+    ///
+    /// The report is the whole point of having a boot step: a process that starts and then
+    /// misbehaves needs to say which parts it actually has.
+    #[arg(long)]
+    boot_report: bool,
+
     /// Print the session events after the answer.
     #[arg(long)]
     verbose: bool,
@@ -79,8 +86,13 @@ enum Command {
 /// A prompt, or a subcommand.
 enum Mode {
     Prompt(String),
-    Serve { bind: String, watch: Vec<String> },
+    Serve {
+        bind: String,
+        watch: Vec<String>,
+    },
     Schema,
+    /// Print what boot assembled, then exit.
+    BootReport,
 }
 
 #[tokio::main]
@@ -91,12 +103,24 @@ async fn main() -> Result<()> {
         (Some(Command::Serve { bind, watch }), _) => Mode::Serve { bind, watch },
         (Some(Command::Schema), _) => Mode::Schema,
         (None, Some(prompt)) => Mode::Prompt(prompt),
+        (None, None) if cli.boot_report => Mode::BootReport,
         (None, None) => {
             use clap::CommandFactory as _;
             Cli::command().print_help()?;
             return Ok(());
         }
     };
+
+    // Every mode starts from the same assembled system, so a component that failed is reported once
+    // rather than differently per command.
+    let booted = girder_core::boot(&girder_core::BootConfig::from_env())?;
+    if matches!(mode, Mode::BootReport) {
+        print!("{}", booted.report.render());
+        for (component, reason) in booted.report.failures() {
+            eprintln!("[boot] {component} failed: {reason}");
+        }
+        return Ok(());
+    }
 
     match mode {
         Mode::Schema => {
@@ -107,6 +131,8 @@ async fn main() -> Result<()> {
             serve(cli, bind, watch).await?;
             return Ok(());
         }
+        // Handled above: the report prints and returns before any mode runs.
+        Mode::BootReport => Ok(()),
         Mode::Prompt(prompt) => run_prompt(cli, prompt).await,
     }
 }
