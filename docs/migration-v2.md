@@ -704,6 +704,43 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 纵切面做深：工具链路（已完成）
+
+用真实模型通过 HTTP 触发工具调用，发现并修掉了**最严重的结构错误**。
+
+### 实测的正确结构
+
+```
+user/message → turn/start → step/start → assistant/message(tool call) → tool/call
+             → tool/result → step/end → step/start → assistant/message → step/end → turn/end
+```
+
+**一个 turn、两个 step。** 这正是上游文档说的：
+
+> `step/start` — **one model call plus the tool executions it requested**
+
+### 修掉的三个结构错误
+
+**1. 工具调用后开启了新 turn。** 修复前是 `turn/start ... turn/end ... turn/start ... turn/end`：
+一次提示产生了两个回合。**但工具调用是同一回合内的一个 step，不是新回合。**
+
+修法：把 step 循环移进 turn 内部。
+
+**2. `step/start`/`step/end` 从未被写入。** 事件类型定义了，但 loop 从未产生它们。
+所以重放无法知道「一次模型调用」的边界。
+
+**3. `turn/end` 被每个 step 写一次。** `turn_stream` 内部写了它，于是两个 step 产生两个
+`turn/end` for 一个 `turn/start`。而且顺序错了（`turn/end` 出现在 `step/end` 之前）。
+
+修法：`turn_stream` 不再写 `turn/end`，由外层在**所有 step 结束后**写。
+
+### 为什么这个错误严重
+
+`step` 是**重放和压缩的基础单位**。没有它：
+- 无法知道哪次模型调用产生了哪个工具结果
+- 压缩无法在「一次模型调用」的边界上切割
+- 一个调用工具的回答看起来像两个独立的回答
+
 ## 纵切面做深：会话链路（已完成）
 
 沿用选项 2（聚焦一条纵切面），这轮把 **HTTP → 会话 → 真实模型 → 日志** 这条链路真正走通并修了三个 bug。

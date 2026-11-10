@@ -282,7 +282,6 @@ pub fn run(
 ) -> impl Stream<Item = Result<LoopStep, LoopError>> + Send {
     let prompt = prompt.into();
     async_stream::stream! {
-        use futures::StreamExt as _;
         let mut messages = vec![Message::new(Role::User, vec![ContentBlock::Text { text: prompt.clone() }])];
 
         // The first user message is durable before any turn starts, unless the caller already
@@ -342,34 +341,27 @@ pub fn run(
                 }
             }
 
-            // Run the turn, forwarding every step it produces. The borrow of `messages` ends with
-            // this block so the continuation decision below can read it.
-            let (finished, ran_tools) = {
-                let mut finished = false;
-                let mut ran_tools = false;
-                let mut folded = Box::pin(turn_stream(&context, &mut messages, turn, cancel.clone()));
-                while let Some(step) = folded.next().await {
-                    match &step {
-                        Ok(LoopStep::TurnEnded { .. }) => finished = true,
-                        Ok(LoopStep::ToolFinished { .. }) => ran_tools = true,
-                        Err(_) => {
-                            yield step;
-                            return;
-                        }
-                        _ => {}
-                    }
-                    yield step;
-                    if finished {
-                        break;
-                    }
+            // Each step is forwarded as it is produced: a caller that renders the answer incrementally
+            // would otherwise see nothing until the whole turn finished.
+            let steps = match run_steps(&context, &mut messages, turn, cancel.clone()).await {
+                Ok(steps) => steps,
+                Err(error) => {
+                    yield Err(error);
+                    return;
                 }
-                (finished, ran_tools)
             };
-
-            if !finished {
-                // The turn produced no terminal step: treat it as a loop that ran out.
-                return;
+            for step in steps {
+                yield Ok(step);
             }
+            // The turn is over: every step finished. Written here rather than inside the step, which
+            // is the only place that knows whether another step follows.
+            let _ = context
+                .session
+                .append(SessionEvent::TurnEnd {
+                    turn,
+                    reason: crate::session::TurnEndReason::Completed,
+                })
+                .await;
 
             // Input queued for the next turn continues the conversation even when this turn ended
             // without tools. A user who typed while the model was answering expects that message to
@@ -405,9 +397,10 @@ pub fn run(
                 goal_continued = true;
             }
 
-            // A turn that ran tools continues so the model can see the results; a turn that only
-            // answered ends the conversation unless something is queued or a goal is active.
-            if !ran_tools && queued.is_empty() && !goal_continued {
+            // A turn now consumes its own tool steps, so reaching here means the model answered.
+            // The conversation continues only when something arrived while it was answering, or a
+            // goal asked for another round.
+            if queued.is_empty() && !goal_continued {
                 return;
             }
         }
@@ -434,6 +427,63 @@ fn merge_cancel(first: CancellationToken, second: Option<CancellationToken>) -> 
         });
     }
     merged
+}
+
+/// Runs one turn's steps, returning the steps it produced.
+///
+/// A separate function because `run` had grown past the point where the order of its decisions was
+/// readable. The steps of one turn are the part that must stay together: each is one model call plus
+/// the tools it requested, and whether another follows depends on whether this one ran tools.
+async fn run_steps(
+    context: &Arc<LoopContext>,
+    messages: &mut Vec<Message>,
+    turn: u64,
+    cancel: CancellationToken,
+) -> Result<Vec<LoopStep>, LoopError> {
+    use futures::StreamExt as _;
+
+    let mut produced = Vec::new();
+    let mut step_index = 0u64;
+    loop {
+        step_index += 1;
+        let _ = context
+            .session
+            .append(SessionEvent::StepStart {
+                turn,
+                step: step_index,
+            })
+            .await;
+
+        // Whether *this* step ran tools decides whether another follows.
+        let mut ran_tools = false;
+        let mut finished = false;
+        let mut folded = Box::pin(turn_stream(context, messages, turn, cancel.clone()));
+        while let Some(step) = folded.next().await {
+            let step = step?;
+            match &step {
+                LoopStep::TurnEnded { .. } => finished = true,
+                LoopStep::ToolFinished { .. } => ran_tools = true,
+                _ => {}
+            }
+            produced.push(step);
+            if finished {
+                break;
+            }
+        }
+
+        let _ = context
+            .session
+            .append(SessionEvent::StepEnd {
+                turn,
+                step: step_index,
+            })
+            .await;
+
+        if !finished || !ran_tools {
+            // No terminal step, or a step with no tools: the turn is over either way.
+            return Ok(produced);
+        }
+    }
 }
 
 /// Runs one turn: stream, assemble, dispatch tools.
@@ -509,14 +559,10 @@ fn turn_stream<'a>(
 
         let calls = assistant.tool_calls();
         if calls.is_empty() {
+            // No tools, so this is the turn's last step. The `turn/end` record belongs to the caller,
+            // which knows whether another step follows: writing it here made every step close the
+            // turn, so a tool-using exchange recorded two `turn/end` for one `turn/start`.
             let reason = assistant.finish.clone().unwrap_or(FinishReason::Stop);
-            let _ = context
-                .session
-                .append(SessionEvent::TurnEnd {
-                    turn,
-                    reason: crate::session::TurnEndReason::from(reason.clone()),
-                })
-                .await;
             yield Ok(LoopStep::TurnEnded { turn, reason });
             return;
         }
@@ -532,13 +578,8 @@ fn turn_stream<'a>(
             }
         }
 
-        let _ = context
-            .session
-            .append(SessionEvent::TurnEnd {
-                turn,
-                reason: crate::session::TurnEndReason::Completed,
-            })
-            .await;
+        // The tools ran; the model must see their results, so the caller runs another step. The turn
+        // is not over, which is why no `turn/end` is written here.
         yield Ok(LoopStep::TurnEnded {
             turn,
             reason: FinishReason::ToolCalls,

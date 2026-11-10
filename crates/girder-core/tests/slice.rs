@@ -235,7 +235,8 @@ async fn the_loop_calls_a_tool_then_continues_to_a_final_answer() {
         .collect();
     assert_eq!(tool_steps.len(), 2, "started and finished");
 
-    // Two turns were logged: the tool call, then the answer.
+    // One turn with two steps: the tool call, then the answer. A turn is a sequence of steps -- one
+    // model call plus the tools it requested -- so a tool-using exchange stays inside one turn.
     let events = session.events();
     let turns: Vec<u64> = events
         .iter()
@@ -244,7 +245,16 @@ async fn the_loop_calls_a_tool_then_continues_to_a_final_answer() {
             _ => None,
         })
         .collect();
-    assert_eq!(turns, vec![1, 2]);
+    assert_eq!(turns, vec![1], "a tool call is a step, not a new turn");
+
+    let steps: Vec<(u64, u64)> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::StepStart { turn, step } => Some((*turn, *step)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(steps, vec![(1, 1), (1, 2)], "two steps of one turn");
 
     // The second request carried the tool result back to the model.
     let requests = provider.requests();
