@@ -60,6 +60,7 @@ extern crate self as girder_core;
 pub mod api_config;
 pub mod api_job;
 pub mod api_session;
+mod approval;
 mod atomic_write;
 mod attachment;
 mod boot;
@@ -83,8 +84,10 @@ mod llm;
 mod llm_deepseek;
 mod message;
 mod paths;
+mod permissions;
 mod projection;
 mod providers;
+mod questions;
 mod registry;
 mod remote;
 mod retention;
@@ -114,6 +117,11 @@ pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 /// The session Remote surface, namespaced because its wire types share names with the
 /// service-side request types in `remote`.
 pub use api_session as session_api;
+pub use approval::{
+    ApprovalError, Approver, DEFAULT_TIMEOUT as DEFAULT_APPROVAL_TIMEOUT, DecidedBy, Decision,
+    Record as ApprovalRecord, Request as ApprovalRequest, Scripted as ScriptedApprover,
+    Unavailable as UnavailableApprover,
+};
 pub use atomic_write::{
     AtomicError, DEFAULT_LOCK_WAIT, Mode, with_lock, write_atomic, write_text_atomic,
 };
@@ -204,6 +212,10 @@ pub use paths::{
     RootEnvironment, RootError, abbreviate_home, agents_home, expand_home, harness_home, home_dir,
     join_within,
 };
+pub use permissions::{
+    Approval, Catalogue as PermissionCatalogue, Entry as PermissionEntry, Knobs, PermissionError,
+    Preset, State as PermissionState,
+};
 pub use projection::{
     ModelSelectionProjection, ProjectedSession, Projection, ProjectionError, ProjectionHandle,
     ProjectionRegistry, Seq as ProjectionSeq, TitleProjection, TurnBoundary,
@@ -211,6 +223,11 @@ pub use projection::{
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
     RouteRegistry, deepseek_route, fits as model_fits, window_of,
+};
+pub use questions::{
+    Answer, AnsweredBy, DEFAULT_TIMEOUT as DEFAULT_QUESTION_TIMEOUT, Option_ as QuestionOption,
+    Question, QuestionError, Reply as QuestionReply, Responder, Scripted as ScriptedResponder,
+    Shape as QuestionShape, Unavailable as UnavailableResponder,
 };
 pub use registry::{Label, Registry, RegistryContext, RegistryError};
 pub use remote::{
