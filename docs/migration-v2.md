@@ -704,6 +704,46 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## 模型目录与选择（已完成）
+
+`session.modelCatalog` / `session.selectModel`，10 个测试。
+
+**实测**：
+
+```
+POST session/modelCatalog →
+  {"default":{"provider":"deepseek","model":"deepseek-chat"},
+   "groups":[{"displayName":"DeepSeek","models":[{"contextWindow":64000,...}]}]}
+
+POST session/selectModel {"provider":"deepseek","model":"deepseek-chat"}
+→ {"selected":{...}}
+
+POST session/selectModel {"provider":"deepseek","model":"nope"}
+→ INVALID_ARGUMENTS: route `deepseek` does not serve model `nope`
+```
+
+### 两个决定
+
+**目录从路由表读，不硬编码。** 加了 provider 的部署不该为了 UI 能显示它而改代码。
+
+**选择在记录前校验。** 一个本部署没有挂载的路由，如果在这里被接受，会**在下一个请求才失败，
+离发出它的客户端很远**。
+
+**`contextWindow` 未知时省略，不写 0。** 写 0 的客户端会显示「0 tokens」，那是**声称一个没人说过的事实**。
+
+### 一次反复的修复过程
+
+这轮我在 `registry_with_runtime` 和 `registry_with_routes` 之间来回改了 4 次，才把语义理清：
+
+| 尝试 | 错误 |
+|---|---|
+| 1 | `with_runtime` 委托给 `with_routes`，于是它也注册了模型方法 |
+| 2 | 只在 routes 非空时注册，破坏了「空目录也是合法答案」的测试 |
+| 3 | 两边都注册 + 声明缺口，dispatch 优先 handler，缺口声明无效 |
+| 4 | **两条路径独立装配**，`with_runtime` 声明模型方法为缺口 |
+
+**根因是我先改实现再改测试，而不是先想清楚「两条路径该有什么差异」。**
+
 ## 输出保留策略（已完成）
 
 `retention.rs`：`ItemRetainer` / `TextRetainer`，20 个测试。

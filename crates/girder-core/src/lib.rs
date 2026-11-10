@@ -207,8 +207,9 @@ pub use remote::{
     SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
     SessionPromptValue, SessionRecord, SessionSummary, default_registry, register_job_methods,
-    register_projection_methods, register_session_methods, register_workspace_methods,
-    registered_method_names, registry_with_runtime,
+    register_model_catalog, register_projection_methods, register_select_model,
+    register_session_methods, register_workspace_methods, registered_method_names,
+    registry_with_routes, registry_with_runtime,
 };
 pub use retention::{
     ItemRetainer, ItemStrategy, Omitted, RetainedItems, RetainedText, TextRetainer, TextStrategy,

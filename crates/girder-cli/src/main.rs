@@ -181,7 +181,14 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         model: cli.model.clone(),
         max_turns: cli.max_turns,
     });
-    let mut remote = girder_core::registry_with_runtime(catalog, runtime);
+    // The route table the model picker reads. One route for the configured provider; a deployment with
+    // more would register them here rather than in a client.
+    let mut routes = girder_core::RouteRegistry::new();
+    let route = girder_core::deepseek_route("deepseek", cli.model.clone());
+    let _ = routes.register(route);
+    let routes = Arc::new(routes);
+
+    let mut remote = girder_core::registry_with_routes(&catalog, &runtime, &routes);
 
     // The projection bridge: a client reads folded session state without replaying the log itself.
     // Without this the browser would need its own copy of every projection's fold logic, and the two

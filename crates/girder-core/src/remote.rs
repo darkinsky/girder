@@ -728,10 +728,14 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 /// One list, referenced by every registry constructor. Two copies drifted the moment a method was
 /// added — the entry stayed in one list while disappearing from the other, and the only symptom was
 /// a `NOT_IMPLEMENTED` answer for a method that existed.
+/// Session methods this build declares but does not implement.
+///
+/// Every name here must be genuinely absent: an implemented method listed as a gap makes a client show
+/// "not implemented" for something that works. Three names were removed from this list the moment they
+/// were implemented (`projections`, `rename`, `delete`) and two more (`selectModel`, `modelCatalog`)
+/// when the route table gave them something to answer with.
 const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
     "search",
-    "selectModel",
-    "modelCatalog",
     "openWorkspacePath",
     "workspacePathApplications",
     "fork",
@@ -931,17 +935,46 @@ pub fn registry_with_runtime(
     catalog: Arc<dyn SessionCatalog>,
     runtime: Arc<crate::runtime::AgentRuntime>,
 ) -> RemoteRegistry {
+    // No route table, so this path serves no model methods and declares them gaps: a caller without
+    // routes cannot answer a model question, and a picker that listed nothing would be worse than an
+    // honest gap. A caller that has routes uses `registry_with_routes`.
     let mut registry = RemoteRegistry::new();
     register_list(&mut registry, &catalog);
     register_create(&mut registry, &catalog);
     register_history(&mut registry, &catalog);
     register_prompt_with_runtime(&mut registry, &catalog, &runtime);
     register_cancel(&mut registry, &runtime);
+    register_rename(&mut registry, &catalog);
+    register_delete(&mut registry, &catalog);
+
+    registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
+    registry.declare_unimplemented("session", &["modelCatalog", "selectModel"]);
+    registry
+}
+
+/// Builds a registry whose model methods read a route table.
+///
+/// The catalogue and the selection check both need the routes; a registry built without them would
+/// offer a model picker that lists nothing and accepts nothing.
+#[must_use]
+pub fn registry_with_routes(
+    catalog: &Arc<dyn SessionCatalog>,
+    runtime: &Arc<crate::runtime::AgentRuntime>,
+    routes: &Arc<crate::providers::RouteRegistry>,
+) -> RemoteRegistry {
+    let mut registry = RemoteRegistry::new();
+    register_model_catalog(&mut registry, routes);
+    register_select_model(&mut registry, routes);
+    register_list(&mut registry, catalog);
+    register_create(&mut registry, catalog);
+    register_history(&mut registry, catalog);
+    register_prompt_with_runtime(&mut registry, catalog, runtime);
+    register_cancel(&mut registry, runtime);
     // Every method the plain registry serves must exist here too, or `serve` would answer
     // `UNKNOWN_METHOD` for something the schema advertises. This list drifted once already: rename and
     // delete were added to the plain path and not this one.
-    register_rename(&mut registry, &catalog);
-    register_delete(&mut registry, &catalog);
+    register_rename(&mut registry, catalog);
+    register_delete(&mut registry, catalog);
 
     registry.declare_unimplemented("session", UNIMPLEMENTED_SESSION_METHODS);
     registry
@@ -1387,6 +1420,125 @@ fn register_delete(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
 
             let deleted = catalog.delete(&session_id).await?;
             Ok(serde_json::json!({ "deleted": deleted }))
+        })
+    });
+}
+
+/// Registers `session.modelCatalog`.
+///
+/// The models a client may choose from, read from the route registry rather than hard-coded: a
+/// deployment that adds a provider must not need a code change for its UI to offer it.
+pub fn register_model_catalog(
+    registry: &mut RemoteRegistry,
+    routes: &Arc<crate::providers::RouteRegistry>,
+) {
+    let routes = Arc::clone(routes);
+    registry.register("session", "modelCatalog", move |_call: RemoteCall| {
+        let routes = Arc::clone(&routes);
+        Box::pin(async move {
+            let mut groups: Vec<serde_json::Value> = Vec::new();
+            for name in routes.names() {
+                let Ok(route) = routes.get(&name) else {
+                    continue;
+                };
+                let models: Vec<serde_json::Value> = route
+                    .models
+                    .iter()
+                    .map(|model| {
+                        serde_json::json!({
+                            "provider": route.name,
+                            "model": model.id,
+                            "displayName": model.display_name,
+                            // Omitted rather than zeroed when the catalogue is silent: a client that
+                            // showed "0 tokens" would be claiming a fact nobody stated.
+                            "contextWindow": model.context_window,
+                        })
+                    })
+                    .collect();
+                groups.push(serde_json::json!({
+                    "provider": route.name,
+                    "displayName": route.display_name,
+                    "models": models,
+                }));
+            }
+
+            // The default is the first route's default model, which is what a session with no recorded
+            // selection would use. Absent when nothing is registered, rather than an invented pair.
+            let default = routes
+                .names()
+                .first()
+                .and_then(|name| routes.resolve(name, None).ok())
+                .map(|(route, model)| {
+                    serde_json::json!({ "provider": route.name, "model": model.id })
+                });
+
+            let providers: Vec<String> = routes
+                .names()
+                .into_iter()
+                .filter(|name| routes.get(name).is_ok_and(|route| !route.models.is_empty()))
+                .collect();
+
+            Ok(serde_json::json!({
+                "default": default,
+                "routableProviders": providers,
+                "groups": groups,
+                // Empty: this build reads its catalogue from the routing table, which cannot fail.
+                // The field exists because a client renders a warning list, and an absent field would
+                // be a different sort of absence from an empty one.
+                "failures": Vec::<serde_json::Value>::new(),
+            }))
+        })
+    });
+}
+
+/// Registers `session.selectModel`.
+///
+/// Records a selection for a session's next step. The request carries the full selection because a
+/// partial one cannot be routed: a provider without a model has nothing to call.
+pub fn register_select_model(
+    registry: &mut RemoteRegistry,
+    routes: &Arc<crate::providers::RouteRegistry>,
+) {
+    let routes = Arc::clone(routes);
+    registry.register("session", "selectModel", move |call: RemoteCall| {
+        let routes = Arc::clone(&routes);
+        Box::pin(async move {
+            let provider = call
+                .args
+                .get("provider")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "selectModel".to_owned(),
+                    message: "`provider` is required".to_owned(),
+                })?
+                .to_owned();
+            let model = call
+                .args
+                .get("model")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "selectModel".to_owned(),
+                    message: "`model` is required".to_owned(),
+                })?
+                .to_owned();
+
+            let selection = crate::agent::ModelSelection::new(provider, model);
+            // Validated before it is recorded: a selection naming a route this deployment does not
+            // mount would otherwise be accepted here and fail at the next request, far from the client
+            // that sent it.
+            crate::agent::validate(&selection, &routes).map_err(|error| {
+                RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "selectModel".to_owned(),
+                    message: error.to_string(),
+                }
+            })?;
+
+            Ok(serde_json::json!({
+                "selected": { "provider": selection.provider, "model": selection.model },
+            }))
         })
     });
 }

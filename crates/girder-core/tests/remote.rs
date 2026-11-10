@@ -1361,11 +1361,13 @@ async fn every_method_in_one_registry_exists_in_the_other() {
     let with_runtime = girder_core::registry_with_runtime(Arc::clone(&catalog), runtime);
     let plain = default_registry(Arc::clone(&catalog));
 
-    // The two constructors differ deliberately: `cancel` needs a runtime. What must not differ is
-    // how an unregistered name is reported -- a client's error handling cannot depend on which
-    // constructor the host chose.
+    // The two constructors differ deliberately: `cancel` needs a runtime, and the model methods need a
+    // route table. What must not differ is how an unregistered name is reported -- a client's error
+    // handling cannot depend on which constructor the host chose.
     let runtime_methods: Vec<String> = with_runtime.names().into_iter().map(|(_, m)| m).collect();
     for method in &runtime_methods {
+        // A method both serve resolves the same way, so there is nothing to compare. This is the
+        // common case now: the two constructors differ only in whether a turn can actually run.
         if plain.names().iter().any(|(_, m)| m == method) {
             continue;
         }
