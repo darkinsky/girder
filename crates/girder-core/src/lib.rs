@@ -65,6 +65,7 @@ mod atomic_write;
 mod attachment;
 mod boot;
 mod brand;
+mod chunked_list;
 mod code_language;
 mod commands;
 mod compaction;
@@ -77,10 +78,12 @@ mod extensions;
 mod fiber;
 mod fs;
 mod goal;
+mod home_paths;
 mod inbox;
 mod instructions;
 mod jobs;
 mod json;
+mod launch_environment;
 mod limits;
 mod llm;
 mod llm_deepseek;
@@ -150,6 +153,7 @@ pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
 };
+pub use chunked_list::{CHUNK_CAPACITY, List as ChunkedList};
 pub use code_language::{for_extension, for_path, read_hint};
 pub use commands::{
     Arguments as CommandArguments, CommandError, CommandId, CommandResult,
@@ -194,6 +198,7 @@ pub use goal::{
     Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
     Phase, check_reference as check_goal_reference,
 };
+pub use home_paths::Paths as HomePaths;
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use instructions::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_TOTAL_BYTES, HARNESS_GLOBAL_DIRECTORY,
@@ -208,6 +213,10 @@ pub use jobs::{
 pub use json::{
     JsonHazard, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, hazards, is_lossless, normalize,
     number_from_f64, number_from_u64,
+};
+pub use launch_environment::{
+    AMBIENT as AMBIENT_VARIABLES, NEVER as NEVER_VARIABLES, Resolved as LaunchEnvironment,
+    is_ambient, is_forbidden, resolve as resolve_launch_environment,
 };
 pub use limits::{Budget, Ceiling, Session as SessionBudget};
 pub use llm::{
