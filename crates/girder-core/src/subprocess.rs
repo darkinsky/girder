@@ -63,6 +63,12 @@ pub enum ProcessError {
 /// How to spawn one process.
 #[derive(Clone, Debug)]
 pub struct SpawnOptions {
+    /// Whether to clear the inherited environment before adding `env`.
+    ///
+    /// Off by default: a command usually needs the environment it was started with. A tool that runs
+    /// model-authored commands turns it on, because a child must not inherit a credential the harness was
+    /// launched with.
+    pub clear_environment: bool,
     /// Program to run.
     pub program: String,
     /// Its arguments.
@@ -91,6 +97,7 @@ impl SpawnOptions {
             timeout: Duration::from_secs(120),
             env: Vec::new(),
             new_process_group: true,
+            clear_environment: false,
         }
     }
 
@@ -112,6 +119,17 @@ impl SpawnOptions {
     #[must_use]
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Clears the inherited environment, leaving only what was added explicitly.
+    ///
+    /// Off by default because a command usually needs the environment it was started with. On, it is the
+    /// difference between a child seeing the harness's own credentials and a child seeing only what it was told
+    /// to see: a command a model asked to run must not inherit a token the harness was launched with.
+    #[must_use]
+    pub fn with_cleared_environment(mut self) -> Self {
+        self.clear_environment = true;
         self
     }
 }
@@ -181,6 +199,13 @@ pub async fn run(
 
     if let Some(cwd) = &options.cwd {
         command.current_dir(cwd);
+    }
+    if options.clear_environment {
+        // Before adding our own: `env_clear` after would drop them too.
+        command.env_clear();
+    }
+    if options.clear_environment {
+        command.env_clear();
     }
     for (key, value) in &options.env {
         command.env(key, value);
@@ -461,6 +486,13 @@ pub fn start(options: &SpawnOptions) -> Result<RunningProcess, ProcessError> {
 
     if let Some(cwd) = &options.cwd {
         command.current_dir(cwd);
+    }
+    if options.clear_environment {
+        // Before adding our own: `env_clear` after would drop them too.
+        command.env_clear();
+    }
+    if options.clear_environment {
+        command.env_clear();
     }
     for (key, value) in &options.env {
         command.env(key, value);
