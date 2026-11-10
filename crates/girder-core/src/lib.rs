@@ -60,6 +60,7 @@ extern crate self as girder_core;
 pub mod api_config;
 pub mod api_job;
 pub mod api_session;
+mod atomic_write;
 mod attachment;
 mod boot;
 mod brand;
@@ -107,6 +108,9 @@ pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 /// The session Remote surface, namespaced because its wire types share names with the
 /// service-side request types in `remote`.
 pub use api_session as session_api;
+pub use atomic_write::{
+    AtomicError, DEFAULT_LOCK_WAIT, Mode, with_lock, write_atomic, write_text_atomic,
+};
 pub use attachment::{
     ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore, DecodedImage, EncodedImage, ImageRef,
     Limits as AttachmentLimits, MemoryStore, admit_batch, admit_image, decode_base64_canonical,
