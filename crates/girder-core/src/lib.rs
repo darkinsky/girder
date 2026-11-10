@@ -67,6 +67,7 @@ mod compaction;
 mod config;
 mod events;
 mod exec;
+mod extensions;
 mod fiber;
 mod fs;
 mod goal;
@@ -135,6 +136,10 @@ pub use events::{
 pub use exec::{
     AdvisorySandbox, Enforcement, ExecError, ExecOptions, ExecOutput, PathPolicy, Sandbox,
     bash_tool, has_program, landlock_abi, read_file, run_bash, run_shell,
+};
+pub use extensions::{
+    Definition as ExtensionDefinition, ExtensionError, ExtensionId, Registry as ExtensionRegistry,
+    Run as ExtensionRun, Runtime as ExtensionRuntime, Status as ExtensionStatus,
 };
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
 pub use fs::{
