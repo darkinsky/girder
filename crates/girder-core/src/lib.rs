@@ -57,6 +57,7 @@ mod agent_loop;
 // from within itself.
 extern crate self as girder_core;
 
+pub mod api_job;
 pub mod api_session;
 mod attachment;
 mod boot;
