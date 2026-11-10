@@ -704,6 +704,30 @@ projection 支持会让它们各自负责一个**都不拥有**的关注点。�
 
 **18 个测试**，核心是「拒绝不产生副作用」。
 
+## Web 能力（已完成）
+
+`web.rs`：`Web` / `SearchProvider` / `FetchProvider` / `SearchResult` / `FetchResult`，21 个测试。
+
+**先纠正一个术语错误**：`packages/web/web` 不是浏览器界面，是**模型访问网页的能力**（搜索与抓取）。
+浏览器前端在 `packages/client/ui-*`（175k 行，不在 Rust 重写范围内）。
+
+### 四个决定
+
+**搜索和抓取共用一个 seam。** 它们是不同操作，但共享容易做错的部分：provider 选择、取消、
+错误形状、「哪个 provider 被配置了」。两个 seam 就是两套答案，然后它们会漂移。
+
+**非 2xx 是结果，不是错误。** 404 是关于资源的**事实**，不是检索失败。模型被告知「错误」时
+无法区分「页面说找不到」和「我连不上服务器」——这两者需要不同的下一步。
+
+**结果上限由 seam 强制，不只交给 provider。** 忽略 `max_results` 的 provider 会把无界列表
+交给一个窗口有限的模型。
+
+**provider 选择不依赖注册顺序。** 两个可用且未配置时报 `Ambiguous`，而不是取第一个：
+按注册顺序解析会让行为取决于加载顺序，部署会在没改配置时改变行为。
+
+**body 是封闭联合。** provider 解码，consumer 渲染。开放的话，provider 能引入无人处理的 kind，
+失败会出现在用户面前的渲染阶段。
+
 ## Workspace 与 Settings 接口（已完成）
 
 `api_config.rs`：13 个线上类型、7 个方法、`WorkspaceRegistry`，28 个测试。

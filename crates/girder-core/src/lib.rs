@@ -94,6 +94,7 @@ mod subagent_providers;
 mod subprocess;
 mod tools;
 mod typert;
+mod web;
 
 pub use agent::{
     Agent, AgentHandle, AgentOptions, AgentSpec, ModelSelection, ModelSelectionState,
@@ -230,4 +231,8 @@ pub use tools::{
 };
 pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
+};
+pub use web::{
+    FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider, SearchRequest,
+    SearchResult, SearchSource, Web, WebError,
 };
