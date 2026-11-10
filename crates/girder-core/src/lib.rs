@@ -94,6 +94,7 @@ mod storage;
 mod subagent;
 mod subagent_providers;
 mod subprocess;
+mod time;
 mod tools;
 mod typert;
 mod web;
@@ -233,6 +234,12 @@ pub use subagent_providers::{
 pub use subprocess::{
     ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,
     run as run_process, spawn as spawn_process,
+};
+pub use time::{
+    Instant as TimeInstant, MAX_FOUR_DIGIT_YEAR, MIN_FOUR_DIGIT_YEAR, MS_PER_DAY, MS_PER_HOUR,
+    MS_PER_MINUTE, MS_PER_SECOND, Span, SpanParts, TimeError, WallClock, civil_from_days,
+    days_from_civil, days_in_month, format_instant, format_span, is_four_digit_year, is_leap_year,
+    parse_instant,
 };
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
