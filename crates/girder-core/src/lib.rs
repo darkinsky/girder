@@ -64,6 +64,8 @@ mod atomic_write;
 mod attachment;
 mod boot;
 mod brand;
+mod code_language;
+mod commands;
 mod compaction;
 mod config;
 mod credentials;
@@ -92,6 +94,8 @@ mod schedule;
 mod scope;
 mod service;
 mod session;
+mod session_query;
+mod shell;
 mod storage;
 mod subagent;
 mod subagent_providers;
@@ -100,6 +104,7 @@ mod time;
 mod tools;
 mod typert;
 mod web;
+mod workspace_path;
 
 pub use agent::{
     Agent, AgentHandle, AgentOptions, AgentSpec, ModelSelection, ModelSelectionState,
@@ -124,6 +129,12 @@ pub use boot::{
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
+};
+pub use code_language::{for_extension, for_path, read_hint};
+pub use commands::{
+    Arguments as CommandArguments, CommandError, CommandId, CommandResult,
+    Definition as CommandDefinition, DefinitionId as CommandDefinitionId,
+    Handler as CommandHandler, Input as CommandInput, Registry as CommandRegistry,
 };
 pub use compaction::{
     CHECKPOINT_PREAMBLE, COMPACTION_INSTRUCTION, CompactionError, CompactionOutcome,
@@ -229,6 +240,16 @@ pub use session::{
     MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, TurnEndReason,
     read_session_file,
 };
+pub use session_query::{
+    Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,
+    Query as SearchQuery, Results as SearchResults, matches as search_matches,
+    query as search_sessions, run as run_query, search_files, searchable_text,
+};
+pub use shell::{
+    DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
+    Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,
+    Specification as ShellSpecification, split_words, which,
+};
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,
@@ -262,4 +283,8 @@ pub use typert::{
 pub use web::{
     FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider, SearchRequest,
     SearchResult, SearchSource, Web, WebError,
+};
+pub use workspace_path::{
+    contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,
+    is_unc, normalize as normalize_path, relative_to, resolve as resolve_in_workspace,
 };
