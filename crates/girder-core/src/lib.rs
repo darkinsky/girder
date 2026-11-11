@@ -79,6 +79,7 @@ mod fiber;
 mod file_tools;
 mod fs;
 mod goal;
+mod goal_tool;
 mod home_paths;
 mod inbox;
 mod instructions;
@@ -210,6 +211,7 @@ pub use goal::{
     Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
     Phase, check_reference as check_goal_reference,
 };
+pub use goal_tool::goal_tool;
 pub use home_paths::Paths as HomePaths;
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use instructions::{

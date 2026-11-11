@@ -78,8 +78,12 @@ pub enum Status {
     /// Running.
     Running,
     /// Exited, with the code the shell reported.
+    ///
+    /// Reached both when a caller closed the session and when [`Session::status`] found a shell that had
+    /// exited on its own, which is why it exists at all: a process that died by itself never calls
+    /// [`Session::close`].
     Exited {
-        /// The exit code, or `None` when it was signalled.
+        /// The exit code, or `None` when it was signalled or the shell cannot report a code.
         code: Option<i32>,
     },
     /// Failed to start.
@@ -297,6 +301,36 @@ pub trait Shell: Send + Sync {
 
     /// Ends the session.
     fn close(&self) -> BoxFut<Result<(), TerminalError>>;
+
+    /// Whether the process behind this shell is still running.
+    ///
+    /// A shell that exited on its own is not something [`Shell::close`] can report, because nobody called
+    /// it. Without this the session's status would stay [`Status::Running`] after the process died, and a
+    /// reader would be told a terminal is available when it is not.
+    ///
+    /// Synchronous on purpose: the question is a local observation of a handle the shell already holds, and
+    /// a future here would let a status read block a turn on a probe that is meant to be cheap.
+    ///
+    /// Optional so a shell written against the earlier trait still compiles. The default reports `true`,
+    /// which is the answer that changes nothing: a shell that cannot say whether it is alive keeps the
+    /// behaviour it had before this method existed, and only a shell that overrides it gains detection.
+    fn is_alive(&self) -> bool {
+        // A shell that cannot observe its process is assumed live: assuming dead would fail every session
+        // the moment this method was added, which is a worse answer than never noticing an exit.
+        true
+    }
+
+    /// The code the process exited with, once it is gone.
+    ///
+    /// `Some(0)` is a clean exit and `Some(code)` a failure; `None` means either the shell is still
+    /// running or the transport cannot see a code (a signalled process, a remote session that dropped).
+    /// Callers must not read `None` as success.
+    ///
+    /// Optional for the same reason as [`Shell::is_alive`]: the default reports no code, which renders as
+    /// [`Status::Exited`] with `code: None` rather than as a fabricated zero.
+    fn exit_code(&self) -> Option<i32> {
+        None
+    }
 }
 
 /// One managed terminal.
@@ -344,12 +378,35 @@ impl Session {
     }
 
     /// Its state.
+    ///
+    /// This is an observation, not a stored fact: when the shell has exited on its own since the last
+    /// call, the status is advanced to [`Status::Exited`] before it is returned. A shell that died without
+    /// anyone calling [`Session::close`] would otherwise read as [`Status::Running`] forever, and a caller
+    /// would be told a terminal is available when the process behind it is gone.
     #[must_use]
     pub fn status(&self) -> Status {
-        self.status
+        self.observe()
+    }
+
+    /// Brings the recorded status in line with the shell, and returns it.
+    ///
+    /// The correction happens here rather than in a background watcher because a watcher would need a task
+    /// and a shutdown path per session, while the stale state only matters at the moment somebody asks. The
+    /// lock is held across [`Shell::is_alive`] so two concurrent observations cannot both decide to
+    /// transition; the probe is a local read of a process handle, not a round trip.
+    fn observe(&self) -> Status {
+        let mut status = self
+            .status
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Only `Running` can be corrected. A session that is already `Stopped` or `Failed` was ended by a
+        // caller, and rewriting that to `Exited` would claim the process died on its own when it did not.
+        if status.is_running() && !self.shell.is_alive() {
+            *status = Status::Exited {
+                code: self.shell.exit_code(),
+            };
+        }
+        status.clone()
     }
 
     /// Sends input.
