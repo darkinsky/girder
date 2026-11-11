@@ -173,6 +173,13 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
         &workspace,
     )));
+    // The file and discovery tools: without these an agent can run commands but cannot look at a project.
+    tools.register(girder_core::read_tool(workspace.clone()));
+    tools.register(girder_core::write_tool(workspace.clone()));
+    tools.register(girder_core::edit_tool(workspace.clone()));
+    tools.register(girder_core::patch_tool(workspace.clone()));
+    tools.register(girder_core::glob_tool(workspace.clone()));
+    tools.register(girder_core::grep_tool(workspace.clone()));
 
     let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
         provider,

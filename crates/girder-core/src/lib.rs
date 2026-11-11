@@ -105,6 +105,7 @@ mod retry;
 mod runtime;
 mod schedule;
 mod scope;
+mod search_tools;
 mod service;
 mod session;
 mod session_query;
@@ -295,6 +296,7 @@ pub use schedule::{
     resume as resume_schedule, run_scheduler,
 };
 pub use scope::{BoxDisposer, BoxFut, Scope};
+pub use search_tools::{DEFAULT_LIMIT as SEARCH_DEFAULT_LIMIT, glob_tool, grep_tool};
 pub use service::ServiceKey;
 pub use session::{
     MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, TurnEndReason,
