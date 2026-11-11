@@ -173,21 +173,28 @@ async fn a_typo_reports_unknown_method() {
 
 #[tokio::test]
 async fn a_declared_gap_reports_not_implemented() {
-    // The distinction that makes a half-implemented client legible: `search` exists upstream, so a
-    // client author should see a gap, not a typo.
+    // The distinction that makes a half-implemented client legible: `resume` exists upstream, so a client author
+    // should see a gap, not a typo. The probe is a name from the declaration rather than a literal, so a method that
+    // starts working cannot leave this test passing against a name that no longer means anything.
+    let Some(probe) = girder_core::declared_gaps().first() else {
+        panic!("this build declares at least one gap; an empty list is not a gap");
+    };
     let registry = default_registry(Arc::new(FixedCatalog(vec![])));
 
     let error = registry
-        .dispatch("session", "search", call(json!({"query": "x"})))
+        .dispatch("session", probe, call(json!({"query": "x"})))
         .await
-        .expect_err("search is declared but absent");
+        .expect_err("a declared gap must be absent");
 
     assert!(
         matches!(error, RemoteError::NotImplemented { .. }),
         "{error:?}"
     );
     assert_eq!(error.code(), "NOT_IMPLEMENTED");
-    assert!(error.to_string().contains("session.search"), "{error}");
+    assert!(
+        error.to_string().contains(probe),
+        "the error must name the method it refused: {error}"
+    );
 }
 
 #[tokio::test]

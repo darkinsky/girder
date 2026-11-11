@@ -564,9 +564,14 @@ async fn an_invoke_call_to_a_gap_reports_the_code() {
     // The client must be able to tell a gap from a typo over the wire, not just in a unit test.
     let (url, cancel) = start_server_with_remote().await;
 
+    // A name from the declaration rather than a literal: `search` was this probe until it was implemented, and the
+    // literal kept asserting a gap that no longer existed.
+    let probe = girder_core::declared_gaps()
+        .first()
+        .expect("this build declares at least one gap");
     let response = invoke(
         &url,
-        serde_json::json!({"namespace": "session", "method": "search", "args": {}, "peer": "p"}),
+        serde_json::json!({"namespace": "session", "method": probe, "args": {}, "peer": "p"}),
     )
     .await;
 
@@ -575,8 +580,9 @@ async fn an_invoke_call_to_a_gap_reports_the_code() {
     assert!(
         response["error"]["message"]
             .as_str()
-            .unwrap()
-            .contains("session.search")
+            .expect("a message")
+            .contains(probe),
+        "the wire error must name the method it refused: {response}"
     );
 
     cancel.cancel();

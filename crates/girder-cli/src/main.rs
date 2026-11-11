@@ -243,6 +243,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Browsing a workspace: the same filesystem the tools use, so a client sees what a model sees.
     let fs: Arc<dyn girder_core::FileSystem> = Arc::new(girder_core::LocalFileSystem);
     girder_core::register_workspace_file_methods(&mut remote, &fs, &workspaces);
+
+    // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
+    // the catalog does not show.
+    girder_core::register_session_query_methods(&mut remote, &sessions_root());
     girder_core::register_workspace_methods(&mut remote, &workspaces);
 
     let remote = Arc::new(remote);

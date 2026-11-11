@@ -895,8 +895,13 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 /// nothing noticed because `dispatch` prefers a handler: a client reading the declaration would have shown "not
 /// implemented" for a method that works. The list is a promise about what is missing, so a name that works is a lie
 /// even when the behaviour is right.
+/// Session methods this build declares but does not implement.
+///
+/// `search` was here while `session_query_rpc` implemented it: the module registered the method somewhere else entirely
+/// and this list was never told, so a client reading the declaration would have shown "not implemented" for a method the
+/// server never exposed either. Both halves were wrong, and neither test could see it because the drift test only
+/// checked the methods the session core registers.
 const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
-    "search",
     "openWorkspacePath",
     "workspacePathApplications",
     "updateQueue",
