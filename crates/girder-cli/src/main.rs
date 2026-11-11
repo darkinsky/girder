@@ -239,6 +239,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
     // them against a second registry would produce two lists that disagree about what is running.
     girder_core::register_job_tools(&tools, Arc::clone(&jobs));
+    register_capability_tools(&tools);
 
     // Workspace registrations: the directories a session may run in.
     let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
@@ -303,6 +304,31 @@ fn sessions_root() -> std::path::PathBuf {
         },
         std::path::PathBuf::from,
     )
+}
+
+/// Registers the tools whose capability a deployment supplies.
+///
+/// Every one of them is mounted without a provider, and each reports that fact rather than pretending the capability
+/// exists: a model that tried a skill and got "no provider" learns something true, while one that got an empty list
+/// learns that skills are broken. A separate function because `serve` was already at the length limit and this is the
+/// block that reads best on its own.
+fn register_capability_tools(tools: &girder_core::ToolRegistry) {
+    tools.register(girder_core::skill_tool(Arc::new(
+        girder_core::SkillRegistry::new(),
+    )));
+    tools.register(girder_core::lsp_tool(Arc::new(
+        girder_core::LspRegistry::new(),
+    )));
+
+    // Terminals need a shell implementation, which this build does not ship; the launcher names the missing step.
+    girder_core::register_terminal_tools(
+        tools,
+        Arc::new(girder_core::TerminalRegistry::new()),
+        Arc::new(girder_core::UnavailableLauncher::no_shell()),
+    );
+
+    // A workflow needs an engine. Without one the run tool reports that rather than accepting work it cannot do.
+    girder_core::register_workflow_tools(tools, Arc::new(girder_core::WorkflowRegistry::new()));
 }
 
 fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {

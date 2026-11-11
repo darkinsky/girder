@@ -90,6 +90,7 @@ mod limits;
 mod llm;
 mod llm_deepseek;
 mod lsp;
+mod lsp_tool;
 mod mcp;
 mod message;
 mod observation;
@@ -114,6 +115,7 @@ mod session_query;
 mod session_search_tool;
 mod shell;
 mod skill;
+mod skill_tool;
 mod spill;
 mod spill_policy;
 mod ssh;
@@ -122,6 +124,7 @@ mod subagent;
 mod subagent_providers;
 mod subprocess;
 mod terminal;
+mod terminal_tool;
 mod time;
 mod todo_tool;
 mod tools;
@@ -129,6 +132,7 @@ mod typert;
 mod web;
 mod web_tools;
 mod workflow;
+mod workflow_tool;
 mod workspace_path;
 
 pub use agent::{
@@ -242,6 +246,7 @@ pub use lsp::{
     Position as LspPosition, Provider as LspProvider, Range as LspRange, Registry as LspRegistry,
     Request as LspRequest, Static as StaticLsp, utf16_column_to_byte,
 };
+pub use lsp_tool::{character_to_utf16_column, lsp_tool, utf16_column_to_character};
 pub use mcp::{
     CallResult as McpCallResult, Catalogue as McpCatalogue, McpError, Registry as McpRegistry,
     Status as McpStatus, Tool as McpTool, Transport as McpTransport,
@@ -326,6 +331,7 @@ pub use skill::{
     Definition as SkillDefinition, Provider as SkillProvider, Registry as SkillRegistry,
     SkillError, Static as StaticSkills, Summary as SkillSummary,
 };
+pub use skill_tool::skill_tool;
 pub use spill::{
     LocalStore as LocalSpillStore, Reference as SpillReference, SaveRequest as SpillSaveRequest,
     SpillError, Store as SpillStore, Unavailable as UnavailableSpillStore, should_spill,
@@ -360,6 +366,10 @@ pub use terminal::{
     Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,
     Status as TerminalStatus, TerminalError, Transcript,
 };
+pub use terminal_tool::{
+    TerminalLauncher, UnavailableLauncher, register_terminal_tools, terminal_read_tool,
+    terminal_send_tool, terminal_start_tool,
+};
 pub use time::{
     Instant as TimeInstant, MAX_FOUR_DIGIT_YEAR, MIN_FOUR_DIGIT_YEAR, MS_PER_DAY, MS_PER_HOUR,
     MS_PER_MINUTE, MS_PER_SECOND, Span, SpanParts, TimeError, WallClock, civil_from_days,
@@ -385,6 +395,7 @@ pub use workflow::{
     Phase as WorkflowPhase, Registry as WorkflowRegistry, Run as WorkflowRun, RunId,
     StartRequest as WorkflowStartRequest, Status as WorkflowStatus, WorkflowError,
 };
+pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_status_tool};
 pub use workspace_path::{
     contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,
     is_unc, normalize as normalize_path, relative_to, resolve as resolve_in_workspace,
