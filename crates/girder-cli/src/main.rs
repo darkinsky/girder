@@ -473,8 +473,24 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }
             Ok(LoopStep::ToolStarted { name, .. }) => println!("\n[tool] {name}"),
-            Ok(LoopStep::ToolFinished { id, is_error }) => {
+            Ok(LoopStep::ToolFinished {
+                id,
+                is_error,
+                content,
+            }) => {
+                // The result is printed, not just the status: a person who asked for a command to run needs what it
+                // returned, and reporting only "done" withholds the half of the answer they cannot get elsewhere.
                 println!("[tool] {} ({id})", if is_error { "failed" } else { "done" });
+                let text: String = content
+                    .iter()
+                    .filter_map(|block| match block {
+                        girder_core::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                for line in text.lines() {
+                    println!("  {line}");
+                }
             }
             Ok(_) => {}
             Err(error) => {

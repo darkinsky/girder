@@ -75,6 +75,13 @@ pub enum LoopStep {
         id: String,
         /// Whether it failed.
         is_error: bool,
+        /// What the tool produced.
+        ///
+        /// Carried here rather than left for the caller to fetch from the session: the session is the durable record,
+        /// and a caller rendering a turn would have to re-read the log to show what a tool returned. A CLI that only
+        /// saw `is_error` could report that a command failed without saying why, which is the half of the answer the
+        /// person needs.
+        content: Vec<ContentBlock>,
     },
 
     /// The turn ended.
@@ -830,6 +837,7 @@ fn tool_calls<'a>(
             yield Ok(LoopStep::ToolFinished {
                 id: id.to_string(),
                 is_error,
+                content: blocks,
             });
 
             // A tool message records which call it answers. Without the call id the provider cannot
