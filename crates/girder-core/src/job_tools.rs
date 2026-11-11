@@ -7,17 +7,22 @@
 //!
 //! # Trade-offs
 //!
-//! **`job_output` returns the retained tail, not a delta.** These tools expose an id and a wait bound
-//! and nothing else, so there is no cursor to resume from and every call re-reads what is still in
-//! the ring. [`crate::jobs::OutputRing::read_from`] already takes an absolute byte offset, so an
-//! incremental read is an argument away; until then the tool says when the ring has dropped bytes,
-//! because a caller that took a re-read for continuity would silently lose the middle of a log.
+//! **`job_output` reads a window and says where to resume.** `offset` is an absolute byte position
+//! into the job's output, and every result ends with the offset the next call should pass, so a
+//! caller polling a job receives each byte once instead of re-reading the retained tail. Omitting
+//! `offset` keeps the whole-window read, which is what a caller that has just started a job wants.
+//!
+//! An `offset` before [`crate::jobs::OutputRing::head_offset`] is reported rather than quietly moved
+//! forward. The bytes are gone, and a caller handed the retained head as if it continued its
+//! position would splice two logs together across a hole it never saw, so the result says so in as
+//! many words and names where the retained text really starts.
 //!
 //! Two bounds shorten a read and they are reported separately: the ring's cap drops the oldest bytes
-//! for good, and [`MAX_OUTPUT_BYTES`] drops what does not fit in one result but leaves it in the
-//! ring. With a ring no larger than [`MAX_OUTPUT_BYTES`] the first bound is reached first, so the
-//! second only appears when a producer configured a wide ring; a caller that treated the two as one
-//! message could not tell "ask again with a bigger window" from "it is gone".
+//! for good, and [`MAX_OUTPUT_BYTES`] caps one result. An `offset` read stops at its own cap and
+//! leaves the rest in the ring, because a delta that jumped to the newest bytes would skip exactly
+//! what the caller asked for; a whole-window read keeps the newest bytes, because that is the part a
+//! caller can act on. The notices stay distinct: "ask again for the rest" and "it is gone" are not
+//! the same instruction, and one message for both would be acted on wrongly either way.
 //!
 //! **A job has no deadline.** [`crate::subprocess::RunningProcess`] has no timeout of its own, so the
 //! `timeout` on [`SpawnOptions`] is not enforced on this path. The value below is set high and
@@ -63,7 +68,9 @@ const KIND: &str = "shell";
 /// How much of a job's output one `job_output` call returns.
 ///
 /// Mirrors the shell bound: far above what a model can usefully read and far below a context window,
-/// so a chatty dev server is truncated with a count rather than flooding the turn.
+/// so a chatty dev server is truncated with a count rather than flooding the turn. A read from an
+/// `offset` is cut at the *end* — the caller resumes at the byte after the result — while a
+/// whole-window read is cut at the front, keeping the newest bytes.
 const MAX_OUTPUT_BYTES: usize = crate::shell::DEFAULT_MAX_BYTES;
 
 /// The longest `job_output` will wait for a job to settle.
@@ -146,6 +153,10 @@ pub fn job_list_tool(jobs: Arc<JobRegistry>) -> ToolDefinition {
 ///
 /// Reads what a job has written so far, optionally waiting for it to settle. Reading does not disturb
 /// the job: the ring is read-only here, so a model may poll it between other tool calls.
+///
+/// `offset` makes the read incremental. Without it the call returns the retained window, which is
+/// what a caller that has just started a job needs; with it the call returns the bytes from that
+/// absolute position and reports the position to pass next.
 #[must_use]
 pub fn job_output_tool(jobs: Arc<JobRegistry>) -> ToolDefinition {
     ToolDefinition::new(
@@ -158,6 +169,10 @@ pub fn job_output_tool(jobs: Arc<JobRegistry>) -> ToolDefinition {
                 "wait_ms": {
                     "type": "number",
                     "description": "How long to wait for the job to finish before answering, in milliseconds"
+                },
+                "offset": {
+                    "type": "number",
+                    "description": "Absolute byte offset to start reading from. Omit to read the whole retained output; pass the `[next offset: N]` value from a previous call to read only what is new"
                 }
             },
             "required": ["id"]
@@ -309,6 +324,10 @@ async fn output(
     let Some(id) = id_arg(args) else {
         return Ok(ToolResult::error("`id` is required"));
     };
+    let offset = match offset_arg(args) {
+        Ok(offset) => offset,
+        Err(error) => return Ok(ToolResult::error(error)),
+    };
     let wait_ms = args
         .get("wait_ms")
         .and_then(Value::as_u64)
@@ -348,7 +367,7 @@ async fn output(
         }
     }
 
-    Ok(ToolResult::text(render(&job, cancelled)))
+    Ok(ToolResult::text(render(&job, cancelled, offset)))
 }
 
 /// Renders one job's status line, its retained output, and every reason the output is incomplete.
@@ -357,7 +376,13 @@ async fn output(
 /// would draw conclusions the evidence does not support. "Still running", "the ring dropped the
 /// head", "this result omitted bytes", and "the wait was cancelled" each mean a different thing about
 /// the text that follows, and a single "truncated" flag would collapse them into one.
-fn render(job: &crate::jobs::Job, cancelled: bool) -> String {
+///
+/// Every result ends with the offset to pass next. That line is what makes a read resumable: without
+/// it a caller can only re-read the window and hope it noticed the overlap.
+fn render(job: &crate::jobs::Job, cancelled: bool, offset: Option<u64>) -> String {
+    let head = job.output.head_offset();
+    let end = job.output.end_offset();
+
     let mut out = String::new();
     let _ = write!(out, "{}: {}", job.id, job.status.as_str());
     if let Some(code) = job.code {
@@ -367,28 +392,84 @@ fn render(job: &crate::jobs::Job, cancelled: bool) -> String {
     if !job.is_settled() {
         let _ = writeln!(out, "(still running; this is its output so far)");
     }
-    if job.output.head_offset() > 0 {
-        let _ = writeln!(
-            out,
-            "({} bytes at the head were dropped by the output ring)",
-            job.output.head_offset()
-        );
+    match offset {
+        // A whole-window read keeps the wording it always had: the caller asked for the window, not
+        // for a position, so the drop is context rather than a discontinuity it can point at.
+        None if head > 0 => {
+            let _ = writeln!(
+                out,
+                "({head} bytes at the head were dropped by the output ring)"
+            );
+        }
+        // The one case that must never be silent. Handing back the retained head as though it
+        // continued the requested position would splice two logs together across a hole, and the
+        // caller would have no way to tell that the middle of its log was missing.
+        Some(from) if from < head => {
+            let _ = writeln!(
+                out,
+                "(offset {from} is lost: the output ring has dropped everything before offset {head}, \
+                 so bytes {from}..{head} can never be read; the text below starts at {head})"
+            );
+        }
+        _ => {}
     }
 
-    let (body, omitted) = tail(&job.output.text(), MAX_OUTPUT_BYTES);
-    if omitted > 0 {
-        let _ = writeln!(
-            out,
-            "({omitted} bytes omitted; showing the most recent {MAX_OUTPUT_BYTES})"
-        );
-    }
+    // The position the next call resumes at, and the text this call returns. They are computed
+    // together because the second one decides the first: a delta resumes one past the bytes it was
+    // handed, never one past the whole ring, or the caller would skip the tail that did not fit.
+    let (body, next_offset) = match offset {
+        None => {
+            let (body, omitted) = tail(&job.output.text(), MAX_OUTPUT_BYTES);
+            if omitted > 0 {
+                let _ = writeln!(
+                    out,
+                    "({omitted} bytes omitted; showing the most recent {MAX_OUTPUT_BYTES})"
+                );
+            }
+            (body, end)
+        }
+        Some(from) => {
+            if from > end {
+                // Nothing to read, and not an error: a caller that polled past the end is asking a
+                // well-formed question whose answer is "nothing yet".
+                let _ = writeln!(
+                    out,
+                    "(offset {from} is past the end of the output, which is at offset {end})"
+                );
+            }
+            // Clamped to the head because the bytes before it do not exist any more; the note above
+            // already said so, and starting at the head is the only readable choice.
+            let (text, at) = text_from(job, from.max(head));
+            let (body, remaining) = head_cut(&text, MAX_OUTPUT_BYTES);
+            if body.is_empty() {
+                if from <= end {
+                    let _ = writeln!(out, "(no new output since offset {from})");
+                }
+                // Nothing was returned, so the position stays put instead of jumping backwards.
+                (body, from)
+            } else {
+                if remaining > 0 {
+                    // Said explicitly: this is a prefix, not the whole delta. A caller that took it
+                    // for everything written would resume from the wrong place and skip the rest.
+                    let _ = writeln!(
+                        out,
+                        "({remaining} more bytes are retained; this result was cut at {MAX_OUTPUT_BYTES} bytes)"
+                    );
+                }
+                let next = at.saturating_add(u64::try_from(body.len()).unwrap_or(0));
+                (body, next)
+            }
+        }
+    };
     if cancelled {
         // Said explicitly: the wait ended, the job did not.
         let _ = writeln!(out, "(the wait was cancelled; the job is unaffected)");
     }
 
     if body.is_empty() {
-        let _ = writeln!(out, "(no output yet)");
+        if offset.is_none() {
+            let _ = writeln!(out, "(no output yet)");
+        }
     } else {
         out.push_str("---\n");
         out.push_str(&body);
@@ -396,7 +477,33 @@ fn render(job: &crate::jobs::Job, cancelled: bool) -> String {
             out.push('\n');
         }
     }
+
+    let _ = writeln!(out, "[next offset: {next_offset}]");
     out
+}
+
+/// Returns the retained output from `from`, plus the absolute offset its first byte really sits at.
+///
+/// [`crate::jobs::OutputRing::read_from`] hands back whole chunks, so the chunk that straddles `from`
+/// would re-deliver bytes the caller already read — harmless for a window read and wrong for a delta.
+/// A `from` that lands inside a character advances to the next boundary, which is why the returned
+/// offset can exceed the one asked for; reporting the real one keeps the next call continuous.
+fn text_from(job: &crate::jobs::Job, from: u64) -> (String, u64) {
+    let (chunks, _lost) = job.output.read_from(from);
+    let mut text = String::new();
+    let mut at = from;
+    for chunk in chunks {
+        let skip = usize::try_from(from.saturating_sub(chunk.at)).unwrap_or(0);
+        let mut cut = skip.min(chunk.text.len());
+        while cut < chunk.text.len() && !chunk.text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        if cut > 0 {
+            at = chunk.at.saturating_add(u64::try_from(cut).unwrap_or(0));
+        }
+        text.push_str(chunk.text.get(cut..).unwrap_or_default());
+    }
+    (text, at)
 }
 
 /// Returns the last `max` bytes of `text` and how many bytes were dropped.
@@ -412,6 +519,41 @@ fn tail(text: &str, max: usize) -> (String, usize) {
         start += 1;
     }
     (text[start..].to_owned(), start)
+}
+
+/// Returns the first `max` bytes of `text` and how many bytes were left for the next read.
+///
+/// The counterpart of [`tail`] for a resumed read, which must not skip ahead: the caller asked for
+/// the bytes at its position, so the cut belongs at the far end. The boundary is moved *back* rather
+/// than forward, so the character it moved over is re-read by the next call instead of being split.
+fn head_cut(text: &str, max: usize) -> (String, usize) {
+    if text.len() <= max {
+        return (text.to_owned(), 0);
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), text.len() - end)
+}
+
+/// Reads the optional `offset` argument.
+///
+/// A malformed offset is an error rather than a silent zero: a caller that meant to resume from 1000
+/// and was read from 0 would treat old bytes as new, which is the one failure this argument exists to
+/// prevent.
+fn offset_arg(args: &Value) -> Result<Option<u64>, &'static str> {
+    let Some(value) = args.get("offset") else {
+        return Ok(None);
+    };
+    // Explicit null is how a caller that interpolated an optional field omits it.
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value.as_u64() {
+        Some(offset) => Ok(Some(offset)),
+        None => Err("`offset` must be a whole, non-negative number of bytes"),
+    }
 }
 
 /// Reads the required `id` argument.

@@ -565,3 +565,395 @@ fn every_tool_advertises_the_name_and_arguments_a_model_needs() {
         assert!(!tool.description.is_empty());
     }
 }
+
+// ---- job_output: incremental reads ------------------------------------------------------------
+
+/// The `[next offset: N]` value a result ends with.
+///
+/// Parsed out of the rendered text rather than read from the job, because the point of the line is
+/// that it is what a *caller* can use: an offset that is correct in the registry but printed wrongly
+/// would still break every caller that followed it.
+fn next_offset_of(text: &str) -> u64 {
+    let marker = "[next offset: ";
+    let start = text
+        .rfind(marker)
+        .unwrap_or_else(|| panic!("every `job_output` result must name the next offset: {text}"))
+        + marker.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(']')
+        .unwrap_or_else(|| panic!("the next-offset line must be closed: {text}"));
+    rest[..end]
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("the next offset must be a number: {text}"))
+}
+
+/// Runs `command` to settlement and returns the job id.
+async fn settled_job(tools: &Tools, command: &str) -> String {
+    let result = (tools.start.execute)(
+        serde_json::json!({ "command": command }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("started");
+    assert!(!result.is_error, "{}", text_of(&result));
+    let id = started_id(tools, &text_of(&result));
+    let _ = wait_settled(&tools.registry, &id).await;
+    id
+}
+
+#[tokio::test]
+async fn omitting_the_offset_reads_the_whole_retained_window() {
+    // The old behaviour must survive: a caller that has just started a job wants the output so far,
+    // not an empty delta from an offset it never chose.
+    let tools = Tools::with_ring(1024);
+    let id = settled_job(&tools, "seq 1 200000").await;
+
+    let output = (tools.output.execute)(
+        serde_json::json!({ "id": id, "wait_ms": 5_000 }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("read");
+    let text = text_of(&output);
+    assert!(!output.is_error, "{text}");
+
+    // The ring bound is still reported in its own words, and the newest output is still the part kept.
+    assert!(text.contains("dropped by the output ring"), "{text}");
+    assert!(text.contains("20000"), "{text}");
+
+    // The next offset is the newest byte, so a caller can go incremental after one full read without
+    // re-reading anything.
+    let job = tools.registry.get(&id).expect("registered");
+    assert_eq!(next_offset_of(&text), job.output.end_offset(), "{text}");
+}
+
+/// The job's own output as a result rendered it, with the header and the next-offset line removed.
+///
+/// A delta is what the caller appends to what it already has, so a test that wants to prove the
+/// deltas are gapless has to read the body rather than the whole receipt.
+fn body_of(text: &str) -> String {
+    let Some(start) = text.find("---\n") else {
+        return String::new();
+    };
+    let rest = &text[start + 4..];
+    // The renderer always terminates the body with a newline and then writes the next-offset line, so
+    // the body is everything before that line and keeps its own trailing newline.
+    let end = rest.rfind("[next offset: ").unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+#[tokio::test]
+async fn a_saved_next_offset_reads_only_what_was_added() {
+    // The property that makes polling usable: a caller that passes back the offset it was given gets
+    // every byte once. Re-reading from zero would grow quadratically, and a delta that overlapped
+    // would make the caller unable to tell new output from old.
+    //
+    // The job is held open by a marker file rather than a sleep, so the first read is guaranteed to
+    // happen while `second` does not exist yet: a timing-based version of this test would pass or
+    // fail depending on how the machine was loaded.
+    let dir = scratch("delta");
+    let tools = Tools::new();
+    let result = (tools.start.execute)(
+        serde_json::json!({
+            "command": "echo first; while [ ! -f release ]; do sleep 0.05; done; echo second"
+        }),
+        ToolRunContext::default().in_workspace(dir.clone()),
+    )
+    .await
+    .expect("started");
+    let id = started_id(&tools, &text_of(&result));
+
+    let mut text = String::new();
+    for _ in 0..80 {
+        let output =
+            (tools.output.execute)(serde_json::json!({ "id": id }), ToolRunContext::default())
+                .await
+                .expect("read");
+        text = text_of(&output);
+        if text.contains("first") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(text.contains("first"), "{text}");
+    assert!(
+        !text.contains("second"),
+        "the job must still be waiting when the first read happens: {text}"
+    );
+    let saved = next_offset_of(&text);
+
+    std::fs::write(dir.join("release"), "go\n").expect("released");
+
+    let mut delta_text = String::new();
+    for _ in 0..80 {
+        let delta = (tools.output.execute)(
+            serde_json::json!({ "id": id, "offset": saved }),
+            ToolRunContext::default(),
+        )
+        .await
+        .expect("read");
+        delta_text = text_of(&delta);
+        assert!(!delta.is_error, "{delta_text}");
+        if delta_text.contains("second") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert!(delta_text.contains("second"), "{delta_text}");
+    assert!(
+        !delta_text.contains("first"),
+        "a delta must not repeat bytes the caller already read: {delta_text}"
+    );
+    // Nothing is left, so the position the caller is told to poll is the one it was already at.
+    let job = wait_settled(&tools.registry, &id).await;
+    assert_eq!(
+        next_offset_of(&delta_text),
+        job.output.end_offset(),
+        "{delta_text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_empty_delta_says_there_is_nothing_new() {
+    // Silence and "nothing new" are the same text without a note, and a caller watching a quiet job
+    // would not know whether its read had worked.
+    let tools = Tools::new();
+    let id = settled_job(&tools, "echo quiet").await;
+    let end = tools
+        .registry
+        .get(&id)
+        .expect("registered")
+        .output
+        .end_offset();
+
+    let delta = (tools.output.execute)(
+        serde_json::json!({ "id": id, "offset": end, "wait_ms": 5_000 }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("read");
+    let delta_text = text_of(&delta);
+
+    assert!(!delta.is_error, "{delta_text}");
+    assert!(
+        delta_text.contains("no new output"),
+        "an empty delta must say so rather than looking like silence: {delta_text}"
+    );
+    assert_eq!(next_offset_of(&delta_text), end, "{delta_text}");
+}
+
+#[tokio::test]
+async fn an_offset_before_the_head_is_reported_as_lost() {
+    // The one case that must never be silent. The ring has discarded the bytes the caller asked for,
+    // so returning the retained head without saying anything would splice two logs together across a
+    // hole and read as a continuous log.
+    let tools = Tools::with_ring(1024);
+    let id = settled_job(&tools, "seq 1 200000").await;
+    let job = tools.registry.get(&id).expect("registered");
+    let head = job.output.head_offset();
+    assert!(
+        head > 0,
+        "the ring must have dropped the head for this test"
+    );
+
+    let output = (tools.output.execute)(
+        serde_json::json!({ "id": id, "offset": 0, "wait_ms": 5_000 }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("read");
+    let text = text_of(&output);
+
+    assert!(!output.is_error, "{text}");
+    assert!(
+        text.contains("is lost") && text.contains("can never be read"),
+        "the loss must be stated, not implied: {text}"
+    );
+    assert!(
+        text.contains(&format!("before offset {head}")),
+        "the result must name where the retained text really starts: {text}"
+    );
+    // Its own wording, not the whole-window note: the two mean different things to a caller.
+    assert!(
+        !text.contains("bytes at the head were dropped by the output ring"),
+        "a resumed read reports a lost position, not a truncated window: {text}"
+    );
+    // The bytes it could not honour are not silently included: what follows starts at the head.
+    assert_eq!(next_offset_of(&text), job.output.end_offset(), "{text}");
+}
+
+#[tokio::test]
+async fn an_offset_past_the_end_returns_nothing_without_failing() {
+    // A caller that polled past the end has asked a well-formed question whose answer is "nothing
+    // yet". Answering it with an error would make a poll loop treat normal progress as a failure.
+    let tools = Tools::new();
+    let id = settled_job(&tools, "echo ready").await;
+    let end = tools
+        .registry
+        .get(&id)
+        .expect("registered")
+        .output
+        .end_offset();
+    let beyond = end + 1_000;
+
+    let output = (tools.output.execute)(
+        serde_json::json!({ "id": id, "offset": beyond, "wait_ms": 5_000 }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("read");
+    let text = text_of(&output);
+
+    assert!(!output.is_error, "{text}");
+    assert!(
+        text.contains("past the end") && text.contains(&end.to_string()),
+        "the result must say where the output actually ends: {text}"
+    );
+    assert!(
+        !text.contains("ready"),
+        "there is nothing between the end and the asked-for offset: {text}"
+    );
+    assert!(
+        !text.contains("---"),
+        "an empty read must carry no body: {text}"
+    );
+    // Staying put is what lets a caller keep polling from where it is instead of walking backwards.
+    assert_eq!(next_offset_of(&text), beyond, "{text}");
+}
+
+#[tokio::test]
+async fn a_resumed_read_is_cut_at_the_end_and_says_so() {
+    // A delta larger than one result must be returned from its start, not from its newest bytes: a
+    // caller that asked for offset 0 and was handed the tail would lose exactly what it asked for.
+    // Following the reported offsets must then reconstruct the log exactly — no gap, no repeat.
+    let tools = Tools::with_ring(1024 * 1024);
+    let id = settled_job(&tools, "seq 1 30000").await;
+    let job = tools.registry.get(&id).expect("registered");
+    let end = job.output.end_offset();
+    let whole = job.output.text();
+
+    let first = (tools.output.execute)(
+        serde_json::json!({ "id": id, "offset": 0, "wait_ms": 5_000 }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("read");
+    let first_text = text_of(&first);
+    assert!(!first.is_error, "{first_text}");
+    assert!(
+        first_text.contains("more bytes are retained"),
+        "a cut delta must say the rest is still there: {first_text}"
+    );
+    // A prefix is returned, so the beginning of the log is present and its end is not.
+    assert!(body_of(&first_text).starts_with("1\n2\n"), "{first_text}");
+    assert!(
+        !body_of(&first_text).contains("30000"),
+        "a delta must not skip ahead to the newest bytes: {first_text}"
+    );
+
+    let mut cursor = 0;
+    let mut rebuilt = String::new();
+    for _ in 0..20 {
+        let read = (tools.output.execute)(
+            serde_json::json!({ "id": id, "offset": cursor, "wait_ms": 5_000 }),
+            ToolRunContext::default(),
+        )
+        .await
+        .expect("read");
+        let text = text_of(&read);
+        assert!(!read.is_error, "{text}");
+        let next = next_offset_of(&text);
+        let body = body_of(&text);
+
+        // The ring still holds the whole log, so it is the ground truth for what these bytes should
+        // be. The one difference allowed is the newline the renderer adds so the next-offset line
+        // does not run into the output; it is terminated text, not an extra byte of the log.
+        let expected = whole
+            .get(usize::try_from(cursor).expect("fits")..usize::try_from(next).expect("fits"))
+            .expect("the offsets must address the retained log");
+        assert!(
+            body == expected || body == format!("{expected}\n"),
+            "the bytes at {cursor} must be the log's bytes there: expected {expected:?}, got {body:?}"
+        );
+
+        assert!(
+            next > cursor || cursor >= end,
+            "a read must make progress: {text}"
+        );
+        rebuilt.push_str(expected);
+        cursor = next;
+        if cursor >= end {
+            break;
+        }
+    }
+
+    assert_eq!(cursor, end, "following the offsets must reach the end");
+    // Every byte of the log was delivered exactly once, in order.
+    assert!(
+        rebuilt == whole,
+        "the deltas must reconstruct the log exactly (head={} end={} whole_len={} rebuilt_len={})",
+        job.output.head_offset(),
+        end,
+        whole.len(),
+        rebuilt.len()
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_offset_is_an_error_and_null_is_not() {
+    // A silently coerced offset is the failure this argument exists to prevent: a caller that meant
+    // to resume from 1000 and was read from 0 would treat old bytes as new. Null, on the other hand,
+    // is how an interpolated optional field arrives, so it means "omitted".
+    let tools = Tools::new();
+    let id = settled_job(&tools, "echo checked").await;
+
+    for bad in [serde_json::json!(-1), serde_json::json!("1000")] {
+        let result = (tools.output.execute)(
+            serde_json::json!({ "id": id, "offset": bad }),
+            ToolRunContext::default(),
+        )
+        .await
+        .expect("answered");
+        assert!(result.is_error, "{}", text_of(&result));
+        assert!(
+            text_of(&result).contains("`offset`"),
+            "{}",
+            text_of(&result)
+        );
+    }
+
+    let null = (tools.output.execute)(
+        serde_json::json!({ "id": id, "offset": serde_json::Value::Null }),
+        ToolRunContext::default(),
+    )
+    .await
+    .expect("read");
+    assert!(!null.is_error, "{}", text_of(&null));
+    assert!(text_of(&null).contains("checked"), "{}", text_of(&null));
+}
+
+#[test]
+fn the_output_schema_advertises_the_offset_argument() {
+    // The model can only pass an argument the schema shows it. `offset` is optional, so it must not
+    // appear in `required`.
+    let tools = Tools::new();
+
+    assert_eq!(
+        tools.output.parameters["properties"]["offset"]["type"],
+        "number"
+    );
+    assert_eq!(
+        tools.output.parameters["required"],
+        serde_json::json!(["id"])
+    );
+    assert!(
+        tools.output.parameters["properties"]["offset"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("next offset")),
+        "the description must tell the model where the value comes from"
+    );
+}
