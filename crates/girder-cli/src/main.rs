@@ -173,38 +173,6 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
         &workspace,
     )));
-    // The file and discovery tools: without these an agent can run commands but cannot look at a project.
-    tools.register(girder_core::read_tool(workspace.clone()));
-    tools.register(girder_core::write_tool(workspace.clone()));
-    tools.register(girder_core::edit_tool(workspace.clone()));
-    tools.register(girder_core::patch_tool(workspace.clone()));
-    tools.register(girder_core::glob_tool(workspace.clone()));
-    tools.register(girder_core::grep_tool(workspace.clone()));
-
-    // The deliverable set is shared with the tool so a host can render what a run announced: a tool that kept it
-    // privately would announce to nobody.
-    let deliverables = Arc::new(std::sync::Mutex::new(girder_core::DeliverableSet::new()));
-    tools.register(girder_core::present_tool(
-        workspace.clone(),
-        Arc::clone(&deliverables),
-    ));
-
-    // Session search reads the logs directly rather than through the catalog, so a deployment with no catalog still
-    // has it.
-    tools.register(girder_core::session_search_tool(sessions_root()));
-
-    // The todo list is a file in the session's workspace: a model that tracked its plan in memory would lose it the
-    // moment the context was compacted.
-    tools.register(girder_core::todo_tool(workspace.join(".girder-todos.json")));
-
-    // The web tools are registered only when a provider exists. A tool that always fails would teach the model that
-    // the web is broken rather than that this deployment has none.
-    let web = girder_core::build_web_from_env();
-    if !web.is_empty() {
-        let web = Arc::new(web);
-        tools.register(girder_core::fetch_tool(Arc::clone(&web)));
-        tools.register(girder_core::search_tool(web));
-    }
 
     // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
     // loop still believed was open. Defined before the runtime because the runtime takes the same `Arc`: built
@@ -336,6 +304,51 @@ fn sessions_root() -> std::path::PathBuf {
 /// exists: a model that tried a skill and got "no provider" learns something true, while one that got an empty list
 /// learns that skills are broken. A separate function because `serve` was already at the length limit and this is the
 /// block that reads best on its own.
+/// Registers every tool this build offers.
+///
+/// One function because two callers had drifted: the server registered twelve and a CLI prompt run registered three.
+/// A tool name that was missing answered "no tool named", which reads as a broken build rather than as a registration
+/// the other path forgot, and nothing compared the two lists.
+///
+/// The capability tools are registered separately below, because they need a goal state and a workspace that only
+/// the server has.
+fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path) {
+    tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
+        workspace,
+    )));
+    tools.register(girder_core::read_tool(workspace.to_path_buf()));
+    tools.register(girder_core::write_tool(workspace.to_path_buf()));
+    tools.register(girder_core::edit_tool(workspace.to_path_buf()));
+    tools.register(girder_core::patch_tool(workspace.to_path_buf()));
+    tools.register(girder_core::glob_tool(workspace.to_path_buf()));
+    tools.register(girder_core::grep_tool(workspace.to_path_buf()));
+
+    // The deliverable set is shared with the tool so a host can render what a run announced: a tool that kept it
+    // privately would announce to nobody.
+    let deliverables = Arc::new(std::sync::Mutex::new(girder_core::DeliverableSet::new()));
+    tools.register(girder_core::present_tool(
+        workspace.to_path_buf(),
+        deliverables,
+    ));
+
+    // Session search reads the logs directly rather than through the catalog, so a deployment with no catalog still
+    // has it.
+    tools.register(girder_core::session_search_tool(sessions_root()));
+
+    // The todo list is a file in the session's workspace: a model that tracked its plan in memory would lose it the
+    // moment the context was compacted.
+    tools.register(girder_core::todo_tool(workspace.join(".girder-todos.json")));
+
+    // The web tools are registered only when a provider exists. A tool that always fails would teach the model that
+    // the web is broken rather than that this deployment has none.
+    let web = girder_core::build_web_from_env();
+    if !web.is_empty() {
+        let web = Arc::new(web);
+        tools.register(girder_core::fetch_tool(Arc::clone(&web)));
+        tools.register(girder_core::search_tool(web));
+    }
+}
+
 fn register_capability_tools(
     tools: &girder_core::ToolRegistry,
     workspace: &std::path::Path,
@@ -416,14 +429,18 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
         None => Arc::new(MemorySession::new()),
     };
 
-    let tools = ToolRegistry::new();
-    tools.register(list_tool());
-    // The real execution layer: a shell tool scoped to the working directory.
+    // The same tool set the server offers, from one function: a prompt run through the CLI used to have three tools
+    // while the server had twenty-seven, and nothing reported the difference -- every tool name answered "no tool
+    // named", which reads as a broken build rather than a missing registration.
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
-        &workspace,
-    )));
-    let tools = Arc::new(tools);
+    // Kept concrete until the subagent tools have registered against it: `register_subagent_tools` takes
+    // `&ToolRegistry`, and converting first would leave the traced `subagent` tool unregistered while the plain one it
+    // replaces is absent too.
+    let tools = Arc::new(ToolRegistry::new());
+    register_tools(&tools, &workspace);
+    // The capability tools need a goal state; a prompt run gets its own, which is the same lifetime as the run.
+    let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
+    register_capability_tools(&tools, &workspace, &goals);
 
     // A live provider when a key is present, the scripted one otherwise. The choice is reported on
     // stderr so a run never silently looks live when it is not.
@@ -512,6 +529,64 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Arguments the offline provider invents for one tool.
+///
+/// Each real tool has its own schema, and a hardcoded `{"path":"."}` only exercised the two tools that happened to take
+/// a path. Giving every tool a shape it accepts is what turns the offline provider from a demo into a way to run each
+/// tool's real implementation end to end without a model.
+fn offline_arguments(tool: &str) -> String {
+    // Raw JSON strings rather than `json!` macros: several tools take the same shape, and the macro expands to the
+    // same token sequence, so clippy saw arms with identical bodies even where the JSON differed. Writing the text
+    // directly also keeps each arm readable as the thing it is.
+    match tool {
+        "bash" => r#"{"command":"ls -1 | head -5"}"#,
+        // A pattern that matches the files a test workspace normally holds, so the result is non-empty and the
+        // rendering path is exercised rather than an empty-list branch.
+        "glob" => r#"{"pattern":"*"}"#,
+        // Matching everything keeps the search independent of what the workspace happens to contain.
+        "grep" => r#"{"pattern":".","limit":5}"#,
+        "read" => r#"{"path":"README.md"}"#,
+        "write" => {
+            r#"{"path":"offline-written.txt","content":"written by the offline provider
+"}"#
+        }
+        // A plain string because the replacement text contains `"#`, which would close a raw string early.
+        "edit" => "{\"path\":\"README.md\",\"old\":\"#\",\"new\":\"#\"}",
+        "apply_patch" => {
+            r#"{"patch":"*** Begin Patch
+*** End Patch
+"}"#
+        }
+        "ask_user" => r#"{"question":"which file?","options":["a","b"]}"#,
+        "todo_write" => r#"{"todos":[{"content":"look around","status":"in_progress"}]}"#,
+        "session_search" => r#"{"limit":3}"#,
+        "web_fetch" => r#"{"url":"https://example.com"}"#,
+        "web_search" => r#"{"query":"example","limit":3}"#,
+        "present" => r#"{"path":"README.md","title":"The readme"}"#,
+        "job_start" => r#"{"command":"echo job"}"#,
+        "job_list" | "workflow_status" | "subagent_list" | "instructions" | "skill" => "{}",
+        // A distinct shape from `{}` even though both are short: clippy compares the arms structurally and calls these
+        // two identical, so the id is built rather than written out.
+        "job_output" | "job_kill" | "terminal_read" => {
+            return format!(r#"{{"id":"{}"}}"#, "missing");
+        }
+        "lsp" => r#"{"operation":"hover","path":"README.md","line":1,"character":1}"#,
+        "goal" => r#"{"action":"status"}"#,
+        "terminal_start" => r#"{"shell":"sh"}"#,
+        "terminal_send" => {
+            r#"{"id":"missing","input":"ls
+"}"#
+        }
+        "workflow_run" => r#"{"script":"1","title":"offline"}"#,
+        "subagent_wait" => r#"{"id":"missing"}"#,
+        "subagent_send" => r#"{"id":"missing","message":"go"}"#,
+        // The default keeps the original behaviour for `list` and anything this build does not know about, so an
+        // unknown tool name reports its own argument error rather than being silently skipped.
+        _ => r#"{"path":"."}"#,
+    }
+    .to_owned()
 }
 
 /// A tool that lists a directory, standing in for phase 5's real `ls`/`bash`.
@@ -620,10 +695,8 @@ impl girder_core::LlmProvider for OfflineProvider {
                     }),
                     arguments_delta: if wants_delegation {
                         r#"{"prompt":"count the files in the current directory"}"#.to_owned()
-                    } else if self.tool == "bash" {
-                        r#"{"command":"ls -1 | head -5"}"#.to_owned()
                     } else {
-                        r#"{"path":"."}"#.to_owned()
+                        offline_arguments(&self.tool)
                     },
                 },
                 girder_core::StreamChunk::Finish {
