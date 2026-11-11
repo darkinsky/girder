@@ -797,11 +797,16 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 /// "not implemented" for something that works. Three names were removed from this list the moment they
 /// were implemented (`projections`, `rename`, `delete`) and two more (`selectModel`, `modelCatalog`)
 /// when the route table gave them something to answer with.
+/// Session methods this build declares but does not implement.
+///
+/// Every name here must be genuinely absent. `fork` was on this list for several rounds after it was implemented, and
+/// nothing noticed because `dispatch` prefers a handler: a client reading the declaration would have shown "not
+/// implemented" for a method that works. The list is a promise about what is missing, so a name that works is a lie
+/// even when the behaviour is right.
 const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
     "search",
     "openWorkspacePath",
     "workspacePathApplications",
-    "fork",
     "updateQueue",
     "stream",
     "resume",
@@ -1280,6 +1285,15 @@ pub fn register_job_methods(
 
 /// Every method name this build can register, as `namespace.method`.
 ///
+/// The session methods this build declares but does not implement.
+///
+/// Exported so a test can check every name rather than a hand-picked handful: the probe list used to be written by
+/// hand, which is why `fork` stayed declared as missing for several rounds after it worked.
+#[must_use]
+pub fn declared_gaps() -> &'static [&'static str] {
+    UNIMPLEMENTED_SESSION_METHODS
+}
+
 /// A single list so a page or a test can check what it offers against what exists. It is built from
 /// the same registration functions the server uses, so the two cannot drift.
 #[must_use]

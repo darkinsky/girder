@@ -301,7 +301,7 @@ pub use remote::{
     DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionAddress,
     SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
-    SessionPromptValue, SessionRecord, SessionSummary, default_registry,
+    SessionPromptValue, SessionRecord, SessionSummary, declared_gaps, default_registry,
     register_attachment_method, register_command_methods, register_extension_methods,
     register_job_methods, register_model_catalog, register_projection_methods,
     register_select_model, register_session_methods, register_workspace_methods,

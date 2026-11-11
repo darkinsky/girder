@@ -433,7 +433,11 @@ async fn a_write_after_a_shell_command_warns_about_the_invalidated_read() {
     .await
     .expect("ran");
 
-    assert!(text_of(&result).contains("[observation]"), "{:?}", result.content);
+    assert!(
+        text_of(&result).contains("[observation]"),
+        "{:?}",
+        result.content
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

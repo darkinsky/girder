@@ -1384,12 +1384,13 @@ async fn every_method_in_one_registry_exists_in_the_other() {
         );
     }
 
-    // And every name outside that set must report a gap rather than a typo.
+    // And every declared gap must actually be a gap.
     //
-    // `projections`, `rename`, `delete`, `selectModel`, `modelCatalog`, and `fork` were all on this
-    // list until they were implemented. This assertion is the one that notices: probing a name that
-    // works returns its handler's own error, not NOT_IMPLEMENTED.
-    for probe in ["search", "stream", "resume", "archive"] {
+    // The probes are read from the declaration rather than written by hand, because the hand-written list is what let
+    // `fork` stay declared as missing for several rounds after it worked: a probe list that omits a name cannot check
+    // it, and nothing else noticed. This test now covers whatever the declaration says, so a name that starts working
+    // fails here on the round it starts working.
+    for probe in girder_core::declared_gaps() {
         let error = with_runtime
             .dispatch("session", probe, call(json!({})))
             .await
