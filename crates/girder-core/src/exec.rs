@@ -425,10 +425,17 @@ pub fn bash_tool(policy: PathPolicy) -> crate::tools::ToolDefinition {
                         }
                     }
 
-                    let options = ExecOptions::default()
+                    let mut options = ExecOptions::default()
                         .with_policy(policy)
                         // A command a model asked to run must not inherit the harness's own credentials.
                         .with_cleared_environment();
+                    // The command runs in the session's workspace, which is what "this project" means to a model. A
+                    // tool that inherited the process's directory instead ran in whatever the harness was started
+                    // from -- for a test binary, the repository root, where a command writing `a.txt` overwrote a
+                    // tracked file.
+                    if let Some(workspace) = &ctx.workspace {
+                        options = options.with_cwd(workspace.clone());
+                    }
                     match run_bash(&command, &options, &ctx.cancel).await {
                         Ok(output) => Ok(with_invalidation_notice(
                             crate::tools::ToolResult {

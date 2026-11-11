@@ -350,9 +350,16 @@ async fn an_unparseable_patch_is_reported() {
 // ---- bash closes the observation bypass ---------------------------------------------------------
 
 /// A context that carries an observation session and can drive a shell command.
-fn bash_context(observations: Arc<ObservationSession>) -> ToolRunContext {
+fn bash_context(
+    observations: Arc<ObservationSession>,
+    workspace: &std::path::Path,
+) -> ToolRunContext {
+    // The workspace is part of the context because the shell tool runs the command in it. Without it the command
+    // executes in whatever directory the test binary was started from -- this repository -- and a test that writes
+    // `a.txt` overwrites a tracked file. That happened once and the file had to be restored from git.
     ToolRunContext {
         observations: Some(observations),
+        workspace: Some(workspace.to_path_buf()),
         ..Default::default()
     }
 }
@@ -379,7 +386,7 @@ async fn a_write_after_a_shell_command_is_not_checked_against_a_stale_read() {
     let bash = bash_tool(PathPolicy::new(&dir));
     let result = (bash.execute)(
         serde_json::json!({"command": "echo rewritten-by-shell > a.txt"}),
-        bash_context(Arc::clone(&observations)),
+        bash_context(Arc::clone(&observations), &dir),
     )
     .await
     .expect("ran");
@@ -428,7 +435,7 @@ async fn a_write_after_a_shell_command_warns_about_the_invalidated_read() {
     let bash = bash_tool(PathPolicy::new(&dir));
     let result = (bash.execute)(
         serde_json::json!({"command": "echo touched > a.txt"}),
-        bash_context(Arc::clone(&observations)),
+        bash_context(Arc::clone(&observations), &dir),
     )
     .await
     .expect("ran");
@@ -451,7 +458,7 @@ async fn a_read_after_a_shell_command_is_observed_again() {
     let bash = bash_tool(PathPolicy::new(&dir));
     (bash.execute)(
         serde_json::json!({"command": "echo two > a.txt"}),
-        bash_context(Arc::clone(&observations)),
+        bash_context(Arc::clone(&observations), &dir),
     )
     .await
     .expect("ran");
