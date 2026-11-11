@@ -123,6 +123,7 @@ mod time;
 mod tools;
 mod typert;
 mod web;
+mod web_tools;
 mod workflow;
 mod workspace_path;
 
@@ -365,9 +366,10 @@ pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
 };
 pub use web::{
-    FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider, SearchRequest,
-    SearchResult, SearchSource, Web, WebError,
+    EndpointProvider, FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider,
+    SearchRequest, SearchResult, SearchSource, Web, WebError, build_web_from_env,
 };
+pub use web_tools::{DEFAULT_SOURCES as WEB_DEFAULT_SOURCES, fetch_tool, search_tool};
 pub use workflow::{
     AgentRecord as WorkflowAgentRecord, Engine as WorkflowEngine, Event as WorkflowEvent,
     Phase as WorkflowPhase, Registry as WorkflowRegistry, Run as WorkflowRun, RunId,

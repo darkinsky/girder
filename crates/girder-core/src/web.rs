@@ -489,3 +489,154 @@ impl Web {
         }
     }
 }
+
+impl Web {
+    /// Whether no provider is registered at all.
+    ///
+    /// A caller uses this to decide whether to offer the web tools: a tool that always fails teaches the model that
+    /// the web is broken rather than that this deployment has none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.search
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+            && self
+                .fetch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+    }
+}
+
+/// Builds a web capability from the environment.
+///
+/// The providers are chosen by what the environment configures: a search endpoint and a fetch endpoint, each optional.
+/// An unset one means this deployment does not offer that capability, which is the honest reading — it is not a
+/// failure to configure, and a caller that treated it as one would refuse to start.
+#[must_use]
+pub fn build_web_from_env() -> Web {
+    let web = Web::new();
+    if let Ok(endpoint) = std::env::var("GIRDER_FETCH_ENDPOINT")
+        && !endpoint.trim().is_empty()
+    {
+        // A single provider serves both when one endpoint is configured: the common shape is one service that
+        // searches and fetches.
+        let provider = Arc::new(EndpointProvider {
+            name: "env".to_owned(),
+            endpoint: endpoint.clone(),
+        });
+        let _ = web.register_fetch(Arc::clone(&provider) as Arc<dyn FetchProvider>);
+        let _ = web.register_search(provider);
+    }
+    web
+}
+
+/// A provider that talks to one HTTP endpoint.
+///
+/// Deliberately minimal: it posts a JSON request and reads a JSON answer. A deployment with a real search service
+/// implements [`SearchProvider`] and [`FetchProvider`] itself, and this exists so the tools are usable without one.
+pub struct EndpointProvider {
+    /// Its name, for an error message.
+    pub name: String,
+    /// The base URL.
+    pub endpoint: String,
+}
+
+impl FetchProvider for EndpointProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn fetch(
+        &self,
+        request: FetchRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> crate::scope::BoxFut<Result<FetchResult, WebError>> {
+        let endpoint = self.endpoint.clone();
+        let name = self.name.clone();
+        Box::pin(async move {
+            let response = reqwest::Client::new()
+                .get(&endpoint)
+                .query(&[("url", request.url.as_str())])
+                .send()
+                .await
+                .map_err(|error| WebError::Provider {
+                    provider: name.clone(),
+                    reason: error.to_string(),
+                })?;
+            let status = response.status().as_u16();
+            let body = response.text().await.map_err(|error| WebError::Provider {
+                provider: name,
+                reason: error.to_string(),
+            })?;
+            Ok(FetchResult {
+                url: request.url,
+                status_code: status,
+                body: FetchBody::Text { text: body },
+                truncated: false,
+            })
+        })
+    }
+}
+
+impl SearchProvider for EndpointProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn search(
+        &self,
+        request: SearchRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> crate::scope::BoxFut<Result<SearchResult, WebError>> {
+        let endpoint = self.endpoint.clone();
+        let name = self.name.clone();
+        Box::pin(async move {
+            let response = reqwest::Client::new()
+                .get(&endpoint)
+                .query(&[("q", request.query.as_str())])
+                .send()
+                .await
+                .map_err(|error| WebError::Provider {
+                    provider: name.clone(),
+                    reason: error.to_string(),
+                })?;
+            let value: serde_json::Value =
+                response.json().await.map_err(|error| WebError::Provider {
+                    provider: name,
+                    reason: error.to_string(),
+                })?;
+            let sources = value
+                .get("results")
+                .and_then(serde_json::Value::as_array)
+                .map(|results| {
+                    results
+                        .iter()
+                        .filter_map(|result| {
+                            let url = result.get("url")?.as_str()?.to_owned();
+                            Some(SearchSource {
+                                url,
+                                title: result
+                                    .get("title")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_owned),
+                                snippet: result
+                                    .get("snippet")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_owned),
+                                summary: None,
+                                published_at: None,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(SearchResult {
+                content: None,
+                sources,
+                truncated: false,
+            })
+        })
+    }
+}

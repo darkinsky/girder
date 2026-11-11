@@ -181,6 +181,15 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     tools.register(girder_core::glob_tool(workspace.clone()));
     tools.register(girder_core::grep_tool(workspace.clone()));
 
+    // The web tools are registered only when a provider exists. A tool that always fails would teach the model that
+    // the web is broken rather than that this deployment has none.
+    let web = girder_core::build_web_from_env();
+    if !web.is_empty() {
+        let web = Arc::new(web);
+        tools.register(girder_core::fetch_tool(Arc::clone(&web)));
+        tools.register(girder_core::search_tool(web));
+    }
+
     let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
         provider,
         tools: Arc::new(tools) as Arc<dyn girder_core::ToolRegistryView>,
