@@ -54,6 +54,21 @@ pub enum RemoteError {
         method: String,
     },
 
+    /// The access policy refused the call.
+    ///
+    /// Distinct from `UnknownMethod` and `InvalidArguments`: the method exists and the arguments are fine, and the
+    /// caller needs to know that it is not permitted rather than that it got something wrong. A client that saw a
+    /// generic failure would retry; this one can show the reason to its operator.
+    #[error("`{namespace}.{method}` refused: {reason}")]
+    Refused {
+        /// Requested namespace.
+        namespace: String,
+        /// Requested method.
+        method: String,
+        /// Why, in words the caller can show.
+        reason: String,
+    },
+
     /// The arguments did not match the method's request type.
     #[error("invalid arguments for `{namespace}.{method}`: {message}")]
     InvalidArguments {
@@ -78,6 +93,9 @@ impl RemoteError {
             Self::UnknownMethod { .. } => "UNKNOWN_METHOD",
             Self::NotImplemented { .. } => "NOT_IMPLEMENTED",
             Self::InvalidArguments { .. } => "INVALID_ARGUMENTS",
+            // Its own code rather than FAILED: a client that branches on this one can stop retrying, which is the whole
+            // difference between a permission problem and a transient one.
+            Self::Refused { .. } => "REFUSED",
             Self::Failed(_) => "FAILED",
         }
     }
@@ -203,6 +221,16 @@ pub struct RemoteRegistry {
     /// Recorded explicitly so dispatch can distinguish "not implemented" from "typo". A hardcoded
     /// list is the honest option: guessing from a missing entry cannot tell the two apart.
     known_unimplemented: Vec<(String, String)>,
+    /// What each method declares about itself, for the policy to consult.
+    ///
+    /// Registered beside the handler so a declaration cannot drift from the method it describes: a separate table would
+    /// eventually describe a method that had changed, and the policy would be judging the old one.
+    declarations: BTreeMap<(String, String), crate::access::Declaration>,
+    /// Who may call what, when a deployment mounted a policy.
+    ///
+    /// `None` means none was configured, which is different from a policy that allows: the latter would hide the fact
+    /// that nothing was set up.
+    policy: Option<std::sync::Arc<dyn crate::access::Policy>>,
 }
 
 impl RemoteRegistry {
@@ -210,6 +238,64 @@ impl RemoteRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mounts an access policy.
+    ///
+    /// Takes the registry by value for the builder shape the constructors use: a policy mounted on a clone would apply
+    /// to that clone, and the server would keep dispatching through the original.
+    #[must_use]
+    pub fn with_policy(mut self, policy: std::sync::Arc<dyn crate::access::Policy>) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Declares what one method does, for the policy.
+    pub fn declare(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        declaration: crate::access::Declaration,
+    ) {
+        self.declarations
+            .insert((namespace.to_owned(), method.to_owned()), declaration);
+    }
+
+    /// Asks the policy whether this call may proceed.
+    ///
+    /// A method with no declaration is treated as a read of its own namespace: that is the least privilege a method can
+    /// plausibly need, and a deployment that wants a stricter answer declares one. Treating it as a write instead would
+    /// refuse every listing the moment a read-only policy was mounted, which is the opposite of what such a policy is
+    /// for.
+    fn authorise(
+        &self,
+        namespace: &str,
+        method: &str,
+        call: &RemoteCall,
+    ) -> Result<(), RemoteError> {
+        let Some(policy) = &self.policy else {
+            return Ok(());
+        };
+        let key = (namespace.to_owned(), method.to_owned());
+        let declaration = self
+            .declarations
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| crate::access::Declaration::read(namespace.to_owned()));
+        let request = crate::access::Request {
+            peer: call.peer.clone(),
+            method: format!("{namespace}.{method}"),
+            access: declaration.access,
+            resources: declaration.resources,
+        };
+        match policy.decide(&request) {
+            crate::access::Decision::Allow => Ok(()),
+            crate::access::Decision::Refuse { reason } => Err(RemoteError::Refused {
+                namespace: namespace.to_owned(),
+                method: method.to_owned(),
+                reason,
+            }),
+        }
     }
 
     /// Registers a method.
@@ -279,6 +365,12 @@ impl RemoteRegistry {
         call: RemoteCall,
     ) -> Result<Value, RemoteError> {
         let key = (namespace.to_owned(), method.to_owned());
+
+        // Checked before the handler runs, so a method that never thought about access still cannot be reached by a
+        // peer the policy refuses. A handler-local check would encode the rule once per method and the first one
+        // somebody forgot would be the hole.
+        self.authorise(namespace, method, &call)?;
+
         if let Some(handler) = self.methods.get(&key) {
             return handler(call).await;
         }

@@ -50,6 +50,7 @@
 //! assert_eq!(greeter.greet(), "hello");
 //! ```
 
+mod access;
 mod agent;
 mod agent_loop;
 // The derive emits `::girder_core::…`, which cannot resolve inside `girder-core` itself. This alias
@@ -145,6 +146,10 @@ mod workflow_tool;
 mod workspace_files_rpc;
 mod workspace_path;
 
+pub use access::{
+    Access, AllowList, Decision as AccessDecision, Declaration, DenyAll, Policy, ReadOnly,
+    Request as AccessRequest, Resource as AccessResource,
+};
 pub use agent::{
     Agent, AgentHandle, AgentOptions, AgentSpec, ModelSelection, ModelSelectionState,
     ModelSelectionView, SelectionError, SelectionSource, validate as validate_model_selection,
