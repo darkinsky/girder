@@ -82,6 +82,7 @@ mod goal;
 mod home_paths;
 mod inbox;
 mod instructions;
+mod job_tools;
 mod jobs;
 mod json;
 mod launch_environment;
@@ -122,6 +123,7 @@ mod subagent_providers;
 mod subprocess;
 mod terminal;
 mod time;
+mod todo_tool;
 mod tools;
 mod typert;
 mod web;
@@ -211,6 +213,9 @@ pub use instructions::{
     INSTRUCTION_FILE_NAME, InstructionFile, InstructionLimits, InstructionState, LoadedInstruction,
     RenderedInstructions, TruncatedInstruction, USER_GLOBAL_DIRECTORY, digest,
     discover as discover_instructions, load as load_instructions, render as render_instructions,
+};
+pub use job_tools::{
+    job_kill_tool, job_list_tool, job_output_tool, job_start_tool, register_job_tools,
 };
 pub use jobs::{
     Channel as JobChannel, Job, JobChunk, JobError, JobId, JobProducer, JobRegistry,
@@ -361,6 +366,7 @@ pub use time::{
     days_from_civil, days_in_month, format_instant, format_span, is_four_digit_year, is_leap_year,
     parse_instant,
 };
+pub use todo_tool::{Status as TodoStatus, Todo, read_todos, todo_tool};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,

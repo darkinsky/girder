@@ -193,6 +193,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // has it.
     tools.register(girder_core::session_search_tool(sessions_root()));
 
+    // The todo list is a file in the session's workspace: a model that tracked its plan in memory would lose it the
+    // moment the context was compacted.
+    tools.register(girder_core::todo_tool(workspace.join(".girder-todos.json")));
+
     // The web tools are registered only when a provider exists. A tool that always fails would teach the model that
     // the web is broken rather than that this deployment has none.
     let web = girder_core::build_web_from_env();
@@ -202,9 +206,12 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         tools.register(girder_core::search_tool(web));
     }
 
+    // Held as an `Arc` so the job tools can register against the same registry the runtime uses: two registries would
+    // produce two lists that disagree about what is running.
+    let tools = Arc::new(tools);
     let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
         provider,
-        tools: Arc::new(tools) as Arc<dyn girder_core::ToolRegistryView>,
+        tools: Arc::clone(&tools) as Arc<dyn girder_core::ToolRegistryView>,
         bus: Arc::clone(&bus),
         model: cli.model.clone(),
         max_turns: cli.max_turns,
@@ -228,6 +235,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Background jobs, with the registry the server keeps for this process.
     let jobs = Arc::new(girder_core::JobRegistry::new(256 * 1024));
     girder_core::register_job_methods(&mut remote, &jobs);
+
+    // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
+    // them against a second registry would produce two lists that disagree about what is running.
+    girder_core::register_job_tools(&tools, Arc::clone(&jobs));
 
     // Workspace registrations: the directories a session may run in.
     let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
