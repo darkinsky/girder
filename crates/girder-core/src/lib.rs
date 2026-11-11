@@ -69,6 +69,7 @@ mod chunked_list;
 mod code_language;
 mod commands;
 mod compaction;
+mod compaction_hook;
 mod config;
 mod credentials;
 mod deliverable;
@@ -180,6 +181,7 @@ pub use compaction::{
     is_checkpoint, needs_compaction, pairing_balanced_at, select as select_compaction,
     summary_request, transcript_for_summary,
 };
+pub use compaction_hook::{CompactionPolicy, Plan as CompactionPlan, history_cost, message_cost};
 pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
     FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,

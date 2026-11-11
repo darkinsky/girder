@@ -239,7 +239,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
     // them against a second registry would produce two lists that disagree about what is running.
     girder_core::register_job_tools(&tools, Arc::clone(&jobs));
-    register_capability_tools(&tools);
+    // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
+    // loop still believed was open.
+    let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
+    register_capability_tools(&tools, &workspace, &goals);
 
     // Workspace registrations: the directories a session may run in.
     let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
@@ -312,7 +315,18 @@ fn sessions_root() -> std::path::PathBuf {
 /// exists: a model that tried a skill and got "no provider" learns something true, while one that got an empty list
 /// learns that skills are broken. A separate function because `serve` was already at the length limit and this is the
 /// block that reads best on its own.
-fn register_capability_tools(tools: &girder_core::ToolRegistry) {
+fn register_capability_tools(
+    tools: &girder_core::ToolRegistry,
+    workspace: &std::path::Path,
+    goals: &std::sync::Arc<std::sync::Mutex<girder_core::GoalState>>,
+) {
+    // The instruction files are the project's own rules; a model that cannot see them cannot follow them.
+    tools.register(girder_core::instructions_tool(
+        workspace.to_path_buf(),
+        std::env::var("HOME").ok().map(std::path::PathBuf::from),
+    ));
+    tools.register(girder_core::goal_tool(std::sync::Arc::clone(goals)));
+
     tools.register(girder_core::skill_tool(Arc::new(
         girder_core::SkillRegistry::new(),
     )));

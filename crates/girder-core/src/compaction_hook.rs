@@ -196,9 +196,7 @@ impl CompactionPolicy {
         };
         let cut = if self.require_pairing {
             // Keeping more than the floor is legal; keeping fewer is not, so search downwards.
-            (earliest_cut..=floor_cut)
-                .rev()
-                .find(|cut| balanced(*cut))
+            (earliest_cut..=floor_cut).rev().find(|cut| balanced(*cut))
         } else {
             // Keeping fewer than the floor is legal; keeping more is not, so search upwards.
             (floor_cut..len).find(|cut| balanced(*cut))
@@ -358,7 +356,10 @@ fn scan_pairing(messages: &[ChatMessage]) -> Pairing {
         open_after.push(open.len());
     }
 
-    Pairing { open_after, orphans }
+    Pairing {
+        open_after,
+        orphans,
+    }
 }
 
 /// Applies one message to the open-call set, reporting whether it answered nothing.
