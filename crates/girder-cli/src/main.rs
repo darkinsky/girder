@@ -181,6 +181,18 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     tools.register(girder_core::glob_tool(workspace.clone()));
     tools.register(girder_core::grep_tool(workspace.clone()));
 
+    // The deliverable set is shared with the tool so a host can render what a run announced: a tool that kept it
+    // privately would announce to nobody.
+    let deliverables = Arc::new(std::sync::Mutex::new(girder_core::DeliverableSet::new()));
+    tools.register(girder_core::present_tool(
+        workspace.clone(),
+        Arc::clone(&deliverables),
+    ));
+
+    // Session search reads the logs directly rather than through the catalog, so a deployment with no catalog still
+    // has it.
+    tools.register(girder_core::session_search_tool(sessions_root()));
+
     // The web tools are registered only when a provider exists. A tool that always fails would teach the model that
     // the web is broken rather than that this deployment has none.
     let web = girder_core::build_web_from_env();
@@ -267,17 +279,24 @@ fn resolve_watched(watch: &[String]) -> Vec<&'static str> {
 }
 
 /// Where sessions live: `GIRDER_SESSIONS`, or `~/.girder/sessions`.
-fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {
-    let root = std::env::var("GIRDER_SESSIONS").map_or_else(
+/// Where session logs live.
+///
+/// One function rather than two expressions: the catalog and the search tool must agree, and two spellings of the same
+/// default is how a search starts reading a directory nothing writes to.
+fn sessions_root() -> std::path::PathBuf {
+    std::env::var("GIRDER_SESSIONS").map_or_else(
         |_| {
             std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
                 .join(".girder")
                 .join("sessions")
         },
         std::path::PathBuf::from,
-    );
+    )
+}
+
+fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {
     // A missing directory lists as empty rather than erroring: a fresh install has no sessions.
-    Arc::new(girder_core::DirectoryCatalog::new(root))
+    Arc::new(girder_core::DirectoryCatalog::new(sessions_root()))
 }
 
 /// The live provider when a key is present, the scripted one otherwise.
