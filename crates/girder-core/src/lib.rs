@@ -63,6 +63,7 @@ pub mod api_session;
 mod approval;
 mod atomic_write;
 mod attachment;
+mod attachment_rpc;
 mod boot;
 mod brand;
 mod chunked_list;
@@ -79,6 +80,7 @@ mod extensions;
 mod fiber;
 mod file_tools;
 mod fs;
+mod fs_rpc;
 mod goal;
 mod goal_tool;
 mod home_paths;
@@ -115,6 +117,7 @@ mod search_tools;
 mod service;
 mod session;
 mod session_query;
+mod session_query_rpc;
 mod session_search_tool;
 mod shell;
 mod skill;
@@ -160,6 +163,7 @@ pub use attachment::{
     Limits as AttachmentLimits, MemoryStore, admit_batch, admit_image, decode_base64_canonical,
     detect_media_type, encode_base64, storage_key as attachment_storage_key, store_batch,
 };
+pub use attachment_rpc::register_attachment_upload_method;
 pub use boot::{
     BootConfig, BootError, BootReport, Booted, DEFAULT_ENDPOINT, DEFAULT_MODEL,
     Outcome as BootOutcome, boot,
@@ -210,6 +214,7 @@ pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
 };
+pub use fs_rpc::{DEFAULT_LIST_LIMIT as FS_LIST_LIMIT, register_fs_methods};
 pub use girder_macros::{Typert, remote};
 pub use goal::{
     Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
@@ -330,6 +335,10 @@ pub use session_query::{
     Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,
     Query as SearchQuery, Results as SearchResults, matches as search_matches,
     query as search_sessions, run as run_query, search_files, searchable_text,
+};
+pub use session_query_rpc::{
+    DEFAULT_LIMIT as SESSION_SEARCH_DEFAULT_LIMIT, MAX_TEXT_CHARS as SESSION_SEARCH_MAX_TEXT_CHARS,
+    register_session_query_methods,
 };
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
 pub use shell::{
