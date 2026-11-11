@@ -333,8 +333,9 @@ pub use session::{
 };
 pub use session_query::{
     Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,
-    Query as SearchQuery, Results as SearchResults, matches as search_matches,
-    query as search_sessions, run as run_query, search_files, searchable_text,
+    Query as SearchQuery, Results as SearchResults, excerpt as session_excerpt,
+    matches as search_matches, query as search_sessions, run as run_query, search_files,
+    searchable_text,
 };
 pub use session_query_rpc::{
     DEFAULT_LIMIT as SESSION_SEARCH_DEFAULT_LIMIT, MAX_TEXT_CHARS as SESSION_SEARCH_MAX_TEXT_CHARS,

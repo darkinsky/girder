@@ -76,12 +76,13 @@ fn search(args: &serde_json::Value, root: &std::path::Path) -> ToolResult {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        kind: match args.get("kind").and_then(serde_json::Value::as_str) {
-            Some("messages") => Some(Kind::Messages),
-            Some("tools") => Some(Kind::Tools),
-            Some("boundaries") => Some(Kind::Boundaries),
-            _ => None,
-        },
+        // A model that sent an unknown spelling gets no filter rather than an error: it is reasoning about what it
+        // asked for, and a tool result it can read serves better than a refusal it has to decode.
+        kind: args
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .and_then(Kind::from_wire)
+            .filter(|kind| *kind != Kind::Any),
         session: args
             .get("session")
             .and_then(serde_json::Value::as_str)
@@ -134,15 +135,6 @@ fn render(results: &Results, limit: usize) -> String {
 /// Truncated on a character boundary rather than a byte offset: a cut inside a multi-byte character would produce a
 /// replacement character, and the snippet would look like the session was corrupt.
 fn snippet(text: &str) -> String {
-    const MAX: usize = 160;
-    let single_line: String = text
-        .chars()
-        .map(|character| if character == '\n' { ' ' } else { character })
-        .collect();
-    let trimmed = single_line.trim();
-    if trimmed.chars().count() <= MAX {
-        return trimmed.to_owned();
-    }
-    let cut: String = trimmed.chars().take(MAX).collect();
-    format!("{cut}…")
+    // A tool result is rendered one line per hit, so a newline inside an excerpt would break the row.
+    session_query::excerpt(text, 160, true)
 }

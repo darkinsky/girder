@@ -40,6 +40,39 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The wire spelling of this kind, when it has one.
+    ///
+    /// `Any` has no spelling: it is the absence of a filter rather than a value a client sends. A caller that spelled
+    /// it would be asking for a filter that means "no filter", and two ways of saying one thing is how a filter starts
+    /// disagreeing with itself.
+    #[must_use]
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Any => None,
+            Self::Messages => Some("messages"),
+            Self::Tools => Some("tools"),
+            Self::Boundaries => Some("boundaries"),
+        }
+    }
+
+    /// Parses a wire spelling.
+    ///
+    /// Returns `None` for a spelling this build does not know, and the callers turn that into a refusal rather than
+    /// into "no filter": a client that misspelled `messages` asked for a filter and must not silently receive every
+    /// event.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "messages" => Some(Self::Messages),
+            "tools" => Some(Self::Tools),
+            "boundaries" => Some(Self::Boundaries),
+            // `any` is accepted because a client may want to say the absence explicitly, and refusing it would make
+            // the one spelling difference into an error.
+            "any" => Some(Self::Any),
+            _ => None,
+        }
+    }
+
     /// Whether an event belongs to this kind.
     #[must_use]
     pub fn accepts(self, event: &SessionEvent) -> bool {
@@ -167,6 +200,33 @@ pub fn searchable_text(event: &SessionEvent) -> String {
         SessionEvent::SessionTitle { title, .. } => title.clone(),
         _ => String::new(),
     }
+}
+
+/// A one-line excerpt of an event's text, bounded at a character count.
+///
+/// Two callers wanted different bounds and one wanted newlines folded; they now differ by the argument rather than by
+/// implementation, because the earlier pair had already drifted — one folded newlines and used 160 characters, the
+/// other kept them and used 200 — and nothing noticed until both were read side by side.
+///
+/// The cut lands on a character boundary: a byte offset would split a multi-byte character and the excerpt would carry
+/// a replacement character, which reads as a corrupt session rather than a shortened one.
+#[must_use]
+pub fn excerpt(text: &str, max_chars: usize, fold_newlines: bool) -> String {
+    let normalized: String = if fold_newlines {
+        text.chars()
+            .map(|character| if character == '\n' { ' ' } else { character })
+            .collect()
+    } else {
+        text.to_owned()
+    };
+    let trimmed = normalized.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_owned();
+    }
+    let cut: String = trimmed.chars().take(max_chars).collect();
+    // The ellipsis distinguishes "this is short" from "this was cut": without it a reader cannot tell a complete
+    // message from the head of a longer one.
+    format!("{cut}…")
 }
 
 /// Whether one event matches a query.

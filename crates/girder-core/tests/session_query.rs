@@ -5,7 +5,7 @@
 
 use girder_core::{
     Candidate, ContentBlock, SearchKind, SearchQuery, SessionEvent, run_query, search_files,
-    search_matches, searchable_text,
+    search_matches, searchable_text, session_excerpt,
 };
 
 fn message(id: &str, text: &str) -> SessionEvent {
@@ -260,4 +260,62 @@ fn a_file_search_honours_a_session_restriction_without_reading_the_others() {
     assert_eq!(results.hits[0].session, "b");
     assert_eq!(results.sessions_scanned, 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- excerpt ----------------------------------------------------------------------------------
+
+#[test]
+fn a_short_excerpt_is_returned_whole() {
+    assert_eq!(session_excerpt("short", 10, false), "short");
+}
+
+#[test]
+fn a_long_excerpt_is_cut_and_marked() {
+    // Without the ellipsis a reader cannot tell a complete message from the head of a longer one.
+    let text = "x".repeat(50);
+
+    let excerpt = session_excerpt(&text, 10, false);
+
+    assert_eq!(
+        excerpt.chars().count(),
+        11,
+        "ten characters plus the ellipsis"
+    );
+    assert!(excerpt.ends_with('…'));
+}
+
+#[test]
+fn folding_replaces_newlines_with_spaces() {
+    // A tool result is rendered one line per hit, so a newline inside an excerpt would break the row.
+    assert_eq!(session_excerpt("a\nb", 10, true), "a b");
+}
+
+#[test]
+fn not_folding_keeps_newlines() {
+    // A client renders each hit as a block, so a newline is the message's shape rather than a row separator.
+    assert_eq!(session_excerpt("a\nb", 10, false), "a\nb");
+}
+
+#[test]
+fn a_cut_lands_on_a_character_boundary() {
+    // A byte offset would split a multi-byte character and the excerpt would carry a replacement character, which
+    // reads as a corrupt session rather than a shortened one.
+    let text = "字".repeat(100);
+
+    let excerpt = session_excerpt(&text, 5, false);
+
+    assert_eq!(
+        excerpt.chars().count(),
+        6,
+        "five characters plus the ellipsis"
+    );
+    assert!(!excerpt.contains('\u{fffd}'));
+}
+
+#[test]
+fn an_emoji_counts_as_one_character() {
+    let excerpt = session_excerpt("😀😀😀😀", 2, false);
+
+    assert_eq!(excerpt.chars().count(), 3);
+    assert!(!excerpt.contains('\u{fffd}'));
 }

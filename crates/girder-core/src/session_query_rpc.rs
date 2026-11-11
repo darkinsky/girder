@@ -71,17 +71,18 @@ struct SearchRequest {
 /// meant to narrow returns hits they did not ask for, and a client that sent the wrong word would
 /// never learn it.
 fn parse_kind(kind: Option<&str>) -> Result<Option<Kind>, RemoteError> {
-    match kind {
-        None => Ok(None),
-        Some("messages") => Ok(Some(Kind::Messages)),
-        Some("tools") => Ok(Some(Kind::Tools)),
-        Some("boundaries") => Ok(Some(Kind::Boundaries)),
-        Some(other) => Err(RemoteError::InvalidArguments {
+    let Some(value) = kind else {
+        return Ok(None);
+    };
+    // The spellings live in `session_query` so this layer and the tool layer cannot disagree about what a client is
+    // allowed to send. This layer still refuses an unknown one, which is the difference between the two callers.
+    Kind::from_wire(value)
+        .map(Some)
+        .ok_or_else(|| RemoteError::InvalidArguments {
             namespace: NAMESPACE.to_owned(),
             method: METHOD.to_owned(),
-            message: format!("`kind` must be one of messages, tools, boundaries; got `{other}`"),
-        }),
-    }
+            message: format!("`kind` must be one of messages, tools, boundaries; got `{value}`"),
+        })
 }
 
 /// A hit's text, bounded and cut on a character boundary.
@@ -91,16 +92,8 @@ fn parse_kind(kind: Option<&str>) -> Result<Option<Kind>, RemoteError> {
 /// the response, which a reader sees as corrupt log data rather than as a truncated snippet — and
 /// this search exists to be pointed at non-ASCII conversations.
 fn snippet(text: &str) -> String {
-    match text.char_indices().nth(MAX_TEXT_CHARS) {
-        Some((cut, _)) => {
-            let mut bounded = text.get(..cut).unwrap_or_default().to_owned();
-            // The ellipsis is what distinguishes "this is short" from "this was cut": without it a
-            // client cannot tell a complete 200-character message from the head of a longer one.
-            bounded.push('…');
-            bounded
-        }
-        None => text.to_owned(),
-    }
+    // A client renders each hit as a block, so a newline is retained: it is the message's shape, not a row separator.
+    session_query::excerpt(text, MAX_TEXT_CHARS, false)
 }
 
 /// Registers `session.search` over the session logs under `root`.
