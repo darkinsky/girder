@@ -132,6 +132,7 @@ mod subagent_providers;
 mod subagent_tools;
 mod subprocess;
 mod terminal;
+mod terminal_rpc;
 mod terminal_tool;
 mod time;
 mod todo_tool;
@@ -141,6 +142,7 @@ mod web;
 mod web_tools;
 mod workflow;
 mod workflow_tool;
+mod workspace_files_rpc;
 mod workspace_path;
 
 pub use agent::{
@@ -395,6 +397,10 @@ pub use terminal::{
     Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,
     Status as TerminalStatus, TerminalError, Transcript,
 };
+pub use terminal_rpc::{
+    DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
+    register_terminal_methods as register_terminal_rpc_methods,
+};
 pub use terminal_tool::{
     TerminalLauncher, UnavailableLauncher, register_terminal_tools, terminal_read_tool,
     terminal_send_tool, terminal_start_tool,
@@ -425,6 +431,7 @@ pub use workflow::{
     StartRequest as WorkflowStartRequest, Status as WorkflowStatus, WorkflowError,
 };
 pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_status_tool};
+pub use workspace_files_rpc::register_workspace_file_methods;
 pub use workspace_path::{
     contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,
     is_unc, normalize as normalize_path, relative_to, resolve as resolve_in_workspace,

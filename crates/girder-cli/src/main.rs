@@ -221,6 +221,16 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let extensions = Arc::new(girder_core::ExtensionRegistry::new());
     girder_core::register_extension_methods(&mut remote, &extensions);
 
+    // Terminals are listed and driven over RPC. The launcher is the same one the tools get, so a terminal a client
+    // opens is one a model can see: two launchers would produce two sets of terminals.
+    let launcher: Arc<dyn girder_core::TerminalLauncher> =
+        Arc::new(girder_core::UnavailableLauncher::no_shell());
+    girder_core::register_terminal_rpc_methods(
+        &mut remote,
+        &Arc::new(girder_core::TerminalRegistry::new()),
+        &launcher,
+    );
+
     // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
     // them against a second registry would produce two lists that disagree about what is running.
     girder_core::register_job_tools(&tools, Arc::clone(&jobs));
@@ -230,6 +240,9 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
 
     // Workspace registrations: the directories a session may run in.
     let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
+    // Browsing a workspace: the same filesystem the tools use, so a client sees what a model sees.
+    let fs: Arc<dyn girder_core::FileSystem> = Arc::new(girder_core::LocalFileSystem);
+    girder_core::register_workspace_file_methods(&mut remote, &fs, &workspaces);
     girder_core::register_workspace_methods(&mut remote, &workspaces);
 
     let remote = Arc::new(remote);
