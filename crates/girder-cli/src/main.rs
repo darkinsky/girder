@@ -247,6 +247,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
     // the catalog does not show.
     girder_core::register_session_query_methods(&mut remote, &sessions_root());
+
+    // Host capabilities: handing a path to the desktop. The workspace is the boundary, so a client cannot ask the host
+    // to open something the tools could not read.
+    girder_core::register_host_methods(&mut remote, &workspace);
     girder_core::register_workspace_methods(&mut remote, &workspaces);
 
     let remote = Arc::new(remote);

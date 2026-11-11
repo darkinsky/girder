@@ -86,6 +86,7 @@ mod fs_rpc;
 mod goal;
 mod goal_tool;
 mod home_paths;
+mod host_rpc;
 mod inbox;
 mod instructions;
 mod instructions_tool;
@@ -233,6 +234,7 @@ pub use goal::{
 };
 pub use goal_tool::goal_tool;
 pub use home_paths::Paths as HomePaths;
+pub use host_rpc::{SystemOpener, UnavailableOpener, register_host_methods};
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use instructions::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_TOTAL_BYTES, HARNESS_GLOBAL_DIRECTORY,
