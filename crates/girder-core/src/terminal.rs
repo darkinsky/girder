@@ -464,25 +464,33 @@ impl Session {
 
     /// Ends the session.
     ///
+    /// A session whose shell was already seen to exit on its own keeps [`Status::Exited`] and its code:
+    /// closing a process that is already gone does not change how it ended, and reporting `stopped` would
+    /// throw away the one fact a caller can use to tell a clean exit from a crashed one.
+    ///
     /// # Errors
     ///
     /// Returns whatever the shell reports.
     pub async fn close(&self) -> Result<(), TerminalError> {
         let result = self.shell.close().await;
-        *self
+        let mut status = self
             .status
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = if result.is_ok() {
-            Status::Stopped
-        } else {
-            Status::Failed {
-                reason: result
-                    .as_ref()
-                    .err()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-            }
-        };
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(*status, Status::Exited { .. }) {
+            *status = if result.is_ok() {
+                Status::Stopped
+            } else {
+                Status::Failed {
+                    reason: result
+                        .as_ref()
+                        .err()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
+                }
+            };
+        }
+        drop(status);
         result
     }
 }

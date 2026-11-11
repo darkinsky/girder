@@ -83,6 +83,7 @@ mod goal_tool;
 mod home_paths;
 mod inbox;
 mod instructions;
+mod instructions_tool;
 mod job_tools;
 mod jobs;
 mod json;
@@ -219,6 +220,10 @@ pub use instructions::{
     INSTRUCTION_FILE_NAME, InstructionFile, InstructionLimits, InstructionState, LoadedInstruction,
     RenderedInstructions, TruncatedInstruction, USER_GLOBAL_DIRECTORY, digest,
     discover as discover_instructions, load as load_instructions, render as render_instructions,
+};
+pub use instructions_tool::{
+    MAX_OUTPUT_BYTES as INSTRUCTIONS_MAX_OUTPUT_BYTES, TOOL_NAME as INSTRUCTIONS_TOOL_NAME,
+    instructions_tool,
 };
 pub use job_tools::{
     job_kill_tool, job_list_tool, job_output_tool, job_start_tool, register_job_tools,
