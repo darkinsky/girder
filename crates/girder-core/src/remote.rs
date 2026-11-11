@@ -904,7 +904,6 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
     "openWorkspacePath",
     "workspacePathApplications",
-    "updateQueue",
     "stream",
     "resume",
     "archive",

@@ -251,6 +251,17 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Host capabilities: handing a path to the desktop. The workspace is the boundary, so a client cannot ask the host
     // to open something the tools could not read.
     girder_core::register_host_methods(&mut remote, &workspace);
+
+    // The queue editor needs the agent that holds a session's queue, and this build has no session-to-agent registry:
+    // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
+    // That is the honest state -- the method is reachable and says why it cannot act, which is better than a
+    // NOT_IMPLEMENTED that a client would read as "this build is old".
+    let queues = Arc::new(girder_core::AgentQueueMap::new());
+    girder_core::register_session_queue_methods(
+        &mut remote,
+        &session_catalog(),
+        &(queues as Arc<dyn girder_core::QueueAgentSource>),
+    );
     girder_core::register_workspace_methods(&mut remote, &workspaces);
 
     let remote = Arc::new(remote);

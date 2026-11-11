@@ -121,6 +121,7 @@ mod service;
 mod session;
 mod session_query;
 mod session_query_rpc;
+mod session_queue_rpc;
 mod session_search_tool;
 mod shell;
 mod skill;
@@ -353,6 +354,10 @@ pub use session_query::{
 pub use session_query_rpc::{
     DEFAULT_LIMIT as SESSION_SEARCH_DEFAULT_LIMIT, MAX_TEXT_CHARS as SESSION_SEARCH_MAX_TEXT_CHARS,
     register_session_query_methods,
+};
+pub use session_queue_rpc::{
+    AgentQueueMap, DECLARED_ACCESS as SESSION_QUEUE_ACCESS, QueueAgentSource, QueueError,
+    register_session_queue_methods,
 };
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
 pub use shell::{
