@@ -125,6 +125,7 @@ mod ssh;
 mod storage;
 mod subagent;
 mod subagent_providers;
+mod subagent_tools;
 mod subprocess;
 mod terminal;
 mod terminal_tool;
@@ -365,6 +366,11 @@ pub use subagent::{
 pub use subagent_providers::{
     Capabilities as SubagentCapabilities, ChildHandle, ProviderHandle, ProviderRegistry,
     StartError, StartRequest, SubagentProvider,
+};
+pub use subagent_tools::{
+    Status as SubagentStatus, SubagentEntry, SubagentRegistry, WaitError, register_subagent_tools,
+    subagent_list_tool, subagent_send_tool, subagent_wait_tool, traced_subagent_tool,
+    wait_timeout_ms,
 };
 pub use subprocess::{
     ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,

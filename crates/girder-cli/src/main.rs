@@ -431,10 +431,16 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
 
     // Registered after the context exists because the tool delegates *from* it. `register` takes
     // `&self` for exactly this reason.
-    tools.register(girder_core::subagent_tool(
+    //
+    // The traced variant replaces the plain one rather than joining it: both are named `subagent`, and two tools under
+    // one name would leave whichever was registered last silently shadowing the other. Tracing is what gives
+    // `subagent_list` and `subagent_wait` anything to report.
+    girder_core::register_subagent_tools(
+        &tools,
+        girder_core::SubagentRegistry::shared(),
         Arc::clone(&context),
         cli.max_depth,
-    ));
+    );
 
     let mut stream = Box::pin(girder_core::run(context, prompt, cancel));
     let mut failed = None;
