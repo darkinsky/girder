@@ -216,7 +216,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let tools = Arc::new(tools);
     // The goal is attached at construction rather than by cloning the runtime afterwards: `new` returns an `Arc`,
     // and a `set_goal` on a clone would wire only that clone while the server kept driving the original.
-    let runtime = girder_core::AgentRuntime::with_goal(
+    let runtime = girder_core::AgentRuntime::assemble_with(
         girder_core::RuntimeConfig {
             provider,
             tools: Arc::clone(&tools) as Arc<dyn girder_core::ToolRegistryView>,
@@ -225,7 +225,8 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
             max_turns: cli.max_turns,
             token_budget: girder_core::Ceiling::Unlimited,
         },
-        Arc::clone(&goals),
+        Some(Arc::clone(&goals)),
+        Some(compaction_policy()),
     );
 
     // The route table the model picker reads. One route for the configured provider; a deployment with
@@ -363,6 +364,21 @@ fn register_capability_tools(
 
     // A workflow needs an engine. Without one the run tool reports that rather than accepting work it cannot do.
     girder_core::register_workflow_tools(tools, Arc::new(girder_core::WorkflowRegistry::new()));
+}
+
+/// How the history is compacted.
+///
+/// A deployment decision rather than a library default: what to drop when a conversation outgrows the window is not
+/// something a library should decide on an operator's behalf. The default trigger is high enough that a normal
+/// conversation never compacts, so a truncation is a deliberate threshold rather than an accident of counting.
+fn compaction_policy() -> girder_core::CompactionPolicy {
+    girder_core::CompactionPolicy {
+        trigger_messages: std::env::var("GIRDER_COMPACT_AFTER")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(80),
+        ..girder_core::CompactionPolicy::default()
+    }
 }
 
 fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {

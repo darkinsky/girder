@@ -160,7 +160,7 @@ impl AgentRuntime {
     /// Builds a runtime.
     #[must_use]
     pub fn new(config: RuntimeConfig) -> Arc<Self> {
-        Self::assemble(config, None, crate::spill::DEFAULT_SPILL_LIMIT, None)
+        Self::assemble(config, None, crate::spill::DEFAULT_SPILL_LIMIT, None, None)
     }
 
     /// Builds a runtime already wired to the goal the loop advances.
@@ -177,7 +177,33 @@ impl AgentRuntime {
         config: RuntimeConfig,
         goal: Arc<std::sync::Mutex<crate::goal::GoalState>>,
     ) -> Arc<Self> {
-        Self::assemble(config, None, crate::spill::DEFAULT_SPILL_LIMIT, Some(goal))
+        Self::assemble(
+            config,
+            None,
+            crate::spill::DEFAULT_SPILL_LIMIT,
+            Some(goal),
+            None,
+        )
+    }
+
+    /// Builds a runtime with every optional capability a server attaches.
+    ///
+    /// One constructor rather than four setters because the runtime is shared the moment it exists, and a setter
+    /// applied to a clone wires only that clone -- the server keeps driving the original. The earlier `set_goal`
+    /// carried that hazard in its documentation instead of its type, which is worse than a long argument list.
+    #[must_use]
+    pub fn assemble_with(
+        config: RuntimeConfig,
+        goal: Option<Arc<std::sync::Mutex<crate::goal::GoalState>>>,
+        compaction: Option<crate::compaction_hook::CompactionPolicy>,
+    ) -> Arc<Self> {
+        Self::assemble(
+            config,
+            None,
+            crate::spill::DEFAULT_SPILL_LIMIT,
+            goal,
+            compaction,
+        )
     }
 
     /// Builds a runtime that spills oversized tool results.
@@ -191,7 +217,7 @@ impl AgentRuntime {
         spill: Option<Arc<dyn crate::spill::Store>>,
         spill_limit: usize,
     ) -> Arc<Self> {
-        Self::assemble(config, spill, spill_limit, None)
+        Self::assemble(config, spill, spill_limit, None, None)
     }
 
     /// The one place a runtime is assembled.
@@ -203,6 +229,7 @@ impl AgentRuntime {
         spill: Option<Arc<dyn crate::spill::Store>>,
         spill_limit: usize,
         goal: Option<Arc<std::sync::Mutex<crate::goal::GoalState>>>,
+        compaction: Option<crate::compaction_hook::CompactionPolicy>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -210,7 +237,7 @@ impl AgentRuntime {
             spill,
             spill_limit,
             goal,
-            compaction: None,
+            compaction,
         })
     }
 
