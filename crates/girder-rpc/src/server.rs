@@ -337,14 +337,35 @@ async fn upgrade(ws: WebSocketUpgrade, State(server): State<RpcServer>) -> impl 
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
         let client_id = format!("gen-{generation}");
         let state = Arc::new(SessionState::new(client_id, Arc::clone(&server.bus)));
-        serve(socket, state, server.watch.as_ref().clone()).await;
+        serve_full(
+            socket,
+            state,
+            server.watch.as_ref().clone(),
+            server.remote.clone(),
+        )
+        .await;
     })
 }
 
 /// Runs one connection to completion.
 ///
 /// Split from the axum handler so a test can drive it over a duplex stream without a real socket.
+/// Without a Remote registry there is nothing to subscribe to, so this is [`serve_full`] with the
+/// subscription path turned off.
 pub async fn serve(socket: WebSocket, state: Arc<SessionState>, watch: Vec<&'static str>) {
+    serve_full(socket, state, watch, None).await;
+}
+
+/// Runs one connection with an optional subscription hub.
+///
+/// One reader loop serves both uplinks because the socket is the same: dispatching on `type` costs a
+/// field read, while a second reader would need the socket split and would race for the frames.
+async fn serve_full(
+    socket: WebSocket,
+    state: Arc<SessionState>,
+    watch: Vec<&'static str>,
+    remote: Option<Arc<girder_core::RemoteRegistry>>,
+) {
     use futures::stream::StreamExt as _;
 
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DownlinkFrame>();
@@ -352,12 +373,23 @@ pub async fn serve(socket: WebSocket, state: Arc<SessionState>, watch: Vec<&'sta
 
     let handle = ClientHandle {
         client_id: state.client_id.clone(),
-        outbound: outbound_tx,
+        outbound: outbound_tx.clone(),
         answers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         // Shared, not copied: the same map the session state drains on close.
         pending: Arc::clone(&state.pending),
         next_id: Arc::new(AtomicU64::new(1)),
     };
+
+    // Built before the first frame is written so a client that subscribes immediately after `ready`
+    // finds a hub rather than a race. Absent when the server exposes no methods: a subscription to a
+    // method nobody registered would only ever fail.
+    let hub = remote.map(|remote| {
+        Arc::new(crate::SubscriptionHub::new(
+            remote,
+            outbound_tx,
+            crate::DEFAULT_SUBSCRIPTION_LIMIT,
+        ))
+    });
 
     // Subscribe before the first frame is written, so no dispatch is missed between the client
     // seeing `ready` and the forwarder starting.
@@ -390,6 +422,14 @@ pub async fn serve(socket: WebSocket, state: Arc<SessionState>, watch: Vec<&'sta
             let Message::Text(text) = message else {
                 continue;
             };
+            // A subscription control is recognised by its `type` before the result parse: both are
+            // tagged, and attempting the result shape first would log every `subscribe` as garbage.
+            if let Ok(control) = serde_json::from_str::<crate::SubscriptionControl>(&text) {
+                if let Some(hub) = hub.as_ref() {
+                    hub.handle(control);
+                }
+                continue;
+            }
             let Ok(result) = serde_json::from_str::<RemoteEventResult>(&text) else {
                 // An unparseable uplink is not fatal: the client may be speaking a newer protocol.
                 // Dropping the frame keeps the generation alive for everything else.
@@ -403,7 +443,13 @@ pub async fn serve(socket: WebSocket, state: Arc<SessionState>, watch: Vec<&'sta
     }
 
     // Disconnect: nothing can answer the outstanding waterfalls, so they are abandoned rather than
-    // leaked into the next generation.
+    // leaked into the next generation. Subscriptions are stopped for the same reason — a poller that
+    // outlived its socket would keep calling methods nobody can read the answers to.
+    if let Some(hub) = hub.as_ref() {
+        hub.shutdown(&crate::EndReason::Failed {
+            reason: "the connection closed".to_owned(),
+        });
+    }
     let abandoned = state.pending.lock().await.drain();
     if abandoned > 0 {
         tracing::debug!(abandoned, "connection closed with pending waterfalls");

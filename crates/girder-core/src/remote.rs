@@ -935,6 +935,7 @@ fn register_session_core(
     register_list(registry, catalog);
     register_create(registry, catalog);
     register_history(registry, catalog);
+    register_follow(registry, catalog);
     register_rename(registry, catalog);
     register_delete(registry, catalog);
     register_fork(registry, catalog);
@@ -1061,6 +1062,93 @@ fn register_history(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCata
         });
     }
 }
+
+/// Registers `session.follow`.
+///
+/// The one method shaped for polling: a client names the sequence it has already seen and receives what came after, so a
+/// subscription built on it repeats nothing and misses nothing. `session.page` cannot serve that role -- its arguments
+/// are a window, not a cursor, so a poller would either re-read overlap or guess where it left off.
+///
+/// `done` is what ends the subscription: the poller stops when a poll returns it, which is the contract the streaming
+/// layer documents. A session never finishes, so this stays false and the client ends the subscription instead.
+fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "follow", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        Box::pin(async move {
+            let session_id = call
+                .args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "follow".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                })?
+                .to_owned();
+            // Absent means "from the beginning", which is what a client that just opened a session means. Zero would do
+            // the same thing, but a caller that typed `afterSeq: 0` should get the same answer as one that omitted it.
+            let after = call
+                .args
+                .get("afterSeq")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let limit = usize::try_from(
+                call.args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(FOLLOW_LIMIT as u64),
+            )
+            .unwrap_or(FOLLOW_LIMIT)
+            .max(1);
+
+            let Some(record) = catalog.read(&session_id).await else {
+                // An unknown session is an empty result with `done`: the client's subscription ends quietly rather than
+                // polling a session that does not exist forever.
+                return Ok(serde_json::json!({
+                    "events": [],
+                    "nextSeq": after,
+                    "done": true,
+                }));
+            };
+
+            // Sequence numbers are one-based, so an event at index `i` has seq `i + 1`. Taking `after` to mean "the last
+            // seq I saw" makes `skip(after)` the exact continuation, which is the arithmetic a cursor needs and the
+            // place an off-by-one would silently duplicate or drop an event.
+            let skip = usize::try_from(after).unwrap_or(usize::MAX);
+            let events: Vec<serde_json::Value> = record
+                .events
+                .iter()
+                .skip(skip)
+                .take(limit)
+                .enumerate()
+                .filter_map(|(offset, event)| {
+                    serde_json::to_value(event).ok().map(|value| {
+                        serde_json::json!({
+                            "seq": skip + offset + 1,
+                            "event": value,
+                        })
+                    })
+                })
+                .collect();
+
+            let next = skip
+                .saturating_add(events.len())
+                .try_into()
+                .unwrap_or(u64::MAX);
+            Ok(serde_json::json!({
+                "events": events,
+                "nextSeq": next,
+                "done": false,
+            }))
+        })
+    });
+}
+
+/// How many events one `session.follow` poll returns.
+///
+/// 64: a poll that returned thousands would make one frame enormous and the next poll empty, which reads as a stall.
+pub const FOLLOW_LIMIT: usize = 64;
 
 /// Registers `session.prompt`.
 fn register_prompt(registry: &mut RemoteRegistry) {

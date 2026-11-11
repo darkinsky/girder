@@ -40,8 +40,10 @@ use serde::{Deserialize, Serialize};
 
 /// The exact WebSocket route carrying every remote stream.
 pub use stream::{
-    EndReason, SUBSCRIBABLE_METHODS, SubscribeError, Subscription, SubscriptionFrame,
-    SubscriptionId, Subscriptions, is_subscribable,
+    DEFAULT_POLL_INTERVAL, DEFAULT_SUBSCRIPTION_LIMIT, EndReason, MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL, SUBSCRIBABLE_METHODS, SubscribeError, SubscribeRequest, Subscription,
+    SubscriptionControl, SubscriptionFrame, SubscriptionHub, SubscriptionId, Subscriptions,
+    is_subscribable, is_terminal,
 };
 pub use web::{INDEX_HTML, WEB_INDEX_PATH};
 
@@ -116,6 +118,35 @@ pub enum DownlinkFrame {
         /// The waterfall to abandon.
         #[serde(rename = "eventId")]
         event_id: RemoteEventId,
+    },
+
+    /// One subscription frame: a value, or the end of the series.
+    ///
+    /// Nesting the frame rather than flattening it keeps [`SubscriptionFrame`] one type on both sides:
+    /// a client decodes `frame` with the same code that handles a frame relayed by another client,
+    /// and adding a frame kind does not change this envelope.
+    Subscription {
+        /// The frame.
+        frame: SubscriptionFrame,
+    },
+
+    /// The verdict on a `subscribe` request.
+    ///
+    /// Separate from [`DownlinkFrame::Subscription`] because a refusal has no series to end, and a
+    /// client that had to infer "refused" from an immediate `end` would also have to decide whether
+    /// the subscription had ever been live.
+    ///
+    /// Renamed explicitly: the enum's `lowercase` rule would spell this `subscriberesult`, which
+    /// reads as one word and does not match the camelCase the rest of this protocol uses.
+    #[serde(rename = "subscribeResult")]
+    SubscribeResult {
+        /// The id the client sent.
+        id: String,
+        /// Whether the subscription is now open.
+        ok: bool,
+        /// Why not, when `ok` is false.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 }
 
@@ -255,7 +286,23 @@ pub fn schema() -> serde_json::Value {
     );
     insert(
         "InvokeResponse",
-        serde_json::to_value(generator.into_root_schema_for::<InvokeResponse>())
+        serde_json::to_value(generator.clone().into_root_schema_for::<InvokeResponse>())
+            .expect("schema serializes"),
+        &mut definitions,
+    );
+    insert(
+        "SubscriptionFrame",
+        serde_json::to_value(
+            generator
+                .clone()
+                .into_root_schema_for::<SubscriptionFrame>(),
+        )
+        .expect("schema serializes"),
+        &mut definitions,
+    );
+    insert(
+        "SubscribeRequest",
+        serde_json::to_value(generator.into_root_schema_for::<SubscribeRequest>())
             .expect("schema serializes"),
         &mut definitions,
     );
@@ -285,6 +332,26 @@ impl std::fmt::Display for DownlinkFrame {
                 event, event_id, ..
             } => write!(f, "waterfall({event}, {event_id})"),
             Self::Cancel { event_id } => write!(f, "cancel({event_id})"),
+            Self::Subscription { frame } => write!(f, "subscription({frame})"),
+            Self::SubscribeResult { id, ok, .. } => {
+                write!(f, "subscribeResult({id}, ok={ok})")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for SubscriptionFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Value {
+                subscription_id,
+                seq,
+                ..
+            } => write!(f, "{subscription_id}#{seq}"),
+            Self::End {
+                subscription_id,
+                reason,
+            } => write!(f, "{subscription_id} end({reason:?})"),
         }
     }
 }
