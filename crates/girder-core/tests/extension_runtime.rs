@@ -8,12 +8,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use girder_core::{
-    BoxFut, ExtensionDefinition as Definition, ExtensionError, ExtensionId, ExtensionRegistry,
-    ExtensionRun as Run, ExtensionRuntime as Runtime, ExtensionShellRuntime as ShellRuntime,
-    ExtensionStatus,
+    BoxFut, ExtensionDefinition as Definition, ExtensionError, ExtensionId,
+    ExtensionNoopRuntime as NoopRuntime, ExtensionRegistry, ExtensionRun as Run,
+    ExtensionRuntime as Runtime, ExtensionShellRuntime as ShellRuntime, ExtensionStatus,
+    assert_runnable,
 };
-
-use girder_core::{ExtensionNoopRuntime as NoopRuntime, assert_runnable};
 
 /// A directory owned by one test, named after it and this process.
 ///
@@ -55,15 +54,23 @@ fn pid_file(dir: &Path) -> PathBuf {
 
 /// Waits for a file to hold a usable pid, or reports that it never did.
 async fn wait_for_pid(dir: &Path) -> u32 {
+    wait_for_pid_in(&pid_file(dir)).await
+}
+
+/// Waits for `file` to hold a usable pid, or reports that it never did.
+///
+/// Separate from [`wait_for_pid`] so a test can read a pid a definition wrote to a file of its own —
+/// a grandchild's, say — without a second copy of the polling loop.
+async fn wait_for_pid_in(file: &Path) -> u32 {
     for _ in 0..200 {
-        if let Ok(text) = std::fs::read_to_string(pid_file(dir)) {
+        if let Ok(text) = std::fs::read_to_string(file) {
             if let Ok(pid) = text.trim().parse::<u32>() {
                 return pid;
             }
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("the extension never reported a pid in {}", dir.display());
+    panic!("the extension never reported a pid in {}", file.display());
 }
 
 /// Whether a process is gone.
@@ -217,6 +224,40 @@ async fn removing_a_running_extension_stops_its_process() {
 
     eventually("the process to exit", || is_gone(pid)).await;
     assert!(registry.ids().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn stopping_an_extension_also_stops_what_it_started() {
+    // The reason the child is a process-group leader: a shell that started a pipeline leaves
+    // grandchildren holding the pipes, and killing only the shell would leave them running with no
+    // reader. A definition that spawns a helper is the ordinary case, not an exotic one.
+    let dir = sandbox("group");
+    let registry = ExtensionRegistry::new();
+    registry
+        .define(definition(
+            "e1",
+            // The grandchild writes its own pid and outlives a bare shell kill.
+            format!(
+                "sleep 30 & echo $! > {grandchild}; echo $$ > {pid}; exec sleep 30",
+                grandchild = dir.join("grandchild").display(),
+                pid = pid_file(&dir).display()
+            ),
+        ))
+        .expect("defined");
+    registry.approve("e1", "human").expect("approved");
+
+    registry
+        .activate("e1", &[], &ShellRuntime::new())
+        .await
+        .expect("started");
+    let pid = wait_for_pid(&dir).await;
+    let grandchild = wait_for_pid_in(&dir.join("grandchild")).await;
+
+    registry.deactivate("e1").expect("stopped");
+
+    eventually("the extension to exit", || is_gone(pid)).await;
+    eventually("the process it started to exit", || is_gone(grandchild)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -463,10 +504,10 @@ fn a_command_is_runnable() {
 
 #[test]
 fn a_description_is_not_runnable() {
-    // `sh` accepts a comment-only source and exits 0, so without this check an extension that does
-    // nothing would be indistinguishable from one that worked. `// source` is a path to the shell,
-    // not a comment, so it is caught by `start` rather than here — but it is prose all the same,
-    // and a client that asked before prompting a human would want to know.
+    // The markers fail differently and both must be refused:
+    //
+    // `#` is a real shell comment, so `sh` accepts the script and exits 0 — without this check an
+    // extension that did nothing would be indistinguishable from one that worked.
     let error = assert_runnable(&definition("e1", "# only a comment\n\n   "))
         .expect_err("a comment-only source");
     let ExtensionError::LoadFailed { id, reason } = &error else {
@@ -478,7 +519,17 @@ fn a_description_is_not_runnable() {
         "the reason must name the problem: {reason}"
     );
 
-    let error = assert_runnable(&definition("e2", "#   \n#")).expect_err("another description");
+    // `//` runs as a path and fails with 127, which `start` reports correctly — but as a *command*
+    // failure, which misdescribes prose. A client that checked before prompting a human gets the
+    // honest answer instead.
+    let error = assert_runnable(&definition("e2", "// source")).expect_err("a description");
+    let ExtensionError::LoadFailed { reason, .. } = &error else {
+        panic!("expected LoadFailed, got {error:?}");
+    };
+    assert!(reason.contains("description"), "{reason}");
+
+    // Still a description when there are several lines and one is only whitespace.
+    let error = assert_runnable(&definition("e3", "#   \n//\n")).expect_err("another description");
     let ExtensionError::LoadFailed { reason, .. } = &error else {
         panic!("expected LoadFailed, got {error:?}");
     };

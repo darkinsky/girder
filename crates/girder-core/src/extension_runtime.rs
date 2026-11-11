@@ -17,12 +17,13 @@
 //! That is a real execution rather than a simulation: a definition whose source is executable text
 //! starts a process, the process is a process-group leader so stopping it also stops what it
 //! started, and stopping is what `deactivate` does. The cost is that a source written as *prose*
-//! does not work. `// source` is not inert — a shell reads it as an absolute path and fails with
-//! "not found", which [`ShellRuntime`] correctly reports as a failed start. A
-//! comment-only source using `#` is worse: the shell accepts it and exits 0, so it looks like a
-//! successful start that did nothing. [`assert_runnable`] is the pre-flight check for exactly these
-//! two cases, and [`NoopRuntime`] is for a deployment that wants the definition lifecycle without
-//! execution — documented as proving nothing about the extension.
+//! does not work, and the two comment markers reach the shell very differently. A `#`-only source
+//! is the dangerous one: `sh` accepts it and exits 0, so an extension that did nothing would look
+//! exactly like one that worked. A `//`-only source fails loudly instead — the shell reads it as an
+//! absolute path and reports "not found" — which is a correct failure, but a confusing one to
+//! report for what was plainly a description. [`assert_runnable`] refuses both before a human is
+//! asked to approve them, and [`NoopRuntime`] is for a deployment that wants the definition
+//! lifecycle without execution — documented as proving nothing about the extension.
 //!
 //! # What "running" can and cannot mean here
 //!
@@ -276,23 +277,9 @@ impl Runtime for ShellRuntime {
 ///
 /// A deployment that wants extensions to have an effect must use [`ShellRuntime`], or a runtime that
 /// understands whatever language its definitions are written in.
-//
-// `allow` rather than `expect`: this module is private and `lib.rs` currently re-exports only
-// `ShellRuntime` and `assert_runnable`, so a `pub` item here is unreachable from the crate root and
-// `dead_code` fires. The exemption disappears by itself once the type is re-exported — unlike an
-// `expect`, which would then fail as unfulfilled — so this is the safe form to keep in the
-// meantime.
-#[allow(
-    dead_code,
-    reason = "not re-exported from lib.rs yet; reached only by the module's own tests"
-)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopRuntime;
 
-#[allow(
-    dead_code,
-    reason = "not re-exported from lib.rs yet; reached only by the module's own tests"
-)]
 impl NoopRuntime {
     /// Builds the inert runtime.
     #[must_use]
@@ -326,11 +313,12 @@ impl Runtime for NoopRuntime {
 /// that could never run. This answers the question first, so a client can refuse to ask.
 ///
 /// It checks only what can be known without starting anything: that the source is not blank, that it
-/// is not a comment-only script, and that the shell which would interpret it exists. It deliberately
-/// does not try to parse the script: `sh` is the only thing that knows what `sh` accepts, and a
-/// second parser would disagree with it. A source that *looks* like prose but is not comment-only is
-/// therefore accepted here and reported as a failed start by `start`, which is the right division —
-/// this check refuses the cases that would otherwise be reported as *successes*.
+/// is not a comment-only script under either marker the two callers use (`#` and `//`), and that the
+/// shell which would interpret it exists. It deliberately does not try to parse the script: `sh` is
+/// the only thing that knows what `sh` accepts, and a second parser would disagree with it. A source
+/// that *looks* like prose but is not comment-only is therefore accepted here and reported as a
+/// failed start by `start`, which is the right division — this check refuses the cases that would
+/// otherwise be reported as *successes*, and leaves the rest to the shell.
 ///
 /// # Errors
 ///
@@ -362,13 +350,19 @@ pub fn assert_runnable(definition: &Definition) -> Result<(), ExtensionError> {
 
 /// Whether a script contains at least one line that is not blank and not a comment.
 ///
-/// A source made only of comment lines is prose that happens to start with a comment marker, which is exactly the shape
-/// a description takes. `sh` would accept it and exit 0, so nothing but this check would notice that the extension did
-/// nothing.
+/// A source made only of comment lines is prose that happens to start with a comment marker, which is
+/// the shape a description takes. The two markers fail differently, and both are worth refusing
+/// before a human is asked:
 ///
-/// Both comment markers are recognised because both reach here: `#` is what a POSIX shell uses and `//` is what
-/// somebody writing prose in a JSON field produces. The earlier version accepted only `#`, so a `// description` was
-/// launched as a command and reported success.
+/// * `#` is a real shell comment, so `sh` accepts the script and exits 0. Without this check an
+///   extension that did nothing would be indistinguishable from one that worked — the dangerous
+///   case, because nothing reports it.
+/// * `//` is not a shell comment, so the line runs as a command and fails with "not found". That is
+///   correctly reported as a failed start, but as a *command* failure, which misdescribes a
+///   definition that was plainly a description.
+///
+/// `//` is recognised because a JSON field holding prose is where it comes from, whatever the shell
+/// thinks of it.
 fn has_statement(source: &str) -> bool {
     source
         .lines()
@@ -433,13 +427,18 @@ impl StopSignal {
 
 /// Waits for the child, escalating to `SIGKILL` when a requested stop is not obeyed.
 async fn reap(mut child: Child, stop: Arc<StopSignal>) {
-    let exited = tokio::select! {
-        result = child.wait() => result.is_ok(),
-        () = stop.cancel.cancelled() => false,
+    let waited = tokio::select! {
+        result = child.wait() => Some(result),
+        () = stop.cancel.cancelled() => None,
     };
-    if exited {
-        // Collected: the pid may be reused from this moment, so no later stop may signal it.
+    // `Some` means the child was collected, whether or not the wait itself reported an error: after
+    // either, the pid is no longer ours and the kernel may hand it to an unrelated process. Treating
+    // an errored wait as "still running" would signal that stranger's group.
+    if let Some(waited) = waited {
         stop.release();
+        // An errored wait is not acted on: the child is gone either way, and there is no caller left
+        // to report to (`activate` has already returned). Releasing the pid is what matters.
+        let _ = waited;
         return;
     }
 
