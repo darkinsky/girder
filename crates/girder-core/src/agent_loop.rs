@@ -159,6 +159,12 @@ pub struct LoopContext {
     /// How many bytes a tool result may carry before it is spilled.
     pub spill_limit: usize,
 
+    /// How the history is compacted when it outgrows the context.
+    ///
+    /// `None` keeps everything: a deployment that has not decided what to drop should not have a default decide for
+    /// it, and the failure mode of dropping the wrong messages is a model that has forgotten what it was doing.
+    pub compaction: Option<crate::compaction_hook::CompactionPolicy>,
+
     /// The agent this loop runs for.
     ///
     /// The single source of truth for cancellation, model selection, and pending input. The loop
@@ -222,6 +228,7 @@ impl LoopContext {
             spent: std::sync::atomic::AtomicU64::new(0),
             spill: None,
             spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
+            compaction: None,
         }
     }
 
@@ -295,6 +302,75 @@ async fn spill_if_needed(context: &LoopContext, blocks: Vec<ContentBlock>) -> Ve
     vec![ContentBlock::Text {
         text: reference.to_text(),
     }]
+}
+
+/// Drops the history's old middle when the policy says it has outgrown the context.
+///
+/// The policy reads `message::Message`, the recorded form a session stores, while this loop keeps `llm::Message`, the
+/// wire form a provider receives. The two differ by an id and a source, neither of which affects which messages belong
+/// together, so the adapter maps only those two fields and the decision transfers by position. Applying the plan to the
+/// recorded form would be wrong: the loop needs the wire form, and rebuilding it from recorded messages would drop the
+/// tool-call ids a provider matches results against.
+///
+/// The kept selection is not a summary: this layer has no model to summarise with and no tokenizer to measure the
+/// result, so it removes messages and leaves the rest untouched. That is the honest operation — a summary produced
+/// without a model would be a fabrication, and one produced with a model would need a second call the caller did not
+/// ask for.
+///
+/// A refusal leaves the history alone. Compacting into an illegal shape (a tool call without its result) would make
+/// every subsequent request fail, which is worse than a long context.
+fn compact_history(context: &LoopContext, messages: &mut Vec<Message>) {
+    let Some(policy) = &context.compaction else {
+        return;
+    };
+    // Decided and applied under one borrow so a concurrent read cannot see the intermediate vector.
+    // The plan is computed from a shared view of the same vector it is applied to: `plan` returns positions in the
+    // input, so the borrow ends before the assignment below.
+    // Built in the loop's own order, so an index in the plan addresses the message it was computed from.
+    let recorded: Vec<crate::message::Message> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            crate::message::Message::new(
+                crate::brand::MessageId::new(format!("m{index}")).unwrap_or_else(|_| {
+                    crate::brand::MessageId::new("m0").expect("a literal id is valid")
+                }),
+                recorded_role(message.role),
+                crate::message::MessageSource::User { form: None },
+                message.content.clone(),
+            )
+        })
+        .collect();
+
+    let plan = policy.plan(recorded.as_slice());
+    match plan {
+        crate::compaction_hook::Plan::KeepAll | crate::compaction_hook::Plan::Refuse { .. } => {}
+        crate::compaction_hook::Plan::Compact { keep, .. } => {
+            // The indices were computed against this vector and are used against it: `plan` returns positions in the
+            // input, so applying them to a different vector would drop the wrong messages.
+            let kept: Vec<Message> = keep
+                .into_iter()
+                .filter_map(|index| messages.get(index).cloned())
+                .collect();
+            if !kept.is_empty() {
+                *messages = kept;
+            }
+        }
+    }
+}
+
+/// Maps a wire role onto the recorded vocabulary.
+///
+/// The two enums are not in bijection: the wire form has `Tool` where the recorded form distinguishes `Developer` from
+/// `User`, and it has no representation for a system prompt. Only the pairing rules matter for compaction, and for those
+/// the three wire roles are enough, so the lossy direction is the one taken here and the loss is confined to this
+/// adapter rather than to the recorded history.
+fn recorded_role(role: crate::llm::Role) -> crate::message::Role {
+    match role {
+        crate::llm::Role::User => crate::message::Role::User,
+        crate::llm::Role::Assistant => crate::message::Role::Assistant,
+        crate::llm::Role::Tool => crate::message::Role::Developer,
+    }
 }
 
 /// Builds and records a goal-continuation prompt, when the goal says to keep going.
@@ -425,6 +501,11 @@ pub fn run(
                     return;
                 }
             }
+
+            // Compacted before the step, not after: a step that ran on an oversized history would pay for the
+            // window it was about to exceed, and the provider would refuse the request rather than the loop
+            // shrinking it.
+            compact_history(&context, &mut messages);
 
             // Each step is forwarded as it is produced: a caller that renders the answer incrementally
             // would otherwise see nothing until the whole turn finished.

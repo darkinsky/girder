@@ -195,6 +195,12 @@ pub struct ExecOptions {
     /// Off by default because a command usually needs the environment it was started with. A tool that runs
     /// model-authored commands turns it on, so a child cannot read a credential the harness was launched with.
     pub clear_environment: bool,
+    /// Variables to add after clearing.
+    ///
+    /// Clearing alone leaves a command with no `PATH`, so every tool it invokes is missing and the failure looks like a
+    /// broken harness rather than a deliberate policy. The allowlist puts back what a command needs to run at all while
+    /// still withholding what it must not see.
+    pub environment: Vec<(String, String)>,
 }
 
 impl Default for ExecOptions {
@@ -205,11 +211,26 @@ impl Default for ExecOptions {
             policy: None,
             declared_writes: Vec::new(),
             clear_environment: false,
+            environment: Vec::new(),
         }
     }
 }
 
 impl ExecOptions {
+    /// Clears the inherited environment and adds the baseline a command needs to run.
+    ///
+    /// The baseline comes from [`crate::launch_environment`], which is the one place the allowlist and the forbidden
+    /// prefixes are written down: a second copy here would drift, and the drift would be a credential reaching a child.
+    #[must_use]
+    pub fn with_baseline_environment(mut self) -> Self {
+        self.clear_environment = true;
+        let parent: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+        let resolved =
+            crate::launch_environment::resolve(&parent, &std::collections::BTreeMap::new());
+        self.environment = resolved.values.into_iter().collect();
+        self
+    }
+
     /// Clears the inherited environment, leaving only what was added explicitly.
     ///
     /// The difference between a child seeing the harness's own credentials and a child seeing only what it was told
@@ -359,6 +380,9 @@ async fn run_shell_program(
     if options.clear_environment {
         spawn = spawn.with_cleared_environment();
     }
+    for (name, value) in &options.environment {
+        spawn = spawn.with_env(name.clone(), value.clone());
+    }
 
     match crate::subprocess::run(spawn, cancel.clone()).await {
         Ok(outcome) => Ok(ExecOutput {
@@ -427,8 +451,9 @@ pub fn bash_tool(policy: PathPolicy) -> crate::tools::ToolDefinition {
 
                     let mut options = ExecOptions::default()
                         .with_policy(policy)
-                        // A command a model asked to run must not inherit the harness's own credentials.
-                        .with_cleared_environment();
+                        // A command a model asked to run must not inherit the harness's own credentials, but it does
+                        // need the baseline that lets any command run at all.
+                        .with_baseline_environment();
                     // The command runs in the session's workspace, which is what "this project" means to a model. A
                     // tool that inherited the process's directory instead ran in whatever the harness was started
                     // from -- for a test binary, the repository root, where a command writing `a.txt` overwrote a
@@ -675,6 +700,15 @@ impl Sandbox for AdvisorySandbox {
             declared_writes: Vec::new(),
             // A test harness that spawns a shell must not hand it the environment the suite was started in.
             clear_environment: true,
+            // Nor must it leave the command without the environment any command needs, and what it needs is the same
+            // baseline a model-facing tool gets.
+            environment: crate::launch_environment::resolve(
+                &std::env::vars().collect(),
+                &std::collections::BTreeMap::new(),
+            )
+            .values
+            .into_iter()
+            .collect(),
         };
         let script = script.to_owned();
         Box::pin(async move { run_shell(&script, &options, &cancel).await })

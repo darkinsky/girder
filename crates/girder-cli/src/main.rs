@@ -314,13 +314,18 @@ fn resolve_watched(watch: &[String]) -> Vec<&'static str> {
 /// One function rather than two expressions: the catalog and the search tool must agree, and two spellings of the same
 /// default is how a search starts reading a directory nothing writes to.
 fn sessions_root() -> std::path::PathBuf {
-    std::env::var("GIRDER_SESSIONS").map_or_else(
-        |_| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-                .join(".girder")
-                .join("sessions")
-        },
-        std::path::PathBuf::from,
+    // An explicit override wins, because a deployment that sets it means it. Otherwise the layout decides, so the
+    // sessions directory cannot drift from the rest of the harness's data by being spelled out here.
+    if let Ok(explicit) = std::env::var("GIRDER_SESSIONS") {
+        return std::path::PathBuf::from(explicit);
+    }
+    let home = std::env::var("HOME").ok();
+    let override_home = std::env::var("GIRDER_HOME").ok();
+    // A relative `GIRDER_HOME` is refused by `HomePaths`, and falling back is right here: refusing to start because a
+    // deployment set a relative path would be worse than using the default and letting a later write fail loudly.
+    girder_core::HomePaths::from_environment(home.as_deref(), override_home.as_deref()).map_or_else(
+        |_| std::path::PathBuf::from(".").join("girder-sessions"),
+        |paths| paths.sessions(),
     )
 }
 

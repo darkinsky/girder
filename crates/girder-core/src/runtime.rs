@@ -145,6 +145,8 @@ pub struct AgentRuntime {
     spill: Option<Arc<dyn crate::spill::Store>>,
     /// How many bytes a tool result may carry before it is spilled.
     spill_limit: usize,
+    /// How the history is compacted, when a deployment configured it.
+    compaction: Option<crate::compaction_hook::CompactionPolicy>,
     /// The goal the loop advances, when one is set.
     ///
     /// Shared with the `goal` tool rather than owned: a tool that kept its own copy would let the model complete a
@@ -208,6 +210,7 @@ impl AgentRuntime {
             spill,
             spill_limit,
             goal,
+            compaction: None,
         })
     }
 
@@ -220,6 +223,14 @@ impl AgentRuntime {
     /// cannot be skipped between construction and the first prompt.
     pub fn set_goal(&mut self, goal: Arc<std::sync::Mutex<crate::goal::GoalState>>) {
         self.goal = Some(goal);
+    }
+
+    /// Sets how the history is compacted when it outgrows the context.
+    ///
+    /// Setting it is opt-in: the default keeps everything, because a deployment that has not decided what to drop
+    /// should not have a default decide for it.
+    pub fn set_compaction(&mut self, policy: crate::compaction_hook::CompactionPolicy) {
+        self.compaction = Some(policy);
     }
 
     /// Number of sessions with a turn in flight, for tests and diagnosis.
@@ -355,6 +366,7 @@ impl AgentRuntime {
         // The loop's own goal, shared with the tool. Without this assignment the continuation logic below was dead
         // code: it read a field nothing ever set, so a created goal recorded an intent that never affected a turn.
         context.goal = self.goal.clone();
+        context.compaction = self.compaction.clone();
         // The prompt was already written by `prompt()`, before the spawn.
         context.record_prompt = false;
         let context = Arc::new(context);
