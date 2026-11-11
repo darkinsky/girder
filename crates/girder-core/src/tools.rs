@@ -129,6 +129,17 @@ impl ToolRunContext {
         }
     }
 
+    /// Forgets every observation, returning how many were dropped.
+    ///
+    /// The answer to a tool whose effect on the filesystem cannot be known in advance — a shell command. A no-op
+    /// without an observation session, and it returns zero rather than failing, so a caller can report the count
+    /// without first asking whether the layer is mounted.
+    pub fn forget_all(&self) -> usize {
+        self.observations
+            .as_ref()
+            .map_or(0, |session| session.forget_all())
+    }
+
     /// Whether a write to `path` would clobber a change this session did not see.
     ///
     /// # Errors
@@ -146,6 +157,10 @@ impl ToolRunContext {
                 let Ok(text) = std::fs::read_to_string(path) else {
                     return Err(Conflict::Deleted);
                 };
+                // Both sides are built by `version_of` on purpose. It stamps the current time while a read recorded
+                // the text it saw, so comparing them on the cheap fields would report every unmodified file as
+                // changed. The hash is the part that identifies content, and `matches` uses it whenever both sides
+                // carry one.
                 let current = crate::observation::version_of(&text);
                 if expected.matches(&current) {
                     Ok(())

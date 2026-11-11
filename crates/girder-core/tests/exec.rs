@@ -11,6 +11,7 @@
 //! leaves its grandchildren running. So the test asserts on the *grandchild*, not on the shell.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use girder_core::{
@@ -561,4 +562,123 @@ async fn a_writable_session_may_run_a_shell_command() {
         .expect("ran");
 
     assert!(!result.is_error);
+}
+
+// ---- bash invalidates observations --------------------------------------------------------------
+
+/// A context carrying an observation session, so a command has something to invalidate.
+fn context_with(observations: Arc<girder_core::ObservationSession>) -> girder_core::ToolRunContext {
+    girder_core::ToolRunContext {
+        execution: girder_core::ToolExecution {
+            call_id: ToolCallId::new("c1").expect("valid test id"),
+            name: "bash".to_owned(),
+            arguments: "{}".to_owned(),
+            agent_id: girder_core::AgentId::new("a".to_owned()).expect("valid test id"),
+        },
+        cancel: CancellationToken::new(),
+        observations: Some(observations),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_shell_command_forgets_what_the_session_had_read() {
+    // A command can write any path, so no static reading of the script says which one changed. Keeping the old
+    // expectation would let the next `write` be checked against a version this command already invalidated.
+    let dir = scratch("bash-forget");
+    let observations = Arc::new(girder_core::ObservationSession::new());
+    observations.observe_present(dir.join("a.txt"), girder_core::FileVersion::new(1, 1));
+    let tool = girder_core::bash_tool(PathPolicy::new(&dir));
+
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "echo x > a.txt" }),
+        context_with(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    assert!(!result.is_error, "{:?}", result.content);
+    assert!(
+        observations.observed(&dir.join("a.txt")).is_none(),
+        "the read is no longer current, so it must not be checked against"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_shell_command_tells_the_model_it_invalidated_reads() {
+    // Dropping the observations silently would hide why a later write's conflict check stopped firing.
+    let dir = scratch("bash-notice");
+    let observations = Arc::new(girder_core::ObservationSession::new());
+    observations.observe_present(dir.join("a.txt"), girder_core::FileVersion::new(1, 1));
+    observations.observe_present(dir.join("b.txt"), girder_core::FileVersion::new(2, 2));
+    let tool = girder_core::bash_tool(PathPolicy::new(&dir));
+
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "true" }),
+        context_with(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    let text: String = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            girder_core::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.contains("may have modified files"), "{text}");
+    assert!(
+        text.contains('2'),
+        "it names how many reads dropped: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_command_that_dropped_nothing_gets_no_notice() {
+    // Noise in a tool result teaches a model to skip the notice that matters.
+    let dir = scratch("bash-no-notice");
+    let observations = Arc::new(girder_core::ObservationSession::new());
+    let tool = girder_core::bash_tool(PathPolicy::new(&dir));
+
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "echo quiet" }),
+        context_with(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    let text: String = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            girder_core::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(!text.contains("[observation]"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_failing_command_still_forgets_reads() {
+    // A nonzero exit does not mean the command touched nothing on the way: it may have written before failing.
+    let dir = scratch("bash-fail-forget");
+    let observations = Arc::new(girder_core::ObservationSession::new());
+    observations.observe_present(dir.join("a.txt"), girder_core::FileVersion::new(1, 1));
+    let tool = girder_core::bash_tool(PathPolicy::new(&dir));
+
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "echo x > a.txt; exit 3" }),
+        context_with(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    assert!(result.is_error);
+    assert!(observations.observed(&dir.join("a.txt")).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -206,17 +206,28 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         tools.register(girder_core::search_tool(web));
     }
 
+    // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
+    // loop still believed was open. Defined before the runtime because the runtime takes the same `Arc`: built
+    // afterwards, the loop would hold `None` and the tool would mutate a state nothing ever read.
+    let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
+
     // Held as an `Arc` so the job tools can register against the same registry the runtime uses: two registries would
     // produce two lists that disagree about what is running.
     let tools = Arc::new(tools);
-    let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
-        provider,
-        tools: Arc::clone(&tools) as Arc<dyn girder_core::ToolRegistryView>,
-        bus: Arc::clone(&bus),
-        model: cli.model.clone(),
-        max_turns: cli.max_turns,
-        token_budget: girder_core::Ceiling::Unlimited,
-    });
+    // The goal is attached at construction rather than by cloning the runtime afterwards: `new` returns an `Arc`,
+    // and a `set_goal` on a clone would wire only that clone while the server kept driving the original.
+    let runtime = girder_core::AgentRuntime::with_goal(
+        girder_core::RuntimeConfig {
+            provider,
+            tools: Arc::clone(&tools) as Arc<dyn girder_core::ToolRegistryView>,
+            bus: Arc::clone(&bus),
+            model: cli.model.clone(),
+            max_turns: cli.max_turns,
+            token_budget: girder_core::Ceiling::Unlimited,
+        },
+        Arc::clone(&goals),
+    );
+
     // The route table the model picker reads. One route for the configured provider; a deployment with
     // more would register them here rather than in a client.
     let mut routes = girder_core::RouteRegistry::new();
@@ -236,12 +247,16 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let jobs = Arc::new(girder_core::JobRegistry::new(256 * 1024));
     girder_core::register_job_methods(&mut remote, &jobs);
 
+    // Extensions are listed and approved over RPC. An approval is its own method rather than a side effect of
+    // activation, because an approval nobody was asked for is the defect the flow exists to prevent.
+    let extensions = Arc::new(girder_core::ExtensionRegistry::new());
+    girder_core::register_extension_methods(&mut remote, &extensions);
+
     // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
     // them against a second registry would produce two lists that disagree about what is running.
     girder_core::register_job_tools(&tools, Arc::clone(&jobs));
-    // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
-    // loop still believed was open.
-    let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
+    // The capability tools, including `goal`, register against the state defined above: a second `GoalState` here
+    // would be the exact defect being fixed, because the model would edit a copy the loop never reads.
     register_capability_tools(&tools, &workspace, &goals);
 
     // Workspace registrations: the directories a session may run in.

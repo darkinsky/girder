@@ -1780,3 +1780,72 @@ pub fn register_command_methods(
         })
     });
 }
+
+/// Registers the `extension.*` methods.
+///
+/// Extensions are code a deployment adds, and a client needs to see what is installed and approve it before it runs.
+/// The approval is its own method rather than part of `activate`: an approval granted as a side effect of activation
+/// is one nobody was asked for, which is exactly the defect the approval flow was added to fix.
+pub fn register_extension_methods(
+    registry: &mut RemoteRegistry,
+    extensions: &Arc<crate::extensions::Registry>,
+) {
+    let list = Arc::clone(extensions);
+    registry.register("extension", "list", move |_call: RemoteCall| {
+        let list = Arc::clone(&list);
+        Box::pin(async move {
+            let entries: Vec<serde_json::Value> = list
+                .ids()
+                .into_iter()
+                .filter_map(|id| {
+                    let definition = list.definition(&id)?;
+                    let status = list.status(&id)?;
+                    Some(serde_json::json!({
+                        "id": definition.id.as_str(),
+                        "name": definition.name,
+                        "description": definition.description,
+                        "source": definition.source,
+                        "requires": definition.requires,
+                        // Whether it may run is a separate fact from whether it is installed: a client that showed
+                        // "installed" as "running" would misreport every extension waiting for approval.
+                        "approvedBy": definition.approved_by,
+                        "status": status.as_str(),
+                    }))
+                })
+                .collect();
+            Ok(serde_json::json!({ "extensions": entries }))
+        })
+    });
+
+    let approve = Arc::clone(extensions);
+    registry.register("extension", "approve", move |call: RemoteCall| {
+        let approve = Arc::clone(&approve);
+        Box::pin(async move {
+            let id = call
+                .args
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "extension".to_owned(),
+                    method: "approve".to_owned(),
+                    message: "`id` is required".to_owned(),
+                })?
+                .to_owned();
+            let by = call
+                .args
+                .get("by")
+                .and_then(Value::as_str)
+                .unwrap_or("client")
+                .to_owned();
+
+            approve
+                .approve(&id, by)
+                .map_err(|error| RemoteError::InvalidArguments {
+                    namespace: "extension".to_owned(),
+                    method: "approve".to_owned(),
+                    message: error.to_string(),
+                })?;
+            Ok(serde_json::json!({ "approved": true }))
+        })
+    });
+}

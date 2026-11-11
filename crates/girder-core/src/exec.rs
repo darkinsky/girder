@@ -29,6 +29,16 @@
 //! about what it does not catch: a command can still write anywhere the process can, because the
 //! policy is advisory, not enforced. Real kernel-level enforcement is a later phase — see the note
 //! at the bottom of this module.
+//!
+//! # Why `bash` invalidates rather than predicts
+//!
+//! The `write` and `edit` tools check a path against what the session last read before touching it. A
+//! shell command has no such path to check: it can build one at run time, call a binary that writes,
+//! or redirect into a file whose name came out of a variable. Rather than pretend a script can be
+//! statically analysed for what it writes, the tool drops this session's observations after the
+//! command runs and says so in its result. The model is told to re-read before editing, which is the
+//! same instruction a detected conflict produces — the difference is that this one is honest about
+//! not knowing which file was the one that changed.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -420,33 +430,92 @@ pub fn bash_tool(policy: PathPolicy) -> crate::tools::ToolDefinition {
                         // A command a model asked to run must not inherit the harness's own credentials.
                         .with_cleared_environment();
                     match run_bash(&command, &options, &ctx.cancel).await {
-                        Ok(output) => {
-                            let text = output.to_text();
-                            if output.success() {
-                                Ok(crate::tools::ToolResult::text(text))
+                        Ok(output) => Ok(with_invalidation_notice(
+                            crate::tools::ToolResult {
+                                content: vec![crate::llm::ContentBlock::Text {
+                                    text: output.to_text(),
+                                }],
+                                value: None,
+                                is_error: !output.success(),
+                            },
+                            // A command that ran at all may have written: a nonzero exit does not mean it touched
+                            // nothing on the way, and a caller that kept its old expectations would then check a
+                            // later write against a version this command invalidated.
+                            ctx.forget_all(),
+                        )),
+                        Err(ExecError::Timeout { seconds }) => Ok(with_invalidation_notice(
+                            // A timed-out command was killed midway, which is the case most likely to have left a
+                            // file half-written.
+                            crate::tools::ToolResult::error(format!(
+                                "command timed out after {seconds}s"
+                            )),
+                            ctx.forget_all(),
+                        )),
+                        Err(ExecError::OutOfScope { path }) => {
+                            // Nothing was spawned, so nothing was written and the observations still hold.
+                            Ok(crate::tools::ToolResult::error(format!(
+                                "denied: `{}` is outside the writable scope",
+                                path.display()
+                            )))
+                        }
+                        Err(ExecError::Cancelled) => {
+                            // The command may have run and been killed partway, so its effect is unknown.
+                            Ok(with_invalidation_notice(
+                                crate::tools::ToolResult::error("cancelled"),
+                                ctx.forget_all(),
+                            ))
+                        }
+                        Err(error) => {
+                            // A spawn failure means no child existed; an output-read failure means one did.
+                            if matches!(error, ExecError::Spawn { .. }) {
+                                Ok(crate::tools::ToolResult::error(error.to_string()))
                             } else {
-                                Ok(crate::tools::ToolResult {
-                                    content: vec![crate::llm::ContentBlock::Text { text }],
-                                    value: None,
-                                    is_error: true,
-                                })
+                                Ok(with_invalidation_notice(
+                                    crate::tools::ToolResult::error(error.to_string()),
+                                    ctx.forget_all(),
+                                ))
                             }
                         }
-                        Err(ExecError::Timeout { seconds }) => Ok(crate::tools::ToolResult::error(
-                            format!("command timed out after {seconds}s"),
-                        )),
-                        Err(ExecError::OutOfScope { path }) => Ok(crate::tools::ToolResult::error(
-                            format!("denied: `{}` is outside the writable scope", path.display()),
-                        )),
-                        Err(ExecError::Cancelled) => {
-                            Ok(crate::tools::ToolResult::error("cancelled"))
-                        }
-                        Err(error) => Ok(crate::tools::ToolResult::error(error.to_string())),
                     }
                 })
             },
         ),
     )
+}
+
+/// Appends the observation-invalidation notice to a `bash` result.
+///
+/// The tool cannot know what a shell command wrote: the path can be built at run time, a called binary can write,
+/// and a redirect looks like any other token. So every successful or attempted command drops this session's file
+/// observations, and the model is told so in the result it reads — otherwise its next `write` would silently be
+/// checked against a version the command had already invalidated.
+///
+/// A command that dropped nothing gets no notice: telling the model that "reads were invalidated" when it had read
+/// no files is noise, and noise in a tool result is what teaches a model to skip the notice that matters.
+fn with_invalidation_notice(
+    mut result: crate::tools::ToolResult,
+    dropped: usize,
+) -> crate::tools::ToolResult {
+    if dropped == 0 {
+        return result;
+    }
+    let notice = format!(
+        "\n\n[observation] this command may have modified files, so the {dropped} file read(s) observed earlier \
+         in this session are no longer considered current. Re-read a file before editing it if its contents \
+         matter."
+    );
+    for block in &mut result.content {
+        if let crate::llm::ContentBlock::Text { text } = block {
+            text.push_str(&notice);
+            return result;
+        }
+    }
+    // No text block to extend means the tool produced no readable output, which a `bash` result never does; the
+    // notice stands on its own rather than being dropped.
+    result
+        .content
+        .push(crate::llm::ContentBlock::Text { text: notice });
+    result
 }
 
 /// Reads a file, refusing paths outside the readable scope.

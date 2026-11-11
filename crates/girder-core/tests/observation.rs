@@ -140,6 +140,46 @@ fn forgetting_a_path_removes_the_expectation() {
 }
 
 #[test]
+fn forgetting_all_returns_how_many_were_dropped() {
+    // The count is what the bash tool reports: a silent drop would hide why a later conflict check stopped firing.
+    let session = ObservationSession::new();
+    session.observe_present("/a", FileVersion::new(1, 1));
+    session.observe_absent("/b");
+
+    assert_eq!(session.forget_all(), 2);
+    assert!(session.paths().is_empty());
+}
+
+#[test]
+fn forgetting_an_empty_session_reports_nothing() {
+    // A notice for a session that had read nothing is noise, and noise is what teaches a model to skip the notice.
+    let session = ObservationSession::new();
+
+    assert_eq!(session.forget_all(), 0);
+}
+
+#[test]
+fn a_forgotten_path_no_longer_refuses_a_write() {
+    // This is the bypass the bash change closes: after the command, the session has no expectation left, so the
+    // next write is allowed rather than checked against a version the command itself invalidated.
+    let session = ObservationSession::new();
+    session.observe_present("/a", FileVersion::new(10, 1000));
+    assert!(
+        session
+            .check_write(Path::new("/a"), Some(&FileVersion::new(20, 2000)))
+            .is_err()
+    );
+
+    session.forget_all();
+
+    assert!(
+        session
+            .check_write(Path::new("/a"), Some(&FileVersion::new(20, 2000)))
+            .is_ok()
+    );
+}
+
+#[test]
 fn observations_are_per_path() {
     let session = ObservationSession::new();
     session.observe_present("/a", FileVersion::new(1, 1));

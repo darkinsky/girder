@@ -145,6 +145,11 @@ pub struct AgentRuntime {
     spill: Option<Arc<dyn crate::spill::Store>>,
     /// How many bytes a tool result may carry before it is spilled.
     spill_limit: usize,
+    /// The goal the loop advances, when one is set.
+    ///
+    /// Shared with the `goal` tool rather than owned: a tool that kept its own copy would let the model complete a
+    /// goal the loop still believed was open, and the loop would keep continuing toward something already done.
+    goal: Option<Arc<std::sync::Mutex<crate::goal::GoalState>>>,
     /// One running turn per session id.
     running: Mutex<BTreeMap<String, Running>>,
 }
@@ -153,12 +158,24 @@ impl AgentRuntime {
     /// Builds a runtime.
     #[must_use]
     pub fn new(config: RuntimeConfig) -> Arc<Self> {
-        Arc::new(Self {
-            config,
-            running: Mutex::new(BTreeMap::new()),
-            spill: None,
-            spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
-        })
+        Self::assemble(config, None, crate::spill::DEFAULT_SPILL_LIMIT, None)
+    }
+
+    /// Builds a runtime already wired to the goal the loop advances.
+    ///
+    /// A constructor rather than "call [`Self::set_goal`] on what [`Self::new`] returned" because `new` hands back an
+    /// `Arc`: a fresh `Arc` has no other owner, so `Arc::get_mut` happens to work today, but it silently returns
+    /// `None` the moment a caller clones the runtime before setting the goal — leaving the loop with no goal while
+    /// the tool mutates one. Construction has no such ordering trap.
+    ///
+    /// The goal is a separate parameter rather than a [`RuntimeConfig`] field because it is *shared*, not owned: the
+    /// same `Arc` goes to the `goal` tool, and a config that took the state by value would invite two copies.
+    #[must_use]
+    pub fn with_goal(
+        config: RuntimeConfig,
+        goal: Arc<std::sync::Mutex<crate::goal::GoalState>>,
+    ) -> Arc<Self> {
+        Self::assemble(config, None, crate::spill::DEFAULT_SPILL_LIMIT, Some(goal))
     }
 
     /// Builds a runtime that spills oversized tool results.
@@ -172,12 +189,37 @@ impl AgentRuntime {
         spill: Option<Arc<dyn crate::spill::Store>>,
         spill_limit: usize,
     ) -> Arc<Self> {
+        Self::assemble(config, spill, spill_limit, None)
+    }
+
+    /// The one place a runtime is assembled.
+    ///
+    /// Private because a constructor that forgot a field is a bug no type can catch: with every `Arc::new(Self { .. })`
+    /// in one place, adding a field means visiting one function rather than three.
+    fn assemble(
+        config: RuntimeConfig,
+        spill: Option<Arc<dyn crate::spill::Store>>,
+        spill_limit: usize,
+        goal: Option<Arc<std::sync::Mutex<crate::goal::GoalState>>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             config,
             running: Mutex::new(BTreeMap::new()),
             spill,
             spill_limit,
+            goal,
         })
+    }
+
+    /// Attaches the goal state the loop advances to a runtime that is not shared yet.
+    ///
+    /// The same `Arc` must go to the `goal` tool, or the model and the loop disagree about whether the goal is open.
+    ///
+    /// Takes `&mut self` and therefore only works while the runtime has no other owner: a caller that has already
+    /// shared the `Arc` cannot reach this method at all. [`Self::with_goal`] is the form to prefer, because it
+    /// cannot be skipped between construction and the first prompt.
+    pub fn set_goal(&mut self, goal: Arc<std::sync::Mutex<crate::goal::GoalState>>) {
+        self.goal = Some(goal);
     }
 
     /// Number of sessions with a turn in flight, for tests and diagnosis.
@@ -310,6 +352,9 @@ impl AgentRuntime {
         context.budget = self.config.token_budget;
         context.spill = self.spill.clone();
         context.spill_limit = self.spill_limit;
+        // The loop's own goal, shared with the tool. Without this assignment the continuation logic below was dead
+        // code: it read a field nothing ever set, so a created goal recorded an intent that never affected a turn.
+        context.goal = self.goal.clone();
         // The prompt was already written by `prompt()`, before the spawn.
         context.record_prompt = false;
         let context = Arc::new(context);

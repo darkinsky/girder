@@ -20,6 +20,15 @@
 //! A session that never read a file has no expectation to violate. Refusing an unobserved write would make the tool
 //! unusable for a file the model was told about but did not open, and the clobber risk there is not something this
 //! layer can reason about.
+//!
+//! # Why a shell command invalidates every observation
+//!
+//! A shell command is opaque. `echo x > f` and `rm -rf build` look the same to this layer, and no static reading of a
+//! script can tell what it wrote: the script can build the path at run time, call a binary that writes, or write
+//! through a symlink. Keeping the old expectations after such a command would be worse than dropping them — a later
+//! write would be checked against a version the command itself had already invalidated, and the check would either
+//! pass a clobber or refuse a write that was safe. Dropping them is the honest answer, and it costs only the reads
+//! that came before the command.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -61,6 +70,10 @@ impl Version {
     /// A hash, when both sides have one, decides: a same-size edit within one timestamp tick is invisible to the
     /// cheaper fields, and that is precisely the change a clobber check exists to catch. Otherwise the cheap fields
     /// are compared, and a mismatch is a mismatch.
+    ///
+    /// The `bytes` check outside the hash comparison is load-bearing rather than redundant: two FNV-1a hashes can
+    /// collide, and a collision that also agreed on size would make a changed file look untouched. Comparing size as
+    /// well narrows the blind spot to a same-size collision, which for a 64-bit hash is not a practical one.
     #[must_use]
     pub fn matches(&self, other: &Version) -> bool {
         if let (Some(mine), Some(theirs)) = (self.hash, other.hash) {
@@ -167,6 +180,24 @@ impl Session {
     /// would make its next write fail against a change it made itself.
     pub fn forget(&self, path: &Path) {
         self.lock().remove(path);
+    }
+
+    /// Forgets every path, returning how many expectations were dropped.
+    ///
+    /// Called after a shell command, whose effect on the filesystem cannot be inferred from the script: the command
+    /// could have written any file, through a path it built at run time or a binary it called. Removed rather than
+    /// marked, because there is nothing left to compare against — and the module's rule is that an unobserved write
+    /// is allowed, so the alternative would need a new state that refuses every path a command might have touched,
+    /// which in practice is every path.
+    ///
+    /// The count is returned rather than swallowed so the tool can tell the model what it invalidated: a warning for
+    /// a session that had read nothing is noise, and a silent drop for one that had read ten files hides why its
+    /// next write suddenly succeeds.
+    pub fn forget_all(&self) -> usize {
+        let mut seen = self.lock();
+        let dropped = seen.len();
+        seen.clear();
+        dropped
     }
 
     /// Checks whether a write may proceed.

@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use girder_core::{
-    ObservationSession, ToolRunContext, edit_tool, patch_tool, read_tool, write_tool,
+    ObservationSession, PathPolicy, ToolRunContext, bash_tool, edit_tool, patch_tool, read_tool,
+    write_tool,
 };
 
 fn scratch(name: &str) -> std::path::PathBuf {
@@ -343,5 +344,122 @@ async fn an_unparseable_patch_is_reported() {
         .expect("refused");
 
     assert!(result.is_error);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- bash closes the observation bypass ---------------------------------------------------------
+
+/// A context that carries an observation session and can drive a shell command.
+fn bash_context(observations: Arc<ObservationSession>) -> ToolRunContext {
+    ToolRunContext {
+        observations: Some(observations),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_write_after_a_shell_command_is_not_checked_against_a_stale_read() {
+    // The bypass this closes: `read`, then `bash "echo > f"`, then `write`. Before the change the write compared
+    // against the version recorded by the read, which the shell command had already replaced — so it either
+    // refused a write that was safe or, worse, its own comparison was meaningless. After the command the session
+    // holds no expectation, and the tool says so.
+    let dir = scratch("bash-bypass");
+    std::fs::write(dir.join("a.txt"), "original").expect("written");
+    let observations = Arc::new(ObservationSession::new());
+
+    let read = read_tool(dir.clone());
+    (read.execute)(
+        serde_json::json!({"path": "a.txt"}),
+        context(Some(Arc::clone(&observations))),
+    )
+    .await
+    .expect("read");
+    assert!(observations.observed(&dir.join("a.txt")).is_some());
+
+    let bash = bash_tool(PathPolicy::new(&dir));
+    let result = (bash.execute)(
+        serde_json::json!({"command": "echo rewritten-by-shell > a.txt"}),
+        bash_context(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    assert!(!result.is_error, "{:?}", result.content);
+    assert!(
+        observations.observed(&dir.join("a.txt")).is_none(),
+        "the read predates the command, so it cannot be the expectation a later write is checked against"
+    );
+
+    let write = write_tool(dir.clone());
+    let result = (write.execute)(
+        serde_json::json!({"path": "a.txt", "content": "mine"}),
+        context(Some(Arc::clone(&observations))),
+    )
+    .await
+    .expect("wrote");
+
+    assert!(
+        !result.is_error,
+        "the stale observation must not refuse this write: {}",
+        text_of(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).expect("read"),
+        "mine"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_write_after_a_shell_command_warns_about_the_invalidated_read() {
+    // The model has to learn that its reading is no longer current, or it will edit a file whose contents it no
+    // longer knows.
+    let dir = scratch("bash-warns");
+    std::fs::write(dir.join("a.txt"), "original").expect("written");
+    let observations = Arc::new(ObservationSession::new());
+    let read = read_tool(dir.clone());
+    (read.execute)(
+        serde_json::json!({"path": "a.txt"}),
+        context(Some(Arc::clone(&observations))),
+    )
+    .await
+    .expect("read");
+
+    let bash = bash_tool(PathPolicy::new(&dir));
+    let result = (bash.execute)(
+        serde_json::json!({"command": "echo touched > a.txt"}),
+        bash_context(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    assert!(text_of(&result).contains("[observation]"), "{:?}", result.content);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_read_after_a_shell_command_is_observed_again() {
+    // Invalidation is not a permanent opt-out: the model can re-read, and the new read is the expectation again.
+    let dir = scratch("bash-reread");
+    std::fs::write(dir.join("a.txt"), "one").expect("written");
+    let observations = Arc::new(ObservationSession::new());
+
+    let bash = bash_tool(PathPolicy::new(&dir));
+    (bash.execute)(
+        serde_json::json!({"command": "echo two > a.txt"}),
+        bash_context(Arc::clone(&observations)),
+    )
+    .await
+    .expect("ran");
+
+    let read = read_tool(dir.clone());
+    (read.execute)(
+        serde_json::json!({"path": "a.txt"}),
+        context(Some(Arc::clone(&observations))),
+    )
+    .await
+    .expect("re-read");
+
+    assert!(observations.observed(&dir.join("a.txt")).is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
