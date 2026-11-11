@@ -95,6 +95,7 @@ mod observation;
 mod patch;
 mod paths;
 mod permissions;
+mod present_tool;
 mod projection;
 mod providers;
 mod questions;
@@ -109,6 +110,7 @@ mod search_tools;
 mod service;
 mod session;
 mod session_query;
+mod session_search_tool;
 mod shell;
 mod skill;
 mod spill;
@@ -261,6 +263,7 @@ pub use permissions::{
     Approval, Catalogue as PermissionCatalogue, Entry as PermissionEntry, Knobs, PermissionError,
     Preset, State as PermissionState,
 };
+pub use present_tool::present_tool;
 pub use projection::{
     ModelSelectionProjection, ProjectedSession, Projection, ProjectionError, ProjectionHandle,
     ProjectionRegistry, Seq as ProjectionSeq, TitleProjection, TurnBoundary,
@@ -308,6 +311,7 @@ pub use session_query::{
     Query as SearchQuery, Results as SearchResults, matches as search_matches,
     query as search_sessions, run as run_query, search_files, searchable_text,
 };
+pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
 pub use shell::{
     DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
     Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,
