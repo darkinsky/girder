@@ -250,7 +250,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
 
     // Host capabilities: handing a path to the desktop. The workspace is the boundary, so a client cannot ask the host
     // to open something the tools could not read.
-    girder_core::register_host_methods(&mut remote, &workspace);
+    register_host_surface(&mut remote, &workspace);
 
     // The queue editor needs the agent that holds a session's queue, and this build has no session-to-agent registry:
     // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
@@ -379,6 +379,20 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
         tools.register(girder_core::fetch_tool(Arc::clone(&web)));
         tools.register(girder_core::search_tool(web));
     }
+}
+
+/// Registers the host-facing methods: handing a workspace path to the desktop.
+///
+/// One function because the two names share one opener. Two `SystemOpener::detect()` calls would be two chances to
+/// disagree about whether a desktop is available, and a client that saw `openPath` work and `openWorkspacePath` refuse
+/// would have found a bug in the seam rather than in its own call.
+fn register_host_surface(remote: &mut girder_core::RemoteRegistry, workspace: &std::path::Path) {
+    girder_core::register_host_methods(remote, workspace);
+    let opener: Arc<dyn girder_core::Opener> = match girder_core::SystemOpener::detect() {
+        Ok(opener) => Arc::new(opener),
+        Err(reason) => Arc::new(girder_core::UnavailableOpener::new(reason)),
+    };
+    girder_core::register_open_workspace_path(remote, workspace, &opener);
 }
 
 fn register_capability_tools(

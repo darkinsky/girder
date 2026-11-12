@@ -902,7 +902,6 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 /// server never exposed either. Both halves were wrong, and neither test could see it because the drift test only
 /// checked the methods the session core registers.
 const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
-    "openWorkspacePath",
     "workspacePathApplications",
     "stream",
     "resume",

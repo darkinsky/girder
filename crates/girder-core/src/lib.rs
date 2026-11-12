@@ -146,6 +146,7 @@ mod web_tools;
 mod workflow;
 mod workflow_tool;
 mod workspace_files_rpc;
+mod workspace_open_rpc;
 mod workspace_path;
 
 pub use access::{
@@ -235,7 +236,9 @@ pub use goal::{
 };
 pub use goal_tool::goal_tool;
 pub use home_paths::Paths as HomePaths;
-pub use host_rpc::{SystemOpener, UnavailableOpener, register_host_methods};
+pub use host_rpc::{
+    Opener, SystemOpener, UnavailableOpener, register_host_methods, register_host_methods_with,
+};
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use instructions::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_TOTAL_BYTES, HARNESS_GLOBAL_DIRECTORY,
@@ -444,6 +447,7 @@ pub use workflow::{
 };
 pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_status_tool};
 pub use workspace_files_rpc::register_workspace_file_methods;
+pub use workspace_open_rpc::register_open_workspace_path;
 pub use workspace_path::{
     contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,
     is_unc, normalize as normalize_path, relative_to, resolve as resolve_in_workspace,
