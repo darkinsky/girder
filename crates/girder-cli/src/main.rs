@@ -223,8 +223,11 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
 
     // Terminals are listed and driven over RPC. The launcher is the same one the tools get, so a terminal a client
     // opens is one a model can see: two launchers would produce two sets of terminals.
+    // The real launcher: a local shell over pipes. Not a pty, so an interactive program will not work, but a script
+    // and a non-interactive command will -- and a terminal that can run those is better than one that refuses every
+    // launch, which is what this deployment had until now.
     let launcher: Arc<dyn girder_core::TerminalLauncher> =
-        Arc::new(girder_core::UnavailableLauncher::no_shell());
+        Arc::new(girder_core::LocalLauncher::new());
     girder_core::register_terminal_rpc_methods(
         &mut remote,
         &Arc::new(girder_core::TerminalRegistry::new()),
@@ -442,7 +445,7 @@ fn register_capability_tools(
     girder_core::register_terminal_tools(
         tools,
         Arc::new(girder_core::TerminalRegistry::new()),
-        Arc::new(girder_core::UnavailableLauncher::no_shell()),
+        Arc::new(girder_core::LocalLauncher::new()),
     );
 
     // A workflow needs an engine. Without one the run tool reports that rather than accepting work it cannot do.
