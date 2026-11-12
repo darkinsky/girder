@@ -60,6 +60,7 @@ extern crate self as girder_core;
 
 pub mod api_config;
 pub mod api_job;
+mod api_key;
 pub mod api_session;
 mod approval;
 mod atomic_write;
@@ -170,6 +171,7 @@ pub use agent::{
     ModelSelectionView, SelectionError, SelectionSource, validate as validate_model_selection,
 };
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
+pub use api_key::{KeyCheck, check as check_api_key, normalize as normalize_api_key};
 /// The session Remote surface, namespaced because its wire types share names with the
 /// service-side request types in `remote`.
 pub use api_session as session_api;

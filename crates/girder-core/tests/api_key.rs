@@ -39,12 +39,12 @@ fn suspect_with_hint(raw: &str) -> (String, String) {
 #[test]
 fn a_well_formed_key_is_ok() {
     assert_eq!(check(GOOD), KeyCheck::Ok);
-    assert!(check(GOOD).is_ok());
+    assert_eq!(check(GOOD), KeyCheck::Ok);
 }
 
 #[test]
 fn a_key_of_exactly_the_minimum_length_is_ok() {
-    assert!(check(&"a".repeat(MIN_KEY_LEN)).is_ok());
+    assert_eq!(check(&"a".repeat(MIN_KEY_LEN)), KeyCheck::Ok);
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn a_too_short_key_is_suspect() {
 #[test]
 fn a_key_one_character_under_the_floor_is_suspect() {
     let under = "a".repeat(MIN_KEY_LEN - 1);
-    assert!(!check(&under).is_ok());
+    assert_ne!(check(&under), KeyCheck::Ok);
 }
 
 #[test]
@@ -202,13 +202,13 @@ fn normalize_does_not_repair_an_inner_defect() {
     // silently edited credential.
     let broken = "sk-abcdefghijklmnop\u{2019}qrstuvwxyz";
     assert_eq!(normalize(broken), broken);
-    assert!(!check(&normalize(broken)).is_ok());
+    assert_ne!(check(&normalize(broken)), KeyCheck::Ok);
 }
 
 #[test]
 fn normalize_does_not_repair_a_short_key() {
     assert_eq!(normalize("sk-12345"), "sk-12345");
-    assert!(!check(&normalize("sk-12345")).is_ok());
+    assert_ne!(check(&normalize("sk-12345")), KeyCheck::Ok);
 }
 
 #[test]

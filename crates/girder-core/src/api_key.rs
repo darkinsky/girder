@@ -35,8 +35,7 @@
 ///
 /// Carries the explanation rather than a code because the two callers want different things: a
 /// hard refusal wants [`KeyCheck::Suspect::problem`] to log, a warning wants
-/// [`KeyCheck::Suspect::hint`] to show. A caller that only needs a boolean can use
-/// [`KeyCheck::is_ok`].
+/// [`KeyCheck::Suspect::hint`] to show. A caller that only needs a boolean matches on the variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyCheck {
     /// Nothing about the shape is obviously broken.
@@ -55,16 +54,6 @@ pub enum KeyCheck {
         /// without the quotes", not "invalid character at offset 0".
         hint: String,
     },
-}
-
-impl KeyCheck {
-    /// Returns `true` for [`KeyCheck::Ok`].
-    ///
-    /// Provided so a caller that only gates on the verdict does not have to destructure.
-    #[must_use]
-    pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok)
-    }
 }
 
 /// The shortest key this module will accept.
@@ -98,7 +87,7 @@ const BEARER_PREFIX: &str = "bearer ";
 /// # Examples
 ///
 /// ```
-/// use girder_core::api_key::{check, KeyCheck};
+/// use girder_core::{KeyCheck, check_api_key as check};
 ///
 /// assert_eq!(check("sk-abcdefghijklmnop"), KeyCheck::Ok);
 ///
@@ -204,7 +193,7 @@ pub fn check(raw: &str) -> KeyCheck {
 /// # Examples
 ///
 /// ```
-/// use girder_core::api_key::{check, normalize, KeyCheck};
+/// use girder_core::{KeyCheck, check_api_key as check, normalize_api_key as normalize};
 ///
 /// assert_eq!(normalize("  sk-abcdefghijklmnop \n"), "sk-abcdefghijklmnop");
 /// assert_eq!(normalize("Bearer sk-abcdefghijklmnop"), "sk-abcdefghijklmnop");
