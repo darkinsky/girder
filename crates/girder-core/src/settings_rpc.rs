@@ -188,7 +188,9 @@ fn validate_key(key: &str) -> Result<&str, String> {
         return Err("a settings key must not be empty".to_owned());
     }
     if key.trim().is_empty() {
-        return Err(format!("`{key}` is only whitespace, which addresses nothing"));
+        return Err(format!(
+            "`{key}` is only whitespace, which addresses nothing"
+        ));
     }
     if key.trim() != key {
         return Err(format!(
@@ -421,9 +423,11 @@ pub fn register_settings_methods(registry: &mut RemoteRegistry, store: &Arc<dyn 
     });
 
     let list_store = Arc::clone(store);
-    registry.register(NAMESPACE, LIST_METHOD, move |call: RemoteCall| {
+    // The argument is ignored rather than parsed: `list` takes none, and accepting an extra key in
+    // the body would let a client believe it had filtered the result.
+    registry.register(NAMESPACE, LIST_METHOD, move |_call: RemoteCall| {
         let store = Arc::clone(&list_store);
-        Box::pin(async move { list(&store) })
+        Box::pin(async move { Ok::<_, RemoteError>(list(&store)) })
     });
 
     let delete_store = Arc::clone(store);
@@ -551,7 +555,11 @@ fn set(args: &Value, store: &Arc<dyn SettingsStore>) -> Result<Value, RemoteErro
 /// Nothing is paged: a settings surface is expected to be small, and a page a client forgot to follow
 /// would hide a key it then reports as unset. If a deployment ever holds more than a form's worth,
 /// the bound belongs to the store that knows its own size.
-fn list(store: &Arc<dyn SettingsStore>) -> Result<Value, RemoteError> {
+///
+/// A `Value` rather than a `Result`: the read has no failure path of its own — a store that cannot
+/// list reports that by listing nothing — and a `Result` here would be an error branch no caller
+/// could ever reach.
+fn list(store: &Arc<dyn SettingsStore>) -> Value {
     // Sorted here rather than by the store: the trait promises no order, and a listing that
     // reordered between two calls would move rows under a reader.
     let mut entries = store.list();
@@ -560,7 +568,7 @@ fn list(store: &Arc<dyn SettingsStore>) -> Result<Value, RemoteError> {
         .into_iter()
         .map(|(key, value)| json!({"key": key, "value": value}))
         .collect();
-    Ok(json!({"items": items, "total": items.len()}))
+    json!({"items": items, "total": items.len()})
 }
 
 /// Runs one `settings.delete`.
@@ -605,7 +613,7 @@ fn update(args: &Value, store: &Arc<dyn SettingsStore>) -> Result<Value, RemoteE
     for (field, value) in patch {
         current.insert(field, value);
     }
-    store_section(store, UPDATE_METHOD, &ns, Value::Object(current))
+    store_section(store, UPDATE_METHOD, &ns, &Value::Object(current))
 }
 
 /// Runs one `settings.replace`.
@@ -616,7 +624,7 @@ fn replace(args: &Value, store: &Arc<dyn SettingsStore>) -> Result<Value, Remote
     let Some(section) = request.section else {
         return Err(invalid(REPLACE_METHOD, "`section` is required"));
     };
-    store_section(store, REPLACE_METHOD, &ns, Value::Object(section))
+    store_section(store, REPLACE_METHOD, &ns, &Value::Object(section))
 }
 
 /// Runs one `settings.mutate`.
@@ -644,7 +652,7 @@ fn mutate(args: &Value, store: &Arc<dyn SettingsStore>) -> Result<Value, RemoteE
         apply_op(&mut section, &op)
             .map_err(|message| invalid(MUTATE_METHOD, format!("`ops[{index}]`: {message}")))?;
     }
-    store_section(store, MUTATE_METHOD, &ns, section)
+    store_section(store, MUTATE_METHOD, &ns, &section)
 }
 
 // ---- path edits -------------------------------------------------------------------------------
@@ -808,11 +816,14 @@ fn refuse_revision(expected: Option<u64>, method: &str) -> Result<(), RemoteErro
 }
 
 /// Stores a section and answers the shape every write mode returns.
+///
+/// Takes the value by reference because it is cloned for the store and echoed once; every caller
+/// would otherwise hand over ownership only to have it copied back out.
 fn store_section(
     store: &Arc<dyn SettingsStore>,
     method: &str,
     ns: &str,
-    value: Value,
+    value: &Value,
 ) -> Result<Value, RemoteError> {
     store
         .set(ns, value.clone())

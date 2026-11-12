@@ -45,9 +45,10 @@ use girder_core::{Policy, ReadOnly, RemoteCall, RemoteError, RemoteRegistry};
 use serde_json::{Value, json};
 
 use settings_rpc::{
-    DELETE_METHOD, DESCRIBE_METHOD, GET_METHOD, LIST_METHOD, MAX_KEY_LEN, MUTATE_METHOD, NAMESPACE,
-    OPEN_DOCUMENT_METHOD, REPLACE_METHOD, SET_METHOD, SettingsStore, UNIMPLEMENTED, UPDATE_METHOD,
-    UnavailableSettingsStore, MemorySettingsStore, register_settings_methods,
+    DELETE_METHOD, DESCRIBE_METHOD, GET_METHOD, LIST_METHOD, MAX_KEY_LEN, MUTATE_METHOD,
+    MemorySettingsStore, NAMESPACE, OPEN_DOCUMENT_METHOD, REPLACE_METHOD, SET_METHOD,
+    SettingsStore, UNIMPLEMENTED, UPDATE_METHOD, UnavailableSettingsStore,
+    register_settings_methods,
 };
 
 // ---- fixtures ---------------------------------------------------------------------------------
@@ -77,7 +78,11 @@ fn read_only(store: &Arc<MemorySettingsStore>) -> RemoteRegistry {
     registry
 }
 
-async fn dispatch(registry: &RemoteRegistry, method: &str, args: Value) -> Result<Value, RemoteError> {
+async fn dispatch(
+    registry: &RemoteRegistry,
+    method: &str,
+    args: Value,
+) -> Result<Value, RemoteError> {
     registry.dispatch(NAMESPACE, method, call(args)).await
 }
 
@@ -399,8 +404,14 @@ async fn a_read_only_peer_can_read_settings_and_cannot_write_them() {
         (SET_METHOD, json!({"key": "new", "value": 1})),
         (SET_METHOD, json!({"key": "existing", "value": 2})),
         (UPDATE_METHOD, json!({"ns": "existing", "patch": {"a": 1}})),
-        (REPLACE_METHOD, json!({"ns": "existing", "section": {"a": 1}})),
-        (MUTATE_METHOD, json!({"ns": "existing", "ops": [{"op": "set", "path": ["a"], "value": 1}]})),
+        (
+            REPLACE_METHOD,
+            json!({"ns": "existing", "section": {"a": 1}}),
+        ),
+        (
+            MUTATE_METHOD,
+            json!({"ns": "existing", "ops": [{"op": "set", "path": ["a"], "value": 1}]}),
+        ),
         (DELETE_METHOD, json!({"key": "existing"})),
     ] {
         let error = dispatch(&mirror, method, args)

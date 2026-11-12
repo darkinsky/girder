@@ -438,9 +438,22 @@ fn register_workspace_file_surface(
     fs: &Arc<dyn girder_core::FileSystem>,
     workspaces: &Arc<girder_core::api_config::WorkspaceRegistry>,
 ) {
+    // Settings share this function rather than `serve` because they are the other half of what a client configures --
+    // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
+    register_settings_surface(remote);
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);
+}
+
+/// Registers the settings methods.
+///
+/// The store is process-local: a restart forgets it, which the module says plainly rather than implying a durability
+/// it does not have. A deployment that wants settings to survive supplies its own store to the same registration.
+fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {
+    let settings: Arc<dyn girder_core::SettingsStore> =
+        Arc::new(girder_core::MemorySettingsStore::new());
+    girder_core::register_settings_methods(remote, &settings);
 }
 
 fn register_host_surface(remote: &mut girder_core::RemoteRegistry, workspace: &std::path::Path) {

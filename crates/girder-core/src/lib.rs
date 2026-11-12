@@ -137,6 +137,7 @@ mod session_resume_rpc;
 mod session_search_tool;
 mod session_stats;
 mod session_title;
+mod settings_rpc;
 mod shell;
 mod skill;
 mod skill_tool;
@@ -413,6 +414,9 @@ pub use session_resume_rpc::register_session_resume_method;
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
 pub use session_stats::Stats as SessionStats;
 pub use session_title::{Source as TitleSource, derive as derive_title};
+pub use settings_rpc::{
+    MemorySettingsStore, SettingsStore, UnavailableSettingsStore, register_settings_methods,
+};
 pub use shell::{
     DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
     Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,
