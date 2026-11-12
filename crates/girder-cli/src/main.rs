@@ -261,7 +261,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
     // That is the honest state -- the method is reachable and says why it cannot act, which is better than a
     // NOT_IMPLEMENTED that a client would read as "this build is old".
-    register_lifecycle_surface(&mut remote, &runtime);
+    register_lifecycle_surface(&mut remote, &runtime, &projections);
 
     let queues = Arc::new(girder_core::AgentQueueMap::new());
     girder_core::register_session_queue_methods(
@@ -405,10 +405,14 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
 fn register_lifecycle_surface(
     remote: &mut girder_core::RemoteRegistry,
     runtime: &std::sync::Arc<girder_core::AgentRuntime>,
+    projections: &std::sync::Arc<girder_core::ProjectionRegistry>,
 ) {
     // Resuming confirms a session can be reopened and reports where its log ends, so a client knows from which sequence
     // to continue rather than re-reading the whole conversation to find out.
     girder_core::register_session_resume_method(remote, &session_catalog(), runtime);
+    // One snapshot of everything a client renders: counts, the log cursor, the title, and every projection. Without it
+    // a client makes one call per projection and re-derives what the server already folded.
+    girder_core::register_session_state_method(remote, &session_catalog(), projections);
     // Scheduled tasks are stored in memory: a restart forgets them, and the module says so rather than implying a
     // durability it does not have. Nothing triggers them yet -- the trigger needs a runtime loop, which is a separate
     // piece -- so a created task is recorded and inert.

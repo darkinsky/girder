@@ -21,12 +21,14 @@
 //! Isolation: every test builds its own registry, catalog, and projection registry over a scratch
 //! directory named from the process id and a counter, so tests cannot collide.
 //!
-//! The module is included by path rather than reached through the crate's re-exports, so these tests
-//! compile against the method as written before the crate root wires it in. It spells its paths
-//! through `girder_core::`, the alias the library declares for itself, so the same source builds both
-//! here and inside the crate. The wire names and the response shape are declared locally rather than
-//! imported: they are the contract a client codes against, and a test that read them from the
-//! implementation would keep passing after a field was renamed.
+//! The module is included by path, which is how the rest of this crate's RPC tests reach a file under
+//! `src/`: it lets these tests name [`LiveTurns`] and [`SessionStateValue`], which the crate root does
+//! not re-export. One test additionally builds its registry through the crate's public re-export, so a
+//! method that was implemented but never wired is caught here rather than in a client. The include
+//! spells its paths through `girder_core::`, the alias the library declares for itself, so the same
+//! source builds both here and inside the crate. The wire names and the response shape are declared
+//! locally rather than imported: they are the contract a client codes against, and a test that read
+//! them from the implementation would keep passing after a field was renamed.
 
 #![allow(
     clippy::unwrap_used,
@@ -198,7 +200,10 @@ fn catalog(root: &Path) -> Arc<dyn SessionCatalog> {
     })
 }
 
-fn registry(catalog: &Arc<dyn SessionCatalog>, projections: &Arc<ProjectionRegistry>) -> RemoteRegistry {
+fn registry(
+    catalog: &Arc<dyn SessionCatalog>,
+    projections: &Arc<ProjectionRegistry>,
+) -> RemoteRegistry {
     let mut registry = RemoteRegistry::new();
     register_session_state_method(&mut registry, catalog, projections);
     registry
@@ -433,7 +438,11 @@ async fn a_missing_session_id_is_invalid_arguments() {
     let dir = scratch("noid");
     let registry = registry(&catalog(&dir), &projections());
 
-    for args in [json!({}), json!({"sessionId": ""}), json!({"sessionId": "   "})] {
+    for args in [
+        json!({}),
+        json!({"sessionId": ""}),
+        json!({"sessionId": "   "}),
+    ] {
         let error = state(&registry, args)
             .await
             .expect_err("a blank id is not a session");
@@ -573,6 +582,28 @@ async fn the_default_source_reports_nothing_running() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ---- the wiring ---------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_crate_re_exports_the_registration_function() {
+    // The method is only reachable by a host if the crate root re-exports it. A module that compiles
+    // here but was never exported would leave `session.state` unimplemented in every deployment while
+    // these tests still passed, which is exactly the gap this test closes.
+    let dir = scratch("export");
+    seed(&dir, "s1", 2);
+
+    let mut registry = RemoteRegistry::new();
+    girder_core::register_session_state_method(&mut registry, &catalog(&dir), &projections());
+
+    let value = state(&registry, json!({"sessionId": "s1"}))
+        .await
+        .expect("the re-exported registration answers");
+
+    assert_eq!(value.events, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- the wire shape -----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -599,7 +630,8 @@ async fn the_value_serialises_with_the_documented_field_names() {
         assert!(
             raw.get(field).is_some(),
             "the response carries `{field}`, got {:?}",
-            raw.as_object().map(|object| object.keys().collect::<Vec<_>>())
+            raw.as_object()
+                .map(|object| object.keys().collect::<Vec<_>>())
         );
     }
     assert!(
