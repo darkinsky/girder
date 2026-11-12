@@ -160,7 +160,9 @@ mod terminal_rpc_extra;
 mod terminal_tool;
 mod time;
 mod todo_tool;
+mod token_meter;
 mod tool_batching;
+mod tool_result_pruning;
 mod tools;
 mod typert;
 mod web;
@@ -500,7 +502,11 @@ pub use time::{
     parse_instant,
 };
 pub use todo_tool::{Status as TodoStatus, Todo, read_todos, todo_tool};
+pub use token_meter::{
+    Price, cost as token_cost, estimate_blocks, estimate_message, estimate_text, price_for,
+};
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
+pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
