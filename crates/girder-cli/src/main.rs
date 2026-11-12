@@ -139,6 +139,10 @@ async fn main() -> Result<()> {
 
 /// Serves the RPC endpoint with the Remote methods this build implements.
 async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
+    // Checked before binding: a deployment that cannot work should say so once instead of serving one error per
+    // client. Only a fatal finding refuses to start, because a missing provider is the offline path and a missing
+    // desktop is normal on a server.
+    boot_check(&cli)?;
     let bus = Arc::new(EventBus::new());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     let address = listener.local_addr()?;
@@ -478,6 +482,42 @@ fn register_runtime_surfaces(
     let runtime: Arc<dyn girder_core::ExtensionRuntime> =
         Arc::new(girder_core::ExtensionShellRuntime::new());
     girder_core::register_extension_run_methods(remote, extensions, &runtime);
+}
+
+/// Reports what a deployment is missing, and refuses to start when it is fatal.
+fn boot_check(cli: &Cli) -> Result<()> {
+    let workspace = std::env::current_dir().ok();
+    let deployment = girder_core::Deployment {
+        provider: girder_core::provider_from_env().is_ok(),
+        sessions_root: Some(sessions_root()),
+        workspace,
+        terminal: true,
+        desktop: girder_core::SystemOpener::detect().is_ok(),
+        // Discovered on PATH rather than read from SHELL: the variable is a preference, and a shell that is named but
+        // not installed would be reported as present.
+        shell: !girder_core::discover_shells("/bin/sh", &["sh", "bash"]).is_empty(),
+    };
+    let findings = girder_core::check_deployment(&deployment);
+    if girder_core::boot_is_fatal(&findings) {
+        let report = girder_core::boot_report(&findings);
+        anyhow::bail!("this deployment cannot start:\n{report}");
+    }
+    // Notes and degradations are printed rather than swallowed: a deployment that works with a piece missing should
+    // still be told which piece.
+    for finding in findings {
+        if finding.severity != girder_core::Severity::Note {
+            eprintln!(
+                "{}: {}",
+                match finding.severity {
+                    girder_core::Severity::Degraded => "degraded",
+                    _ => "note",
+                },
+                finding.subject
+            );
+        }
+    }
+    let _ = cli;
+    Ok(())
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {

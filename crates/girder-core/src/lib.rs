@@ -58,6 +58,7 @@ mod agent_loop;
 // from within itself.
 extern crate self as girder_core;
 
+mod api_catalog;
 pub mod api_config;
 pub mod api_job;
 mod api_key;
@@ -67,6 +68,7 @@ mod atomic_write;
 mod attachment;
 mod attachment_rpc;
 mod boot;
+mod boot_check;
 mod brand;
 mod chunked_list;
 mod code_language;
@@ -158,6 +160,7 @@ mod terminal_rpc_extra;
 mod terminal_tool;
 mod time;
 mod todo_tool;
+mod tool_batching;
 mod tools;
 mod typert;
 mod web;
@@ -180,6 +183,7 @@ pub use agent::{
     ModelSelectionView, SelectionError, SelectionSource, validate as validate_model_selection,
 };
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
+pub use api_catalog::{Catalog, CatalogError, EventEntry, MethodEntry, ServiceEntry};
 pub use api_key::{KeyCheck, check as check_api_key, normalize as normalize_api_key};
 /// The session Remote surface, namespaced because its wire types share names with the
 /// service-side request types in `remote`.
@@ -201,6 +205,10 @@ pub use attachment_rpc::register_attachment_upload_method;
 pub use boot::{
     BootConfig, BootError, BootReport, Booted, DEFAULT_ENDPOINT, DEFAULT_MODEL,
     Outcome as BootOutcome, boot,
+};
+pub use boot_check::{
+    Deployment, Finding, Severity, check as check_deployment, is_fatal as boot_is_fatal,
+    may_be_a_directory, report as boot_report,
 };
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
@@ -479,7 +487,7 @@ pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
     register_terminal_methods as register_terminal_rpc_methods,
 };
-pub use terminal_rpc_extra::register_terminal_extra_methods;
+pub use terminal_rpc_extra::{TerminalShell, discover_shells, register_terminal_extra_methods};
 pub use terminal_tool::{
     TerminalLauncher, UnavailableLauncher, register_terminal_tools, terminal_read_tool,
     terminal_send_tool, terminal_start_tool,
@@ -491,6 +499,7 @@ pub use time::{
     parse_instant,
 };
 pub use todo_tool::{Status as TodoStatus, Todo, read_todos, todo_tool};
+pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
