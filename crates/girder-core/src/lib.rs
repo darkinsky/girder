@@ -119,6 +119,8 @@ mod scope;
 mod search_tools;
 mod service;
 mod session;
+mod session_export_rpc;
+mod session_lifecycle_rpc;
 mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
@@ -347,6 +349,14 @@ pub use service::ServiceKey;
 pub use session::{
     MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, TurnEndReason,
     read_session_file,
+};
+pub use session_export_rpc::register_session_export_method;
+pub use session_lifecycle_rpc::{
+    ARCHIVE_METHOD, ArchiveError, ArchiveStore, COPY_SUFFIX,
+    DECLARED_ACCESS as SESSION_LIFECYCLE_ACCESS, DUPLICATE_METHOD, MAX_COPY_TITLE_CHARS,
+    MemoryArchiveStore, NAMESPACE as SESSION_LIFECYCLE_NAMESPACE, UnavailableArchiveStore,
+    register_session_lifecycle_methods, register_session_lifecycle_methods_with_archive,
+    retain_visible,
 };
 pub use session_query::{
     Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,

@@ -256,6 +256,8 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
     // That is the honest state -- the method is reachable and says why it cannot act, which is better than a
     // NOT_IMPLEMENTED that a client would read as "this build is old".
+    register_lifecycle_surface(&mut remote);
+
     let queues = Arc::new(girder_core::AgentQueueMap::new());
     girder_core::register_session_queue_methods(
         &mut remote,
@@ -386,6 +388,21 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
 /// One function because the two names share one opener. Two `SystemOpener::detect()` calls would be two chances to
 /// disagree about whether a desktop is available, and a client that saw `openPath` work and `openWorkspacePath` refuse
 /// would have found a bug in the seam rather than in its own call.
+/// Registers the session lifecycle methods: duplicate and archive.
+///
+/// The archive store is process-local, so an archived session survives for the life of the server. A durable one needs a
+/// place to write, which the catalog does not offer -- the seam exists so a deployment can supply one, and this is the
+/// default that makes the method usable rather than always refusing.
+fn register_lifecycle_surface(remote: &mut girder_core::RemoteRegistry) {
+    let archive: Arc<dyn girder_core::ArchiveStore> =
+        Arc::new(girder_core::MemoryArchiveStore::new());
+    girder_core::register_session_lifecycle_methods_with_archive(
+        remote,
+        &session_catalog(),
+        &archive,
+    );
+}
+
 fn register_host_surface(remote: &mut girder_core::RemoteRegistry, workspace: &std::path::Path) {
     girder_core::register_host_methods(remote, workspace);
     let opener: Arc<dyn girder_core::Opener> = match girder_core::SystemOpener::detect() {

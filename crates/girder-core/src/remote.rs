@@ -901,14 +901,7 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 /// and this list was never told, so a client reading the declaration would have shown "not implemented" for a method the
 /// server never exposed either. Both halves were wrong, and neither test could see it because the drift test only
 /// checked the methods the session core registers.
-const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[
-    "workspacePathApplications",
-    "stream",
-    "resume",
-    "archive",
-    "duplicate",
-    "export",
-];
+const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &["workspacePathApplications", "stream", "resume"];
 
 /// Registers the `session.*` methods this build implements.
 ///
@@ -939,6 +932,7 @@ fn register_session_core(
     register_create(registry, catalog);
     register_history(registry, catalog);
     register_follow(registry, catalog);
+    crate::session_export_rpc::register_session_export_method(registry, catalog);
     register_rename(registry, catalog);
     register_delete(registry, catalog);
     register_fork(registry, catalog);
