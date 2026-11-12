@@ -125,6 +125,7 @@ mod service;
 mod session;
 mod session_export_rpc;
 mod session_lifecycle_rpc;
+mod session_migration;
 mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
@@ -372,6 +373,10 @@ pub use session_lifecycle_rpc::{
     MemoryArchiveStore, NAMESPACE as SESSION_LIFECYCLE_NAMESPACE, UnavailableArchiveStore,
     register_session_lifecycle_methods, register_session_lifecycle_methods_with_archive,
     retain_visible,
+};
+pub use session_migration::{
+    FormatVersion, Migration, MigrationError, Migrator, detect as detect_format,
+    upgrade as upgrade_event, upgrade_in_session,
 };
 pub use session_query::{
     Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,
