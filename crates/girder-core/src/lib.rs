@@ -417,7 +417,9 @@ pub use session_queue_rpc::{
 };
 pub use session_resume_rpc::register_session_resume_method;
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
-pub use session_state_rpc::{register_session_state_method, register_session_state_method_with};
+pub use session_state_rpc::{
+    LiveTurns, NoLiveTurns, register_session_state_method, register_session_state_method_with,
+};
 pub use session_stats::Stats as SessionStats;
 pub use session_title::{Source as TitleSource, derive as derive_title};
 pub use settings_rpc::{

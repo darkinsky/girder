@@ -412,7 +412,17 @@ fn register_lifecycle_surface(
     girder_core::register_session_resume_method(remote, &session_catalog(), runtime);
     // One snapshot of everything a client renders: counts, the log cursor, the title, and every projection. Without it
     // a client makes one call per projection and re-derives what the server already folded.
-    girder_core::register_session_state_method(remote, &session_catalog(), projections);
+    // The runtime knows which sessions have a turn in flight, so `running` comes from it rather than from the default
+    // source that always answers false -- which would tell every client that nothing is ever running.
+    let live_runtime = std::sync::Arc::clone(runtime);
+    let turns: std::sync::Arc<dyn girder_core::LiveTurns> =
+        std::sync::Arc::new(move |session_id: &str| live_runtime.is_running(session_id));
+    girder_core::register_session_state_method_with(
+        remote,
+        &session_catalog(),
+        projections,
+        &turns,
+    );
     // Scheduled tasks are stored in memory: a restart forgets them, and the module says so rather than implying a
     // durability it does not have. Nothing triggers them yet -- the trigger needs a runtime loop, which is a separate
     // piece -- so a created task is recorded and inert.
