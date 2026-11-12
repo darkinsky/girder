@@ -98,6 +98,7 @@ mod launch_environment;
 mod limits;
 mod llm;
 mod llm_deepseek;
+mod llm_stats;
 mod lsp;
 mod lsp_tool;
 mod mcp;
@@ -287,6 +288,7 @@ pub use llm::{
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
 };
+pub use llm_stats::Stats as LlmStats;
 pub use lsp::{
     Answer as LspAnswer, Location as LspLocation, LspError, Operation as LspOperation,
     Position as LspPosition, Provider as LspProvider, Range as LspRange, Registry as LspRegistry,
