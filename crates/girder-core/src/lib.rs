@@ -100,6 +100,7 @@ mod llm_deepseek;
 mod lsp;
 mod lsp_tool;
 mod mcp;
+mod mcp_tools;
 mod message;
 mod observation;
 mod patch;
@@ -290,6 +291,7 @@ pub use mcp::{
     CallResult as McpCallResult, Catalogue as McpCatalogue, McpError, Registry as McpRegistry,
     Status as McpStatus, Tool as McpTool, Transport as McpTransport,
 };
+pub use mcp_tools::{MAX_BRIDGED_TOOLS, register_mcp_tools};
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
     MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
