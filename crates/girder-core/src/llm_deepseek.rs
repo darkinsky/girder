@@ -70,12 +70,30 @@ impl DeepSeekConfig {
     /// Returns `None` when no key is present, so a caller can fall back to another provider rather
     /// than fail at the first request.
     #[must_use]
+    /// Reads a configuration from the environment.
+    ///
+    /// `DEEPSEEK_API_KEY` is the historical name and stays first so existing deployments keep working. `ANTHROPIC_API_KEY`
+    /// is accepted because the wire protocol is Anthropic's: a deployment pointing this at a different compatible
+    /// endpoint should not have to set a variable named after a provider it is not using.
     pub fn from_env() -> Option<Self> {
-        let api_key = std::env::var("DEEPSEEK_API_KEY").ok()?;
-        let base_url =
-            std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-        let default_model =
-            std::env::var("GIRDER_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
+        Self::from_values(|name| std::env::var(name).ok())
+    }
+
+    /// Builds a configuration from a lookup function.
+    ///
+    /// Split from [`Self::from_env`] so the precedence rules are testable without touching the process environment:
+    /// `std::env::set_var` is unsafe in this toolchain, and a test that mutated it would race every other test in the
+    /// binary anyway.
+    pub fn from_values(lookup: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let api_key = lookup("DEEPSEEK_API_KEY").or_else(|| lookup("ANTHROPIC_API_KEY"))?;
+        // `ANTHROPIC_BASE_URL` is the name a deployment pointing at a compatible service would already have set. Both
+        // are read so the same binary serves either without a code change.
+        let base_url = lookup("DEEPSEEK_BASE_URL")
+            .or_else(|| lookup("ANTHROPIC_BASE_URL"))
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+        let default_model = lookup("GIRDER_MODEL")
+            .or_else(|| lookup("ANTHROPIC_MODEL"))
+            .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
         Some(Self {
             base_url,
             api_key,
