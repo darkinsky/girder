@@ -236,6 +236,8 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
 
     // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
     // them against a second registry would produce two lists that disagree about what is running.
+    // `job.follow` was a descriptor with no handler; the poll is registered here against the same registry the tools use.
+    girder_core::register_job_follow(&mut remote, &jobs);
     girder_core::register_job_tools(&tools, Arc::clone(&jobs));
     // The capability tools, including `goal`, register against the state defined above: a second `GoalState` here
     // would be the exact defect being fixed, because the model would edit a copy the loop never reads.

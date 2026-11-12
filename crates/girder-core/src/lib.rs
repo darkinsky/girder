@@ -92,6 +92,7 @@ mod host_rpc;
 mod inbox;
 mod instructions;
 mod instructions_tool;
+mod job_follow_rpc;
 mod job_tools;
 mod jobs;
 mod json;
@@ -273,6 +274,7 @@ pub use instructions_tool::{
     MAX_OUTPUT_BYTES as INSTRUCTIONS_MAX_OUTPUT_BYTES, TOOL_NAME as INSTRUCTIONS_TOOL_NAME,
     instructions_tool,
 };
+pub use job_follow_rpc::register_job_follow;
 pub use job_tools::{
     job_kill_tool, job_list_tool, job_output_tool, job_start_tool, register_job_tools,
 };
