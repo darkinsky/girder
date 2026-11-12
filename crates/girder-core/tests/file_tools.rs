@@ -474,3 +474,41 @@ async fn a_read_after_a_shell_command_is_observed_again() {
     assert!(observations.observed(&dir.join("a.txt")).is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- the language hint ------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_read_names_the_language_so_a_renderer_can_highlight() {
+    // The alternative is every consumer re-deriving it with its own table, and one of them disagreeing about what a
+    // `.m` file is.
+    let dir = scratch("language");
+    std::fs::write(dir.join("main.rs"), "fn main() {}\n").expect("written");
+    let tool = read_tool(dir.clone());
+
+    let result = (tool.execute)(serde_json::json!({"path": "main.rs"}), context(None))
+        .await
+        .expect("read");
+
+    let text = text_of(&result);
+    assert!(
+        text.starts_with("rust\n"),
+        "the hint leads the result: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_read_of_an_unknown_extension_has_no_hint() {
+    // A guess would highlight a language the file is not.
+    let dir = scratch("no-language");
+    std::fs::write(dir.join("notes.xyz"), "plain\n").expect("written");
+    let tool = read_tool(dir.clone());
+
+    let result = (tool.execute)(serde_json::json!({"path": "notes.xyz"}), context(None))
+        .await
+        .expect("read");
+
+    let text = text_of(&result);
+    assert!(text.starts_with("1\t"), "no hint line: {text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

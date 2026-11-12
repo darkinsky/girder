@@ -109,7 +109,15 @@ async fn read(
     // contradict, and a range still establishes that this session has looked at the file.
     ctx.observe(&path, Observation::Present(observation::version_of(&text)));
 
-    Ok(ToolResult::text(out))
+    // The language is named in the result because a client that renders the lines wants to highlight them, and the
+    // alternative is every consumer re-deriving it from the extension with its own table. One shared table is what
+    // keeps a preview and a diff agreeing about whether `.m` is Objective-C or MATLAB.
+    Ok(ToolResult::text(
+        match crate::code_language::read_hint(&path.display().to_string()) {
+            Some(language) => format!("{language}\n{out}"),
+            None => out,
+        },
+    ))
 }
 
 /// Builds the `write` tool.
