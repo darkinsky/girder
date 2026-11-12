@@ -114,13 +114,15 @@ async fn renaming_an_unknown_session_is_refused() {
 }
 
 #[tokio::test]
-async fn the_registry_requires_a_session_and_a_title() {
+async fn the_registry_requires_a_session() {
     let dir = scratch("rename-args");
     seed(&dir, "s1");
     let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
     let registry = default_registry(catalog);
 
-    for args in [json!({"title": "x"}), json!({"sessionId": "s1"})] {
+    // A missing `sessionId` is still an error. A missing `title` is not: the session has a message, so the name can be
+    // derived from it, which is what a client listing untitled conversations wants.
+    for args in [json!({"title": "x"})] {
         let error = registry
             .dispatch("session", "rename", call(args))
             .await

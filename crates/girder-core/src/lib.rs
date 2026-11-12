@@ -111,6 +111,7 @@ mod paths;
 mod permissions;
 mod present_tool;
 mod projection;
+mod projection_extra;
 mod providers;
 mod questions;
 mod registry;
@@ -134,6 +135,8 @@ mod session_query_rpc;
 mod session_queue_rpc;
 mod session_resume_rpc;
 mod session_search_tool;
+mod session_stats;
+mod session_title;
 mod shell;
 mod skill;
 mod skill_tool;
@@ -329,6 +332,10 @@ pub use projection::{
     ModelSelectionProjection, ProjectedSession, Projection, ProjectionError, ProjectionHandle,
     ProjectionRegistry, Seq as ProjectionSeq, TitleProjection, TurnBoundary,
 };
+pub use projection_extra::{
+    CacheError, Checkpoint, CheckpointRow, ProjectionCache, Snapshot as ProjectionSnapshot,
+    Versioned, VersionedProjection,
+};
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
     RouteRegistry, deepseek_route, fits as model_fits, window_of,
@@ -403,6 +410,8 @@ pub use session_queue_rpc::{
 };
 pub use session_resume_rpc::register_session_resume_method;
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
+pub use session_stats::Stats as SessionStats;
+pub use session_title::{Source as TitleSource, derive as derive_title};
 pub use shell::{
     DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
     Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,

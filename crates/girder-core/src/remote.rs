@@ -1672,16 +1672,38 @@ fn register_rename(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                     message: "`sessionId` is required".to_owned(),
                 })?
                 .to_owned();
-            let title = call
-                .args
-                .get("title")
-                .and_then(Value::as_str)
-                .ok_or_else(|| RemoteError::InvalidArguments {
-                    namespace: "session".to_owned(),
-                    method: "rename".to_owned(),
-                    message: "`title` is required".to_owned(),
-                })?
-                .to_owned();
+            // An omitted title means "name it after what it says", which is what a client showing a list of untitled
+            // sessions wants and what a person would do by hand. An explicit title always wins: the derived one is a
+            // convenience, not an opinion about what the conversation is about.
+            let title = if let Some(title) = call.args.get("title").and_then(Value::as_str) {
+                title.to_owned()
+            } else {
+                {
+                    let Some(record) = catalog.read(&session_id).await else {
+                        return Err(RemoteError::InvalidArguments {
+                            namespace: "session".to_owned(),
+                            method: "rename".to_owned(),
+                            message: format!("no session `{session_id}`"),
+                        });
+                    };
+                    let Some(derived) = girder_core::derive_title(
+                        &record.events,
+                        girder_core::TitleSource::FirstPrompt,
+                        // A list row shows a few dozen characters; a longer title would be cut by whatever renders it,
+                        // and cutting here means the cut is the same everywhere.
+                        60,
+                    ) else {
+                        return Err(RemoteError::InvalidArguments {
+                            namespace: "session".to_owned(),
+                            method: "rename".to_owned(),
+                            message:
+                                "no title given and the session has no message to name it after"
+                                    .to_owned(),
+                        });
+                    };
+                    derived
+                }
+            };
 
             let stored = catalog.rename(&session_id, &title).await?;
             Ok(serde_json::json!({ "title": stored }))
