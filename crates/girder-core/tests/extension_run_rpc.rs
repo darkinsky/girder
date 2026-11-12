@@ -21,10 +21,11 @@
 //! Isolation: every test builds its own registry, its own runtime, and its own temporary directory named
 //! after the test and this process, so a test binary running in parallel cannot observe another's pid file.
 //!
-//! The module is included by path rather than through the crate's re-exports, so these tests compile against
-//! the methods as written even before the crate root wires them in. It spells its own paths through
-//! `girder_core::`, the alias the library declares for itself, so the same source builds here and inside the
-//! crate.
+//! These tests go through the crate's public surface — `girder_core::register_extension_run_methods` — rather
+//! than including the module by path, so they fail if the crate root stops exporting it. The wire names
+//! (`extension.activate`, and so on) are written as literals here on purpose: they are the contract a client
+//! codes against, and a test that read them from the implementation would pass after the implementation was
+//! renamed.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,9 +34,6 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/extension_run_rpc.rs"]
-mod extension_run_rpc;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,13 +41,18 @@ use std::time::Duration;
 use girder_core::{
     ExtensionDefinition, ExtensionId, ExtensionRegistry, ExtensionRuntime,
     ExtensionShellRuntime as ShellRuntime, ReadOnly, RemoteCall, RemoteError, RemoteRegistry,
+    register_extension_run_methods, register_extension_run_methods_with_services,
 };
 use serde_json::{Value, json};
 
-use extension_run_rpc::{
-    ACTIVATE_METHOD, DEACTIVATE_METHOD, NAMESPACE, STATUS_METHOD, register_extension_run_methods,
-    register_extension_run_methods_with_services,
-};
+/// The namespace every method here is served under, as a client spells it.
+const NAMESPACE: &str = "extension";
+/// Starts an extension.
+const ACTIVATE_METHOD: &str = "activate";
+/// Stops an extension.
+const DEACTIVATE_METHOD: &str = "deactivate";
+/// Reports an extension's status.
+const STATUS_METHOD: &str = "status";
 
 // ---- fixtures ---------------------------------------------------------------------------------
 
