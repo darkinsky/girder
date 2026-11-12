@@ -221,6 +221,12 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let extensions = Arc::new(girder_core::ExtensionRegistry::new());
     girder_core::register_extension_methods(&mut remote, &extensions);
 
+    // Activating an extension runs it. The runtime is the shell one: a definition's source is a script, and a script
+    // that cannot be run is refused before a person is asked to approve it.
+    let extension_runtime: Arc<dyn girder_core::ExtensionRuntime> =
+        Arc::new(girder_core::ExtensionShellRuntime::new());
+    girder_core::register_extension_run_methods(&mut remote, &extensions, &extension_runtime);
+
     // Terminals are listed and driven over RPC. The launcher is the same one the tools get, so a terminal a client
     // opens is one a model can see: two launchers would produce two sets of terminals.
     // The real launcher: a local shell over pipes. Not a pty, so an interactive program will not work, but a script

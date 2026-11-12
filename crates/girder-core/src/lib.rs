@@ -77,6 +77,7 @@ mod credentials;
 mod deliverable;
 mod events;
 mod exec;
+mod extension_run_rpc;
 mod extension_runtime;
 mod extensions;
 mod fiber;
@@ -223,6 +224,9 @@ pub use events::{
 pub use exec::{
     AdvisorySandbox, Enforcement, ExecError, ExecOptions, ExecOutput, PathPolicy, Sandbox,
     bash_tool, has_program, landlock_abi, read_file, run_bash, run_shell,
+};
+pub use extension_run_rpc::{
+    register_extension_run_methods, register_extension_run_methods_with_services,
 };
 pub use extension_runtime::{
     NoopRuntime as ExtensionNoopRuntime, ShellRuntime as ExtensionShellRuntime, assert_runnable,
