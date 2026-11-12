@@ -112,6 +112,15 @@ impl Catalogue {
     pub fn tools(&self) -> Vec<&Tool> {
         self.tools.values().collect()
     }
+
+    /// The resource URIs a catalogue holds.
+    ///
+    /// Bare URIs rather than qualified names: a URI is already an address, and prefixing it would produce something
+    /// that is no longer a URI and that a server would not recognise.
+    #[must_use]
+    pub fn resources(&self) -> &[String] {
+        &self.resources
+    }
 }
 
 /// Why an MCP operation failed.
@@ -188,6 +197,56 @@ pub trait Transport: Send + Sync {
 
     /// Stops the server.
     fn stop(&self) -> BoxFut<Result<(), McpError>>;
+
+    /// Lists the resources the server offers.
+    ///
+    /// Defaulted to an empty list rather than required: tools and resources are separate capabilities in the protocol,
+    /// and a server that offers only tools is not incomplete. Forcing every transport to implement this would make a
+    /// working tool-only server fail to compile.
+    fn resources(&self) -> BoxFut<Result<Vec<Resource>, McpError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Reads one resource.
+    ///
+    /// Defaulted to a refusal for the same reason. A caller that asks a server without resources is told so rather than
+    /// receiving an empty string it would render as empty content.
+    fn read_resource(&self, uri: &str) -> BoxFut<Result<ResourceContent, McpError>> {
+        let uri = uri.to_owned();
+        Box::pin(async move {
+            Err(McpError::ToolFailed {
+                name: uri,
+                message: "this server offers no resources".to_owned(),
+            })
+        })
+    }
+}
+
+/// One resource a server publishes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resource {
+    /// Its address, which is what a caller names to read it.
+    pub uri: String,
+    /// A human-readable name.
+    pub name: String,
+    /// What it is, for a model or a person choosing one.
+    pub description: Option<String>,
+    /// Its media type when the server states one.
+    pub mime_type: Option<String>,
+}
+
+/// What reading a resource returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceContent {
+    /// The resource's address.
+    pub uri: String,
+    /// Its media type when the server states one.
+    pub mime_type: Option<String>,
+    /// The content, as the server sent it.
+    ///
+    /// Kept as a string rather than bytes because the protocol's text resources are text; a binary resource arrives
+    /// base64-encoded inside this field and the caller decides how to decode it.
+    pub text: String,
 }
 
 /// One configured server.
@@ -319,6 +378,60 @@ impl Registry {
     ///
     /// Returns [`McpError::UnknownTool`] for a name no ready server offers, [`McpError::NotReady`] for one a
     /// non-ready server would offer, and whatever the transport reports.
+    /// Lists every resource every ready server publishes, as `(server, uri)`.
+    ///
+    /// Grouped by server rather than flattened: a URI is meaningful only to the server that published it, so a caller
+    /// reading one has to know which server to ask.
+    pub async fn resources(&self) -> Vec<(String, String)> {
+        let servers: Vec<(String, Arc<dyn Transport>, bool)> = {
+            let guard = self.lock();
+            guard
+                .iter()
+                .map(|(name, server)| {
+                    (
+                        name.clone(),
+                        Arc::clone(&server.transport),
+                        server.status.is_ready(),
+                    )
+                })
+                .collect()
+        };
+        let mut out = Vec::new();
+        for (name, transport, ready) in servers {
+            if !ready {
+                continue;
+            }
+            if let Ok(list) = transport.resources().await {
+                for resource in list {
+                    out.push((name.clone(), resource.uri));
+                }
+            }
+        }
+        out
+    }
+
+    /// Reads one resource from the server that published it.
+    pub async fn read_resource(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<ResourceContent, McpError> {
+        let transport = {
+            let guard = self.lock();
+            let known = guard.get(server).ok_or_else(|| McpError::UnknownServer {
+                name: server.to_owned(),
+            })?;
+            if !known.status.is_ready() {
+                return Err(McpError::NotReady {
+                    name: server.to_owned(),
+                    status: known.status.as_str(),
+                });
+            }
+            Arc::clone(&known.transport)
+        };
+        transport.read_resource(uri).await
+    }
+
     pub async fn call(
         &self,
         qualified: &str,
