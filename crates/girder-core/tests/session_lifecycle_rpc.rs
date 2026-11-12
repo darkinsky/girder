@@ -537,3 +537,58 @@ async fn a_read_only_policy_cannot_duplicate_or_archive() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- the stored title -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_renamed_session_copies_under_its_stored_title() {
+    // The gap this closes: a copy used to be titled with its first message even when the person had renamed the
+    // session, which is accurate about the conversation and wrong about the label.
+    let harness = Harness::new("stored-title");
+    seed(&harness.dir, "s1", "first message");
+    harness
+        .catalog
+        .rename("s1", "The deployment plan")
+        .await
+        .expect("renamed");
+
+    let value = harness.duplicate("s1").await.expect("duplicated");
+    let new_id = value["sessionId"].as_str().expect("an id");
+
+    let title = harness
+        .catalog
+        .title(new_id)
+        .await
+        .expect("a copy is titled");
+    assert!(title.contains("The deployment plan"), "{title}");
+    assert!(
+        title.contains("copy"),
+        "the suffix marks it as a copy: {title}"
+    );
+}
+
+#[tokio::test]
+async fn an_unrenamed_session_copies_under_a_derived_title() {
+    // A catalog with no title answers `None`, and the log is the fallback rather than a blank name.
+    let harness = Harness::new("derived-title");
+    seed(&harness.dir, "s1", "why is the sky blue");
+
+    let value = harness.duplicate("s1").await.expect("duplicated");
+    let new_id = value["sessionId"].as_str().expect("an id");
+
+    let title = harness
+        .catalog
+        .title(new_id)
+        .await
+        .expect("a copy is titled");
+    assert!(title.contains("why is the sky blue"), "{title}");
+}
+
+#[tokio::test]
+async fn a_title_is_none_when_none_was_stored() {
+    // A missing sidecar is the normal case for a session nobody renamed, so it is an answer rather than an error.
+    let harness = Harness::new("no-title");
+    seed(&harness.dir, "s1", "hello");
+
+    assert_eq!(harness.catalog.title("s1").await, None);
+}

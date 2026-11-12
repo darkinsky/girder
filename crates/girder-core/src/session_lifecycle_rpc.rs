@@ -427,7 +427,11 @@ async fn duplicate(args: &Value, catalog: &Arc<dyn SessionCatalog>) -> Result<Va
         })?;
     }
 
-    let title = titled_copy(&source.events, &source_id);
+    // The stored title first, because it is what the person called the session. Falling straight to the log produced a
+    // copy titled with its first message when the source had been renamed -- accurate about the conversation and wrong
+    // about the label, which is the one thing a copy's title is for.
+    let stored = catalog.title(&source_id).await;
+    let title = titled_copy(stored.as_deref(), &source.events, &source_id);
     let stored_title = match catalog.rename(&new_id, &title).await {
         Ok(stored) => Some(stored),
         // A catalog that keeps no titles still gets a correct copy; saying so in the response is
@@ -572,8 +576,28 @@ fn now_nanos() -> u128 {
 ///
 /// A copy of a copy ends up with two suffixes rather than a counter: the intent is "this is not the
 /// original", and a number would imply an ordering the log does not record.
-fn titled_copy(events: &[SessionEvent], source_id: &str) -> String {
-    let base = events
+fn titled_copy(stored: Option<&str>, events: &[SessionEvent], source_id: &str) -> String {
+    // The stored title wins: it is the label the person gave the session. The log is the fallback for a catalog that
+    // keeps no titles, and the source id is the last resort so the result is never blank.
+    let base = stored
+        .map(str::to_owned)
+        .or_else(|| derived_title(events))
+        .unwrap_or_else(|| source_id.to_owned());
+
+    // Cut on a character boundary, and leave room for the suffix: the base is user text with no
+    // length bound of its own, and a title longer than the list that renders it is not a title.
+    let room = MAX_COPY_TITLE_CHARS.saturating_sub(COPY_SUFFIX.chars().count());
+    let mut title: String = base.chars().take(room).collect();
+    title.push_str(COPY_SUFFIX);
+    title
+}
+
+/// The title the log itself records, when it records one.
+///
+/// A session that was never renamed has no stored title and no `SessionTitle` event, so its first user message is the
+/// closest thing to a label the conversation contains.
+fn derived_title(events: &[SessionEvent]) -> Option<String> {
+    events
         .iter()
         .rev()
         .find_map(|event| match event {
@@ -592,12 +616,4 @@ fn titled_copy(events: &[SessionEvent], source_id: &str) -> String {
                 _ => None,
             })
         })
-        .unwrap_or_else(|| source_id.to_owned());
-
-    // Cut on a character boundary, and leave room for the suffix: the base is user text with no
-    // length bound of its own, and a title longer than the list that renders it is not a title.
-    let room = MAX_COPY_TITLE_CHARS.saturating_sub(COPY_SUFFIX.chars().count());
-    let mut title: String = base.chars().take(room).collect();
-    title.push_str(COPY_SUFFIX);
-    title
 }

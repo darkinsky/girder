@@ -466,6 +466,17 @@ pub trait SessionCatalog: Send + Sync {
         })
     }
 
+    /// The title a session was given, when it has one.
+    ///
+    /// `rename` writes a title and nothing could read it back, so a caller that wanted the existing label had to either
+    /// guess from the log or reach into the directory layout. Guessing produced a copy titled with its first message
+    /// when the session had been renamed, which is accurate about the conversation and wrong about the label.
+    ///
+    /// A default returning `None` rather than an error: a catalog with no titles has no title, and that is an answer.
+    fn title(&self, _id: &str) -> BoxFut<Option<String>> {
+        Box::pin(async { None })
+    }
+
     /// Forks a session at an exact event sequence.
     ///
     /// A default that reports the gap rather than a compile error, for the same reason `rename` has
@@ -699,6 +710,20 @@ impl SessionCatalog for DirectoryCatalog {
     /// A companion rather than an event: a rename is not part of the conversation, and appending one to
     /// the log would make every history read carry a record the model never saw. The file is small
     /// enough that reading it per row costs nothing next to decoding a log.
+    fn title(&self, id: &str) -> BoxFut<Option<String>> {
+        let path = self.root.join(format!("{id}.title"));
+        let id = id.to_owned();
+        Box::pin(async move {
+            // A missing sidecar is the normal case for a session nobody renamed, so it is `None` and not an error.
+            let Ok(raw) = tokio::fs::read_to_string(&path).await else {
+                let _ = id;
+                return None;
+            };
+            let title = raw.trim().to_owned();
+            (!title.is_empty()).then_some(title)
+        })
+    }
+
     fn rename(&self, id: &str, title: &str) -> BoxFut<Result<String, RemoteError>> {
         let path = self.root.join(format!("{id}.title"));
         let id = id.to_owned();
