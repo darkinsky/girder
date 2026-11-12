@@ -160,6 +160,7 @@ mod web;
 mod web_tools;
 mod workflow;
 mod workflow_tool;
+mod workspace_files_extra;
 mod workspace_files_rpc;
 mod workspace_open_rpc;
 mod workspace_path;
@@ -496,6 +497,10 @@ pub use workflow::{
     StartRequest as WorkflowStartRequest, Status as WorkflowStatus, WorkflowError,
 };
 pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_status_tool};
+pub use workspace_files_extra::{
+    DEFAULT_READ_BYTES as WORKSPACE_READ_BYTES, DEFAULT_SEARCH_HITS as WORKSPACE_SEARCH_HITS,
+    MAX_READ_BYTES as WORKSPACE_MAX_READ_BYTES, register_workspace_file_extras,
+};
 pub use workspace_files_rpc::register_workspace_file_methods;
 pub use workspace_open_rpc::register_open_workspace_path;
 pub use workspace_path::{

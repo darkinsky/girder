@@ -251,7 +251,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
     // Browsing a workspace: the same filesystem the tools use, so a client sees what a model sees.
     let fs: Arc<dyn girder_core::FileSystem> = Arc::new(girder_core::LocalFileSystem);
-    girder_core::register_workspace_file_methods(&mut remote, &fs, &workspaces);
+    register_workspace_file_surface(&mut remote, &fs, &workspaces);
 
     // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
     // the catalog does not show.
@@ -427,6 +427,20 @@ fn register_lifecycle_surface(
         &session_catalog(),
         &archive,
     );
+}
+
+/// Registers the workspace file methods: the tree plus the per-entry calls a browser needs.
+///
+/// One function because they share the same filesystem and workspace registry, and because `serve` is at the length
+/// limit -- a named registration of "the things a client can ask about files" reads better than six inline lines.
+fn register_workspace_file_surface(
+    remote: &mut girder_core::RemoteRegistry,
+    fs: &Arc<dyn girder_core::FileSystem>,
+    workspaces: &Arc<girder_core::api_config::WorkspaceRegistry>,
+) {
+    girder_core::register_workspace_file_methods(remote, fs, workspaces);
+    // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
+    girder_core::register_workspace_file_extras(remote, fs, workspaces);
 }
 
 fn register_host_surface(remote: &mut girder_core::RemoteRegistry, workspace: &std::path::Path) {
