@@ -67,7 +67,7 @@
 //! # Wire shapes
 //!
 //! Request arguments are camelCase, as upstream spells them (`workspaceId`, `sessionId`,
-//! `beforeWorkspaceId`, `beforeSessionId`, `stopActivity`). Response keys are snake_case, which is
+//! `beforeWorkspaceId`, `beforeSessionId`, `stopActivity`). Response keys are `snake_case`, which is
 //! what `workspace.list` and `workspace.create` in [`crate::remote`] already emit: mixing upstream's
 //! camelCase into four methods of one namespace would force a client to decode two shapes for the
 //! same row. The keys are therefore `workspace`, `workspace_id`, `session_ids`, `created_at`,
@@ -415,6 +415,37 @@ pub fn register_workspace_extra_methods(
     preferences: &Arc<dyn WorkspacePreferences>,
     sessions: &Arc<dyn SessionCatalog>,
 ) {
+    // `workspace.list` is re-registered so the listing applies the archive filter. Registering it here rather than
+    // threading a preference store through the original registration keeps that registration usable by a deployment
+    // with no preferences at all -- and `retain_visible` was exported with a doc comment saying callers must filter,
+    // which nothing did until this call existed.
+    let list_workspaces = Arc::clone(workspaces);
+    let list_preferences = Arc::clone(preferences);
+    registry.register("workspace", "list", move |_call: RemoteCall| {
+        let workspaces = Arc::clone(&list_workspaces);
+        let preferences = Arc::clone(&list_preferences);
+        Box::pin(async move {
+            let now = girder_core::now_millis();
+            let views: Vec<serde_json::Value> = workspaces
+                .list()
+                .into_iter()
+                .map(|workspace| {
+                    let mut view = workspace.view(now);
+                    retain_visible(&mut view.session_ids, preferences.as_ref());
+                    serde_json::json!({
+                        "workspace_id": view.workspace_id,
+                        "path": view.path,
+                        "title": view.title,
+                        "session_ids": view.session_ids,
+                        "created_at": view.created_at,
+                        "updated_at": view.updated_at,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "workspaces": views }))
+        })
+    });
+
     register_rename(registry, workspaces);
     register_insert_before(registry, workspaces);
     register_insert_session_before(registry, workspaces);
@@ -471,7 +502,8 @@ fn register_insert_session_before(
         INSERT_SESSION_BEFORE_METHOD,
         move |call: RemoteCall| {
             let workspaces = Arc::clone(&workspaces);
-            Box::pin(async move { insert_session_before(&call.args, &workspaces).await })
+            // Every registry call this makes is synchronous, so the handler has no await of its own.
+            Box::pin(async move { insert_session_before(&call.args, &workspaces) })
         },
     );
 }
@@ -485,11 +517,15 @@ fn register_archive_session(
     let preferences = Arc::clone(preferences);
     let sessions = Arc::clone(sessions);
     registry.declare(NAMESPACE, ARCHIVE_SESSION_METHOD, declaration());
-    registry.register(NAMESPACE, ARCHIVE_SESSION_METHOD, move |call: RemoteCall| {
-        let preferences = Arc::clone(&preferences);
-        let sessions = Arc::clone(&sessions);
-        Box::pin(async move { archive_session(&call.args, &preferences, &sessions).await })
-    });
+    registry.register(
+        NAMESPACE,
+        ARCHIVE_SESSION_METHOD,
+        move |call: RemoteCall| {
+            let preferences = Arc::clone(&preferences);
+            let sessions = Arc::clone(&sessions);
+            Box::pin(async move { archive_session(&call.args, &preferences, &sessions).await })
+        },
+    );
 }
 
 /// Registers `workspace.unarchiveSession`.
@@ -499,10 +535,14 @@ fn register_unarchive_session(
 ) {
     let preferences = Arc::clone(preferences);
     registry.declare(NAMESPACE, UNARCHIVE_SESSION_METHOD, declaration());
-    registry.register(NAMESPACE, UNARCHIVE_SESSION_METHOD, move |call: RemoteCall| {
-        let preferences = Arc::clone(&preferences);
-        Box::pin(async move { unarchive_session(&call.args, &preferences) })
-    });
+    registry.register(
+        NAMESPACE,
+        UNARCHIVE_SESSION_METHOD,
+        move |call: RemoteCall| {
+            let preferences = Arc::clone(&preferences);
+            Box::pin(async move { unarchive_session(&call.args, &preferences) })
+        },
+    );
 }
 
 /// Registers `workspace.pinSession`.
@@ -552,7 +592,10 @@ fn rename(args: &Value, workspaces: &Arc<WorkspaceRegistry>) -> Result<Value, Re
         .trim();
 
     if title.is_empty() {
-        return Err(invalid(RENAME_METHOD, "a rename requires a non-blank title"));
+        return Err(invalid(
+            RENAME_METHOD,
+            "a rename requires a non-blank title",
+        ));
     }
 
     let current = workspaces
@@ -611,9 +654,9 @@ fn insert_before(args: &Value, workspaces: &Arc<WorkspaceRegistry>) -> Result<Va
             }
             // An anchor equal to the moved id is a no-op, which the registry already answers by
             // returning the current order.
-            workspaces.insert_before(workspace_id, anchor, now).ok_or_else(|| {
-                unknown_workspace(INSERT_BEFORE_METHOD, workspace_id)
-            })?;
+            workspaces
+                .insert_before(workspace_id, anchor, now)
+                .ok_or_else(|| unknown_workspace(INSERT_BEFORE_METHOD, workspace_id))?;
         }
         None => append_last(workspaces, workspace_id, now)?,
     }
@@ -664,7 +707,7 @@ fn append_last(
 ///
 /// A session or anchor that the workspace does not account for is refused before anything is
 /// written, so a bad request cannot leave the list half-moved.
-async fn insert_session_before(
+fn insert_session_before(
     args: &Value,
     workspaces: &Arc<WorkspaceRegistry>,
 ) -> Result<Value, RemoteError> {
@@ -750,7 +793,7 @@ async fn archive_session(
     // See the module docs: this build cannot stop a session's work, so it must not answer a request
     // that asked it to.
     match args.get("stopActivity") {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => {}
+        None | Some(Value::Null | Value::Bool(false)) => {}
         Some(Value::Bool(true)) => {
             return Err(RemoteError::Failed(format!(
                 "`{NAMESPACE}.{ARCHIVE_SESSION_METHOD}` cannot stop a session's running work: this \
@@ -793,7 +836,10 @@ async fn archive_session(
 /// Idempotent, and deliberately without an existence check: removing an id cannot introduce an
 /// unknown one, so an entry whose session has since gone must still be removable. Upstream makes
 /// the same choice for the same reason.
-async fn unarchive_session(
+///
+/// Synchronous, unlike [`archive_session`]: nothing here reads the catalog or performs I/O, so there
+/// is no await to hide a failure in.
+fn unarchive_session(
     args: &Value,
     preferences: &Arc<dyn WorkspacePreferences>,
 ) -> Result<Value, RemoteError> {
@@ -851,7 +897,9 @@ async fn pin_session(
 ///
 /// Idempotent and without an existence check, for the same reason [`unarchive_session`] is: dropping
 /// an id cannot introduce an unknown one.
-async fn unpin_session(
+///
+/// Synchronous for the same reason [`unarchive_session`] is: no catalog read, no I/O.
+fn unpin_session(
     args: &Value,
     preferences: &Arc<dyn WorkspacePreferences>,
 ) -> Result<Value, RemoteError> {

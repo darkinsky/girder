@@ -808,7 +808,12 @@ impl Scheduler {
             .rule
             .next_after(now)
             .map_err(|_| ScheduleError::Exhausted)?;
-        self.next.insert(schedule.id.to_string(), next);
+        // An inactive schedule is stored but not queued. Queuing it would make `tick` deliver a paused task, and a
+        // pause that does not stop delivery is not a pause -- which is what a test found: a schedule added while
+        // inactive fired anyway.
+        if schedule.active {
+            self.next.insert(schedule.id.to_string(), next);
+        }
         self.schedules.insert(schedule.id.to_string(), schedule);
         Ok(())
     }

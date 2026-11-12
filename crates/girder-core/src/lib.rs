@@ -116,6 +116,7 @@ mod retry;
 mod runtime;
 mod schedule;
 mod schedule_rpc;
+mod schedule_runner;
 mod scope;
 mod search_tools;
 mod service;
@@ -151,6 +152,7 @@ mod workflow_tool;
 mod workspace_files_rpc;
 mod workspace_open_rpc;
 mod workspace_path;
+mod workspace_rpc_extra;
 
 pub use access::{
     Access, AllowList, Decision as AccessDecision, Declaration, DenyAll, Policy, ReadOnly,
@@ -347,6 +349,10 @@ pub use schedule::{
 pub use schedule_rpc::{
     MemoryScheduleStore, ScheduleStore, UnavailableScheduleStore, register_schedule_methods,
 };
+pub use schedule_runner::{
+    Deliverer, Delivery, IDLE_WAIT, MAX_WAIT, Pass, Runner, pass as run_schedule_pass,
+    wait_for as schedule_wait_for,
+};
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use search_tools::{DEFAULT_LIMIT as SEARCH_DEFAULT_LIMIT, glob_tool, grep_tool};
 pub use service::ServiceKey;
@@ -465,4 +471,8 @@ pub use workspace_open_rpc::register_open_workspace_path;
 pub use workspace_path::{
     contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,
     is_unc, normalize as normalize_path, relative_to, resolve as resolve_in_workspace,
+};
+pub use workspace_rpc_extra::{
+    InMemoryPreferences, UnavailablePreferences, WorkspacePreferences,
+    register_workspace_extra_methods, register_workspace_extra_methods_without_preferences,
 };
