@@ -479,6 +479,9 @@ fn register_host_surface(remote: &mut girder_core::RemoteRegistry, workspace: &s
         Err(reason) => Arc::new(girder_core::UnavailableOpener::new(reason)),
     };
     girder_core::register_open_workspace_path(remote, workspace, &opener);
+    // What the desktop can do with a path: whether opening is possible at all, which file manager, and -- on Linux,
+    // where the probe is real -- which applications would accept it.
+    girder_core::register_workspace_desktop_methods(remote, workspace, &opener);
 }
 
 fn register_capability_tools(
