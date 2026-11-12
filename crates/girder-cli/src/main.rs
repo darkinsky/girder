@@ -210,22 +210,15 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Without this the browser would need its own copy of every projection's fold logic, and the two
     // would drift.
     let projections = Arc::new(girder_core::ProjectionRegistry::new());
-    girder_core::register_projection_methods(&mut remote, &projections);
 
     // Background jobs, with the registry the server keeps for this process.
     let jobs = Arc::new(girder_core::JobRegistry::new(256 * 1024));
-    girder_core::register_job_methods(&mut remote, &jobs);
 
     // Extensions are listed and approved over RPC. An approval is its own method rather than a side effect of
     // activation, because an approval nobody was asked for is the defect the flow exists to prevent.
     let extensions = Arc::new(girder_core::ExtensionRegistry::new());
-    girder_core::register_extension_methods(&mut remote, &extensions);
 
-    // Activating an extension runs it. The runtime is the shell one: a definition's source is a script, and a script
-    // that cannot be run is refused before a person is asked to approve it.
-    let extension_runtime: Arc<dyn girder_core::ExtensionRuntime> =
-        Arc::new(girder_core::ExtensionShellRuntime::new());
-    girder_core::register_extension_run_methods(&mut remote, &extensions, &extension_runtime);
+    register_runtime_surfaces(&mut remote, &projections, &jobs, &extensions);
 
     // Terminals are listed and driven over RPC. The launcher is the same one the tools get, so a terminal a client
     // opens is one a model can see: two launchers would produce two sets of terminals.
@@ -234,6 +227,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // launch, which is what this deployment had until now.
     let launcher: Arc<dyn girder_core::TerminalLauncher> =
         Arc::new(girder_core::LocalLauncher::new());
+    girder_core::register_terminal_extra_methods(&mut remote);
     girder_core::register_terminal_rpc_methods(
         &mut remote,
         &Arc::new(girder_core::TerminalRegistry::new()),
@@ -450,6 +444,26 @@ fn register_workspace_file_surface(
 ///
 /// The store is process-local: a restart forgets it, which the module says plainly rather than implying a durability
 /// it does not have. A deployment that wants settings to survive supplies its own store to the same registration.
+/// Registers the surfaces that belong to things the server is already running: projections, jobs, extensions.
+///
+/// Named because `serve` has been over the length limit four times, and each time the fix was to move a registration
+/// out. This is the group that shares one property -- each needs a live component the server owns.
+fn register_runtime_surfaces(
+    remote: &mut girder_core::RemoteRegistry,
+    projections: &Arc<girder_core::ProjectionRegistry>,
+    jobs: &Arc<girder_core::JobRegistry>,
+    extensions: &Arc<girder_core::ExtensionRegistry>,
+) {
+    girder_core::register_projection_methods(remote, projections);
+    girder_core::register_job_methods(remote, jobs);
+    girder_core::register_extension_methods(remote, extensions);
+    // Activating an extension runs it. The runtime is the shell one: a definition's source is a script, and a script
+    // that cannot be run is refused before a person is asked to approve it.
+    let runtime: Arc<dyn girder_core::ExtensionRuntime> =
+        Arc::new(girder_core::ExtensionShellRuntime::new());
+    girder_core::register_extension_run_methods(remote, extensions, &runtime);
+}
+
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {
     let settings: Arc<dyn girder_core::SettingsStore> =
         Arc::new(girder_core::MemorySettingsStore::new());

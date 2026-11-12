@@ -152,6 +152,7 @@ mod subprocess;
 mod terminal;
 mod terminal_local;
 mod terminal_rpc;
+mod terminal_rpc_extra;
 mod terminal_tool;
 mod time;
 mod todo_tool;
@@ -471,6 +472,7 @@ pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
     register_terminal_methods as register_terminal_rpc_methods,
 };
+pub use terminal_rpc_extra::register_terminal_extra_methods;
 pub use terminal_tool::{
     TerminalLauncher, UnavailableLauncher, register_terminal_tools, terminal_read_tool,
     terminal_send_tool, terminal_start_tool,
