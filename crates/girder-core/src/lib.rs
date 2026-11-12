@@ -115,6 +115,7 @@ mod retention;
 mod retry;
 mod runtime;
 mod schedule;
+mod schedule_rpc;
 mod scope;
 mod search_tools;
 mod service;
@@ -342,6 +343,9 @@ pub use schedule::{
     Offset, Rule, Schedule, ScheduleError, ScheduleId, Scheduler, Tick, TimeOfDay,
     create as create_schedule, next_fire, now_millis, pause as pause_schedule,
     resume as resume_schedule, run_scheduler,
+};
+pub use schedule_rpc::{
+    MemoryScheduleStore, ScheduleStore, UnavailableScheduleStore, register_schedule_methods,
 };
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use search_tools::{DEFAULT_LIMIT as SEARCH_DEFAULT_LIMIT, glob_tool, grep_tool};

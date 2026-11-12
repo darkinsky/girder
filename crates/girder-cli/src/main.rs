@@ -394,6 +394,13 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
 /// place to write, which the catalog does not offer -- the seam exists so a deployment can supply one, and this is the
 /// default that makes the method usable rather than always refusing.
 fn register_lifecycle_surface(remote: &mut girder_core::RemoteRegistry) {
+    // Scheduled tasks are stored in memory: a restart forgets them, and the module says so rather than implying a
+    // durability it does not have. Nothing triggers them yet -- the trigger needs a runtime loop, which is a separate
+    // piece -- so a created task is recorded and inert.
+    let schedules: Arc<dyn girder_core::ScheduleStore> =
+        Arc::new(girder_core::MemoryScheduleStore::new());
+    girder_core::register_schedule_methods(remote, &schedules);
+
     let archive: Arc<dyn girder_core::ArchiveStore> =
         Arc::new(girder_core::MemoryArchiveStore::new());
     girder_core::register_session_lifecycle_methods_with_archive(
