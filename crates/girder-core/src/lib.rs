@@ -113,6 +113,7 @@ mod registry;
 mod remote;
 mod retention;
 mod retry;
+mod retrying_provider;
 mod runtime;
 mod schedule;
 mod schedule_rpc;
@@ -339,6 +340,7 @@ pub use retention::{
     ItemRetainer, ItemStrategy, Omitted, RetainedItems, RetainedText, TextRetainer, TextStrategy,
 };
 pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
+pub use retrying_provider::RetryingProvider;
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
 pub use schedule::{
     CreateError, CronExpression, Firing, Instant as ScheduleInstant, MAX_TITLE_CHARS, MIN_INTERVAL,

@@ -516,6 +516,11 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     // stderr so a run never silently looks live when it is not.
     let provider: Arc<dyn girder_core::LlmProvider> =
         if let Ok(provider) = girder_core::provider_from_env() {
+            // Wrapped so a transient failure is retried: a 429 or a dropped connection would otherwise end a turn that
+            // the next attempt would have completed. A cancellation is never retried.
+            let provider: Arc<dyn girder_core::LlmProvider> = Arc::new(
+                girder_core::RetryingProvider::new(provider, girder_core::RetryPolicy::default()),
+            );
             eprintln!("[provider] live: {}", cli.model);
             provider
         } else {
