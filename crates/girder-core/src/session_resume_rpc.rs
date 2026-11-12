@@ -67,7 +67,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use girder_core::{
-    AgentRuntime, Declaration, RemoteCall, RemoteError, RemoteRegistry, SessionCatalog, SessionEvent,
+    AgentRuntime, Declaration, RemoteCall, RemoteError, RemoteRegistry, SessionCatalog,
+    SessionEvent,
 };
 
 /// The namespace `session.resume` lives under.

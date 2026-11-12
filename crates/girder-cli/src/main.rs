@@ -265,7 +265,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
     // That is the honest state -- the method is reachable and says why it cannot act, which is better than a
     // NOT_IMPLEMENTED that a client would read as "this build is old".
-    register_lifecycle_surface(&mut remote);
+    register_lifecycle_surface(&mut remote, &runtime);
 
     let queues = Arc::new(girder_core::AgentQueueMap::new());
     girder_core::register_session_queue_methods(
@@ -402,7 +402,17 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
 /// The archive store is process-local, so an archived session survives for the life of the server. A durable one needs a
 /// place to write, which the catalog does not offer -- the seam exists so a deployment can supply one, and this is the
 /// default that makes the method usable rather than always refusing.
-fn register_lifecycle_surface(remote: &mut girder_core::RemoteRegistry) {
+/// Registers the session lifecycle methods: duplicate, archive, and resume.
+///
+/// One function because they share the catalog and the runtime. `serve` was at the length limit, and a block that
+/// registers "the things a session can do to itself" reads better named than inlined.
+fn register_lifecycle_surface(
+    remote: &mut girder_core::RemoteRegistry,
+    runtime: &std::sync::Arc<girder_core::AgentRuntime>,
+) {
+    // Resuming confirms a session can be reopened and reports where its log ends, so a client knows from which sequence
+    // to continue rather than re-reading the whole conversation to find out.
+    girder_core::register_session_resume_method(remote, &session_catalog(), runtime);
     // Scheduled tasks are stored in memory: a restart forgets them, and the module says so rather than implying a
     // durability it does not have. Nothing triggers them yet -- the trigger needs a runtime loop, which is a separate
     // piece -- so a created task is recorded and inert.

@@ -22,10 +22,11 @@
 //! Isolation: every test builds its own registry and catalog over a scratch directory named from
 //! the process id and a counter, so tests cannot collide.
 //!
-//! The module is included by path rather than through the crate's re-exports, so these tests
-//! compile against the method as written before the crate root wires it in. It spells its paths
-//! through `girder_core::`, the alias the library declares for itself, so the same source builds
-//! here and inside the crate.
+//! The method is reached through the crate's public re-export rather than by including the module
+//! by path: a missing export would otherwise be invisible here, which is exactly how a method ends
+//! up implemented but unreachable. The wire names and the response shape are spelled out locally
+//! instead of imported, because they are the contract a client codes against — a test that read
+//! them from the implementation would keep passing after the implementation was renamed.
 
 #![allow(
     clippy::unwrap_used,
@@ -34,9 +35,6 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_resume_rpc.rs"]
-mod session_resume_rpc;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -44,11 +42,32 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use girder_core::{
     AgentRuntime, BoxFut, ChunkStream, DirectoryCatalog, EventBus, FinishReason, LlmError,
     LlmProvider, LlmRequest, ReadOnly, RemoteCall, RemoteError, RemoteRegistry, RuntimeConfig,
-    SessionCatalog, SessionEvent, SessionStore, StreamChunk, ToolRegistry, ToolRegistryView,
+    SessionCatalog, SessionEvent, SessionRecord, SessionStore, StreamChunk, ToolRegistry,
+    ToolRegistryView, TurnEndReason, register_session_resume_method,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-use session_resume_rpc::{METHOD, NAMESPACE, SessionResumeValue, register_session_resume_method};
+/// The namespace, spelled as a client spells it.
+const NAMESPACE: &str = "session";
+
+/// The method, spelled as upstream spells it.
+const METHOD: &str = "resume";
+
+/// What a client reads out of the response.
+///
+/// Declared here rather than imported from the implementation so this file is an independent
+/// statement of the wire contract: renaming a field in the implementation has to break this.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Reply {
+    session_id: String,
+    resumed: bool,
+    events: u64,
+    last_seq: u64,
+    running: bool,
+    interrupted: bool,
+}
 
 // ---- fixtures ---------------------------------------------------------------------------------
 
@@ -117,12 +136,9 @@ fn catalog(root: &Path) -> Arc<dyn SessionCatalog> {
     Arc::new(DirectoryCatalog::new(root))
 }
 
-async fn resume(
-    registry: &RemoteRegistry,
-    args: Value,
-) -> Result<SessionResumeValue, RemoteError> {
+async fn resume(registry: &RemoteRegistry, args: Value) -> Result<Reply, RemoteError> {
     let value = registry.dispatch(NAMESPACE, METHOD, call(args)).await?;
-    Ok(serde_json::from_value(value).expect("the response matches SessionResumeValue"))
+    Ok(serde_json::from_value(value).expect("the response matches the documented shape"))
 }
 
 fn store(dir: &Path, id: &str) -> SessionStore {
@@ -151,9 +167,12 @@ async fn resuming_a_session_with_events_reports_its_count_and_last_seq() {
     seed(&dir, "s1", 4);
     let runtime = runtime();
 
-    let value = resume(&registry(&catalog(&dir), &runtime), json!({"sessionId": "s1"}))
-        .await
-        .expect("a known session resumes");
+    let value = resume(
+        &registry(&catalog(&dir), &runtime),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("a known session resumes");
 
     assert_eq!(value.session_id, "s1");
     assert!(value.resumed);
@@ -172,11 +191,13 @@ async fn the_reported_cursor_matches_session_follow() {
     let dir = scratch("cursor");
     seed(&dir, "s1", 3);
     let runtime = runtime();
-    let registry = registry(&catalog(&dir), &runtime);
 
-    let resumed = resume(&registry, json!({"sessionId": "s1"}))
-        .await
-        .expect("resumes");
+    let resumed = resume(
+        &registry(&catalog(&dir), &runtime),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("resumes");
 
     // `session.follow` is not registered here, so the same arithmetic is checked against the log:
     // skipping `lastSeq` records must leave nothing.
@@ -203,13 +224,19 @@ async fn resuming_an_empty_session_succeeds_with_no_events() {
     store(&dir, "s1").touch().expect("created");
     let runtime = runtime();
 
-    let value = resume(&registry(&catalog(&dir), &runtime), json!({"sessionId": "s1"}))
-        .await
-        .expect("an empty session still resumes");
+    let value = resume(
+        &registry(&catalog(&dir), &runtime),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("an empty session still resumes");
 
     assert!(value.resumed);
     assert_eq!(value.events, 0);
-    assert_eq!(value.last_seq, 0, "an empty log has no last sequence number");
+    assert_eq!(
+        value.last_seq, 0,
+        "an empty log has no last sequence number"
+    );
     assert!(!value.interrupted);
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -224,9 +251,12 @@ async fn resuming_an_unknown_session_is_an_error() {
     let dir = scratch("unknown");
     let runtime = runtime();
 
-    let error = resume(&registry(&catalog(&dir), &runtime), json!({"sessionId": "nope"}))
-        .await
-        .expect_err("an unknown session must fail");
+    let error = resume(
+        &registry(&catalog(&dir), &runtime),
+        json!({"sessionId": "nope"}),
+    )
+    .await
+    .expect_err("an unknown session must fail");
 
     match error {
         RemoteError::Failed(message) => {
@@ -247,7 +277,11 @@ async fn a_missing_session_id_is_invalid_arguments() {
     let runtime = runtime();
     let registry = registry(&catalog(&dir), &runtime);
 
-    for args in [json!({}), json!({"sessionId": ""}), json!({"sessionId": "   "})] {
+    for args in [
+        json!({}),
+        json!({"sessionId": ""}),
+        json!({"sessionId": "   "}),
+    ] {
         let error = resume(&registry, args)
             .await
             .expect_err("a blank id is not a session");
@@ -270,15 +304,15 @@ async fn a_session_with_no_writable_handle_reports_that() {
     }
 
     impl SessionCatalog for ReadOnlyCatalog {
-        fn list(&self) -> BoxFut<Vec<girder_core::SessionRecord>> {
+        fn list(&self) -> BoxFut<Vec<SessionRecord>> {
             Box::pin(async { Vec::new() })
         }
 
-        fn read(&self, id: &str) -> BoxFut<Option<girder_core::SessionRecord>> {
+        fn read(&self, id: &str) -> BoxFut<Option<SessionRecord>> {
             let events = self.events.clone();
             let id = id.to_owned();
             Box::pin(async move {
-                Some(girder_core::SessionRecord {
+                Some(SessionRecord {
                     id,
                     updated_at: 0,
                     blank: false,
@@ -287,13 +321,12 @@ async fn a_session_with_no_writable_handle_reports_that() {
             })
         }
 
-        fn create(
-            &self,
-            id: &str,
-        ) -> BoxFut<Result<girder_core::SessionRecord, RemoteError>> {
+        fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>> {
             let id = id.to_owned();
             Box::pin(async move {
-                Err(RemoteError::Failed(format!("read-only catalog cannot create `{id}`")))
+                Err(RemoteError::Failed(format!(
+                    "read-only catalog cannot create `{id}`"
+                )))
             })
         }
         // `open` keeps its default: `None`, which is what a read-only backing store answers.
@@ -337,7 +370,8 @@ async fn a_resumed_session_accepts_a_prompt_and_continues_the_turn_numbering() {
 
     // Prompting goes through the same catalog handle resume checked, which is exactly the promise
     // `resume` makes.
-    let session: Arc<dyn girder_core::Session> = catalog.open("s1").expect("resume promised it opens");
+    let session: Arc<dyn girder_core::Session> =
+        catalog.open("s1").expect("resume promised it opens");
     let turn = AgentRuntime::prompt(&runtime, "s1", "again", session)
         .await
         .expect("a resumed session accepts a prompt");
@@ -364,9 +398,6 @@ async fn resuming_reports_a_running_turn() {
     let catalog = catalog(&dir);
     let registry = registry(&catalog, &runtime);
 
-    // A provider that never finishes would hang the test; the prompt below completes, so instead
-    // the flag is checked from the runtime's own view of a busy session — inserted by `prompt` and
-    // released when the turn ends. Waiting for the release is what makes the poll below terminate.
     let session = catalog.open("s1").expect("opens");
     let _turn = AgentRuntime::prompt(&runtime, "s1", "go", session)
         .await
@@ -408,9 +439,12 @@ async fn an_interrupted_log_is_reported_and_left_untouched() {
     let before = std::fs::read(dir.join("s1.jsonl.zst")).expect("the log exists");
     let runtime = runtime();
 
-    let value = resume(&registry(&catalog(&dir), &runtime), json!({"sessionId": "s1"}))
-        .await
-        .expect("an interrupted session still resumes");
+    let value = resume(
+        &registry(&catalog(&dir), &runtime),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("an interrupted session still resumes");
 
     assert!(value.interrupted, "a start with no end is a cut-off turn");
     assert_eq!(value.events, 2);
@@ -432,14 +466,17 @@ async fn a_completed_turn_is_not_reported_as_interrupted() {
     store
         .append(&SessionEvent::TurnEnd {
             turn: 1,
-            reason: girder_core::TurnEndReason::Completed,
+            reason: TurnEndReason::Completed,
         })
         .expect("appended");
     let runtime = runtime();
 
-    let value = resume(&registry(&catalog(&dir), &runtime), json!({"sessionId": "s1"}))
-        .await
-        .expect("resumes");
+    let value = resume(
+        &registry(&catalog(&dir), &runtime),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("resumes");
 
     assert!(!value.interrupted, "the turn boundary is closed");
 
@@ -464,7 +501,10 @@ async fn a_read_only_policy_refuses_resume() {
         .await
         .expect_err("a read-only peer cannot resume");
 
-    assert!(matches!(error, RemoteError::Refused { .. }), "got {error:?}");
+    assert!(
+        matches!(error, RemoteError::Refused { .. }),
+        "got {error:?}"
+    );
     assert_eq!(error.code(), "REFUSED");
 
     let _ = std::fs::remove_dir_all(&dir);
