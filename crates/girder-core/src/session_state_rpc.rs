@@ -144,6 +144,8 @@ pub struct SessionStateValue {
     /// A client showing "12 turns, 40 steps, 3 failed tool calls" reads this instead of walking the log it already
     /// asked for, which is the same numbers computed twice.
     pub counts: girder_core::SessionStats,
+    /// Characters written by each kind of producer.
+    pub attribution: girder_core::ContentAttribution,
 }
 
 /// Where "a turn is executing" is found.
@@ -288,9 +290,29 @@ async fn state(
         // report is not derivable from it. Reporting one as zero would say the model was instant rather than that
         // nothing measured it.
         counts: girder_core::SessionStats::of(&record.events),
+        // How much of the conversation each producer wrote, in characters. The message count says how many turns
+        // happened; this says who filled the context, and they are different questions -- one long model answer and one
+        // short question is a conversation where the model wrote almost all of it.
+        attribution: girder_core::ContentAttribution::of(&messages_of(&record.events)),
     };
 
     serde_json::to_value(value).map_err(|error| RemoteError::Failed(error.to_string()))
+}
+
+/// Every message the log carries, in order.
+///
+/// Only the message-bearing events are collected: a step boundary or a tool result describes the conversation without
+/// being part of what either side wrote, and counting them would attribute protocol noise to a producer.
+fn messages_of(events: &[SessionEvent]) -> Vec<girder_core::ChatMessage> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::UserMessage { message }
+            | SessionEvent::AssistantMessage { message, .. }
+            | SessionEvent::DeveloperMessage { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Builds an `INVALID_ARGUMENTS` error for this method.

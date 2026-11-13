@@ -41,7 +41,7 @@ use crate::message::{Message, MessageSource};
 /// How many characters each producer contributed to a conversation.
 ///
 /// Every field is a character count, never a message count: see the module documentation for why.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Attribution {
     /// Characters the person wrote.
     pub user: usize,

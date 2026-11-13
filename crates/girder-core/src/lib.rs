@@ -131,6 +131,7 @@ mod present_tool;
 mod process_group;
 mod projection;
 mod projection_extra;
+mod projection_host;
 mod providers;
 mod ptc_policy;
 mod questions;
@@ -173,6 +174,7 @@ mod spill_policy;
 mod ssh;
 mod storage;
 mod str_replace_editor;
+mod stream_blocks;
 mod subagent;
 mod subagent_depth;
 mod subagent_pool;
@@ -412,6 +414,7 @@ pub use projection_extra::{
     CacheError, Checkpoint, CheckpointRow, ProjectionCache, Snapshot as ProjectionSnapshot,
     Versioned, VersionedProjection,
 };
+pub use projection_host::{HostError, ProjectionHost, Registry as ProjectionHosts};
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
     RouteRegistry, deepseek_route, fits as model_fits, window_of,
@@ -542,6 +545,7 @@ pub use storage::{
 pub use str_replace_editor::{
     EditFailure as ReplaceFailure, Replacement, apply as apply_replacements,
 };
+pub use stream_blocks::{StreamObserver, assemble_message};
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
     subagent_tool,

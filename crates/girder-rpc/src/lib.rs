@@ -23,6 +23,7 @@
 //! Consequence: this is **protocol connectivity**, not a GUI that works. A real DSH client calls
 //! generated methods this crate does not implement.
 
+pub mod bounded_transport;
 pub mod server;
 mod stream;
 mod web;
