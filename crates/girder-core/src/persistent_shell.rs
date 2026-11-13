@@ -152,24 +152,28 @@ impl Config {
     }
 
     /// Runs a different shell program.
+    #[must_use]
     pub fn with_shell(mut self, shell: impl Into<String>) -> Self {
         self.shell = shell.into();
         self
     }
 
     /// Replaces the environment the shell starts with.
+    #[must_use]
     pub fn with_environment(mut self, environment: BTreeMap<String, String>) -> Self {
         self.environment = environment;
         self
     }
 
     /// Bounds one command.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Bounds each output stream of one command.
+    #[must_use]
     pub fn with_max_output_bytes(mut self, max_output_bytes: usize) -> Self {
         self.max_output_bytes = max_output_bytes;
         self
@@ -382,12 +386,10 @@ impl PersistentShell {
         })?;
         let pid = child.id();
 
-        let stdin = child.stdin.take().ok_or_else(|| {
-            ShellError::Start {
-                shell: shell.clone(),
-                cwd: cwd.clone(),
-                source: std::io::Error::other("the shell's stdin pipe was not created"),
-            }
+        let stdin = child.stdin.take().ok_or_else(|| ShellError::Start {
+            shell: shell.clone(),
+            cwd: cwd.clone(),
+            source: std::io::Error::other("the shell's stdin pipe was not created"),
         })?;
         let stdout = child.stdout.take().ok_or_else(|| ShellError::Start {
             shell: shell.clone(),
@@ -656,6 +658,10 @@ impl Markers {
             concat!(
                 "printf '\\000{tag}{stdout_start}\\000'\n",
                 "printf '\\000{tag}{stderr_start}\\000' >&2\n",
+                // The command is quoted for the outer shell so its operators reach `eval` instead of being parsed
+                // here. Unquoted, a command containing `;` or `(` was a syntax error at this level, which is both the
+                // wrong error and a way for the command to escape its own evaluation. Single quotes with an escaped
+                // embedded quote keep every byte inside one argument.
                 "eval -- {command} </dev/null\n",
                 "__girder_ps_status=$?\n",
                 "__girder_ps_cwd=$(printf '%s' \"$PWD\" | od -An -v -tx1 | tr -d ' \\n')\n",
@@ -724,9 +730,11 @@ fn quote(command: &str) -> String {
 
 /// Splits a completion payload into the exit code and the reported directory.
 fn parse_payload(payload: &str) -> Result<(i32, Option<PathBuf>), ShellError> {
-    let (code, cwd) = payload.split_once(':').ok_or_else(|| ShellError::Protocol {
-        detail: format!("the completion payload `{payload}` has no `:`"),
-    })?;
+    let (code, cwd) = payload
+        .split_once(':')
+        .ok_or_else(|| ShellError::Protocol {
+            detail: format!("the completion payload `{payload}` has no `:`"),
+        })?;
     let code = code
         .trim()
         .parse::<i32>()
@@ -800,7 +808,10 @@ impl Frame {
 
     /// Consumes the frame into its retained output and its dropped-byte count.
     fn finish(self) -> (String, u64) {
-        (String::from_utf8_lossy(&self.body).into_owned(), self.omitted)
+        (
+            String::from_utf8_lossy(&self.body).into_owned(),
+            self.omitted,
+        )
     }
 
     /// Classifies one chunk of the stream.
@@ -814,52 +825,46 @@ impl Frame {
         }
         self.window.extend_from_slice(chunk);
 
-        loop {
-            if !self.started {
-                let Some(at) = find(&self.window, start) else {
-                    // Keep only a tail that could be the beginning of the marker; the rest is output
-                    // from before this command, which this frame does not own.
-                    keep_tail(&mut self.window, start.len().saturating_sub(1));
-                    return;
-                };
-                self.started = true;
-                self.window.drain(..at + start.len());
-            }
-
-            let Some(at) = find(&self.window, end) else {
-                // No marker yet: everything except a possible partial marker is body. The retained
-                // tail is one byte shorter than the marker, which is the longest prefix of it that
-                // could still be completed by the next chunk.
-                let keep = end.len().saturating_sub(1);
-                if self.window.len() > keep {
-                    let split = self.window.len() - keep;
-                    self.append(split);
-                }
+        if !self.started {
+            let Some(at) = find(&self.window, start) else {
+                // Keep only a tail that could be the beginning of the marker; the rest is output
+                // from before this command, which this frame does not own.
+                keep_tail(&mut self.window, start.len().saturating_sub(1));
                 return;
             };
-
-            // Indices are resolved against the window as it is now: `append` drains from the front,
-            // so a payload offset computed after it would address the wrong bytes.
-            let payload_start = at + end.len();
-            match self.window[payload_start..].iter().position(|byte| *byte == 0) {
-                Some(length) => {
-                    let payload = String::from_utf8_lossy(
-                        &self.window[payload_start..payload_start + length],
-                    )
-                    .into_owned();
-                    self.append(at);
-                    self.window.clear();
-                    self.payload = Some(payload);
-                    return;
-                }
-                None => {
-                    // The marker prefix arrived but its NUL-terminated payload has not. The body
-                    // before it is final, so it is committed while the rest waits.
-                    self.append(at);
-                    return;
-                }
-            }
+            self.started = true;
+            self.window.drain(..at + start.len());
         }
+
+        let Some(at) = find(&self.window, end) else {
+            // No marker yet: everything except a possible partial marker is body. The retained
+            // tail is one byte shorter than the marker, which is the longest prefix of it that
+            // could still be completed by the next chunk.
+            let keep = end.len().saturating_sub(1);
+            if self.window.len() > keep {
+                let split = self.window.len() - keep;
+                self.append(split);
+            }
+            return;
+        };
+
+        // Indices are resolved against the window as it is now: `append` drains from the front, so
+        // a payload offset computed after it would address the wrong bytes.
+        let payload_start = at + end.len();
+        let terminator = self.window[payload_start..]
+            .iter()
+            .position(|byte| *byte == 0);
+        let Some(length) = terminator else {
+            // The marker prefix arrived but its NUL-terminated payload has not. The body before it
+            // is final, so it is committed while the rest waits for the next chunk.
+            self.append(at);
+            return;
+        };
+        let payload = String::from_utf8_lossy(&self.window[payload_start..payload_start + length])
+            .into_owned();
+        self.append(at);
+        self.window.clear();
+        self.payload = Some(payload);
     }
 
     /// Moves the first `length` bytes of the window into the retained body.
@@ -878,7 +883,9 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Truncates `window` to its last `keep` bytes.

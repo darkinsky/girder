@@ -587,5 +587,7 @@ pub use workspace_rpc_extra::{
     register_workspace_extra_methods, register_workspace_extra_methods_without_preferences,
 };
 
-// TEMPORARY (verification only): removed after the test run.
-pub use persistent_shell::{Config as PersistentShellConfig, Output as PersistentShellOutput, PersistentShell, ShellError as PersistentShellError};
+pub use persistent_shell::{
+    Config as PersistentShellConfig, Output as PersistentShellOutput, PersistentShell,
+    ShellError as PersistentShellError,
+};

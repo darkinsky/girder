@@ -15,8 +15,7 @@ use girder_core::persistent_shell::{Config, PersistentShell, ShellError};
 /// would touch tracked files, and one that `cd`s would leave a relative path pointing somewhere
 /// surprising.
 fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir()
-        .join(format!("girder-ps-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("girder-ps-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
@@ -94,8 +93,14 @@ async fn a_relative_cd_is_resolved_against_the_previous_directory() {
 async fn an_exported_variable_survives_between_commands() {
     let (mut shell, _dir) = shell("env");
 
-    shell.run("export GIRDER_PS_TEST=kept").await.expect("export");
-    let printed = shell.run("printf '%s' \"$GIRDER_PS_TEST\"").await.expect("read");
+    shell
+        .run("export GIRDER_PS_TEST=kept")
+        .await
+        .expect("export");
+    let printed = shell
+        .run("printf '%s' \"$GIRDER_PS_TEST\"")
+        .await
+        .expect("read");
 
     assert_eq!(printed.stdout(), "kept");
 }
@@ -118,8 +123,10 @@ async fn an_unexported_shell_variable_also_survives() {
 async fn a_nonzero_exit_is_reported_not_raised() {
     let (mut shell, _dir) = shell("nonzero");
 
+    // A subshell rather than a bare `exit 3`: that would close the shell itself, which is a
+    // different outcome (and is covered separately below).
     let output = shell
-        .run("echo failing >&2; exit 3")
+        .run("echo failing >&2; (exit 3)")
         .await
         .expect("a failing command still answers");
 
@@ -135,7 +142,10 @@ async fn a_failing_command_does_not_take_the_shell_with_it() {
     let failed = shell.run("false").await.expect("false runs");
     assert_eq!(failed.code(), 1);
 
-    let after = shell.run("echo still-here").await.expect("the shell still runs");
+    let after = shell
+        .run("echo still-here")
+        .await
+        .expect("the shell still runs");
     assert_eq!(after.stdout().trim(), "still-here");
     assert_eq!(after.code(), 0);
 }
@@ -205,9 +215,18 @@ async fn output_containing_a_sentinel_like_string_is_not_mistaken_for_one() {
 
     assert_eq!(output.code(), 0);
     let printed = output.stdout();
-    assert!(printed.contains("__GIRDER_PS_END:0:"), "printed: {printed:?}");
-    assert!(printed.contains("__GIRDER_PS_START"), "printed: {printed:?}");
-    assert!(printed.contains("__GIRDER_PS_ERR_END:"), "printed: {printed:?}");
+    assert!(
+        printed.contains("__GIRDER_PS_END:0:"),
+        "printed: {printed:?}"
+    );
+    assert!(
+        printed.contains("__GIRDER_PS_START"),
+        "printed: {printed:?}"
+    );
+    assert!(
+        printed.contains("__GIRDER_PS_ERR_END:"),
+        "printed: {printed:?}"
+    );
 }
 
 #[tokio::test]
@@ -237,7 +256,12 @@ async fn a_command_containing_a_nul_byte_is_refused() {
     ));
     // The refusal is this side's, so the shell is untouched and still usable.
     assert_eq!(
-        shell.run("echo fine").await.expect("the shell runs").stdout().trim(),
+        shell
+            .run("echo fine")
+            .await
+            .expect("the shell runs")
+            .stdout()
+            .trim(),
         "fine"
     );
 }
