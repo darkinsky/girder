@@ -7,15 +7,15 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: phases 0-7 have a slice, plus a live provider and two Remote methods.** `girder "…"`
-> talks to DeepSeek's Anthropic-format API when `DEEPSEEK_API_KEY` is set and falls back to a
-> scripted provider otherwise, saying which on stderr. Three limits are worth stating plainly: the
-> live path is **tested against a mock server, not the real API** (no key here); `girder serve`
-> exposes **six of the twenty-two Remote methods a client calls**, and `session.prompt` now really
-> runs a turn, cancellable through `session.cancel` — though its output reaches a client only with
-> `--watch agent/turn`, and model selection is still absent. The session log appends one compressed
-> frame per event, so append cost no longer grows with the conversation; and the sandbox is **advisory, not kernel-enforced** (this host's kernel has no
-> Landlock). See [phase 6](docs/phase6-scope.md) and [phase 7](docs/phase7-scope.md).
+> **Status: 66 Remote methods, 31 tools, 3 slash commands, 2,962 tests.** `girder "…"` talks to a
+> DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`) is set and falls back to a
+> scripted provider otherwise, saying which on stderr. The live path is **tested against a mock server,
+> not the real API** — no key exists in this environment, so the wire format is exercised rather than the
+> service.
+>
+> Measured against upstream's backend (243,536 lines, excluding `client`, `test-support`, and
+> `experimental`): **26%** by line count and **42%** of the Remote methods. The gap is concentrated in
+> three places, listed at the end of this file rather than left for a reader to discover.
 
 ## Why this repository starts with a plan
 
@@ -68,10 +68,10 @@ cargo run -p girder-cli -- schema
   a WebSocket mux, with JSON Schema export so both sides can be checked against one artifact.
   Bus dispatches reach a watching client as `emit` frames through a push subscription, not a poll —
   a poll cannot carry arguments and cannot report the same event twice.
-- **Five Remote methods** — `list`, `create`, `page`, `events`, and `prompt` over
-  `/api/remote.invoke`. The rest answer `NOT_IMPLEMENTED` rather than `UNKNOWN_METHOD`, so a client
-  can tell a gap from a typo. `create` is idempotent per id: a retry must not append a second turn
-  to the log.
+- **66 Remote methods** over `/api/remote.invoke`, across `session`, `workspace`, `terminal`, `job`,
+  `settings`, `schedule`, `extension`, `host`, and `command`. The two that remain answer
+  `NOT_IMPLEMENTED` rather than `UNKNOWN_METHOD`, so a client can tell a gap from a typo. `create` is
+  idempotent per id: a retry must not append a second turn to the log.
 - **Subagent delegation** — a child agent runs in its own session, and at the depth ceiling the
   delegation tool is removed from the tool set rather than refused at call time, so the model cannot
   spend its way into unbounded recursion.
@@ -98,8 +98,28 @@ The [interface sketch](docs/phase4-interfaces.md) records what was decided befor
 written — most importantly that cancellation and agent identity become explicit parameters, because
 Rust has no ambient equivalent that survives `tokio::spawn`.
 
-Phases 0-7 are roughly 12,000 lines of Rust against a 272k-line host; the ratio gets no better from here.
-That is the plan's argument for stopping at a vertical slice before committing to the rest.
+The backend is **63,865 lines of Rust against 243,536** of upstream — 26% by line count, higher by
+capability because a rewrite says in one line what a plugin framework spends ten on. The ratio improves
+only by finishing whole subsystems rather than whole files.
+
+## What is not done, and why
+
+Three gaps are worth naming because each fails differently:
+
+- **Streaming.** Upstream has stream-mode Remote methods (`session.stream`, `terminal.attach`,
+  `job.watch`). `RemoteRegistry` has no stream kind, so these answer `NOT_IMPLEMENTED` rather than
+  opening a subscription that never delivers. `session.follow` and `job.follow` are cursor polls that
+  resume exactly, which is the honest version of the same capability.
+- **Transport backpressure.** `server.rs` uses an unbounded outbound channel, so a client that writes
+  without reading grows the queue until memory runs out. [`rpc_limits`](docs/rpc-limits-finding.md)
+  implements and tests the per-connection policy; wiring it needs the outbound queue bounded, which
+  makes `send` asynchronous at sites that are synchronous today.
+- **The Cordis plugin runtime.** Upstream's 11k-line extension runtime has no Rust equivalent, and
+  closing it means reimplementing the framework this project deliberately replaced. Extensions here
+  are shell scripts with an approval gate, which is a smaller promise kept.
+
+A full accounting is in [the migration plan](docs/migration-v2.md), which records each milestone's
+limits alongside its results rather than only its results.
 
 ## Where the risk is
 
