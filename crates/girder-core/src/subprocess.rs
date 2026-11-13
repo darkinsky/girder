@@ -204,9 +204,6 @@ pub async fn run(
         // Before adding our own: `env_clear` after would drop them too.
         command.env_clear();
     }
-    if options.clear_environment {
-        command.env_clear();
-    }
     for (key, value) in &options.env {
         command.env(key, value);
     }
@@ -287,6 +284,17 @@ pub async fn run(
         status = child.wait() => status?,
     };
 
+    // The leader has exited, but a command that started background work left it running in the group. Worse, that
+    // background process inherits the stdout pipe, so draining would wait for it -- measured: `sleep 3 &` exits its
+    // leader in 2.6ms and blocks the drain for 3 seconds, and `sleep 999 &` blocks forever. Killing the group before
+    // the drain closes those pipes, which is what lets the drain return.
+    //
+    // The group is only signalled when something is still in it: the common case is a group of one that has already
+    // been reaped, and killing that would either do nothing or, worse, target a recycled group id.
+    if group_has_survivors(pid) {
+        kill_tree(pid);
+    }
+
     let stdout = stdout_task.await.unwrap_or_default();
     let stderr = stderr_task.await.unwrap_or_default();
 
@@ -295,6 +303,32 @@ pub async fn run(
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
         code: status.code(),
     })
+}
+
+/// Whether any process other than a zombie remains in the group `pid` leads.
+///
+/// A zombie keeps its pid and its group id but holds no pipes, so counting one as a survivor would kill a group that is
+/// already gone -- and on Linux the leader itself is a zombie until it is reaped, which is exactly the case here.
+#[cfg(unix)]
+fn group_has_survivors(pid: Option<u32>) -> bool {
+    let Some(pid) = pid else {
+        return false;
+    };
+    // The leader has been reaped by `child.wait()`, so it is gone; what is left is anything it started.
+    // Probing the group with signal 0 asks the kernel whether any member exists.
+    // `EPERM` means a member exists and belongs to somebody else, which is still a survivor.
+    matches!(
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-i32::try_from(pid).unwrap_or(i32::MAX)),
+            None,
+        ),
+        Ok(()) | Err(nix::errno::Errno::EPERM)
+    )
+}
+
+#[cfg(not(unix))]
+fn group_has_survivors(_pid: Option<u32>) -> bool {
+    false
 }
 
 /// Kills the process group led by `pid`.
@@ -489,9 +523,6 @@ pub fn start(options: &SpawnOptions) -> Result<RunningProcess, ProcessError> {
     }
     if options.clear_environment {
         // Before adding our own: `env_clear` after would drop them too.
-        command.env_clear();
-    }
-    if options.clear_environment {
         command.env_clear();
     }
     for (key, value) in &options.env {
