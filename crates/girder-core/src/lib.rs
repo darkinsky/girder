@@ -71,6 +71,7 @@ mod attachment_rpc;
 mod boot;
 mod boot_check;
 mod brand;
+mod builtin_commands;
 mod chunked_list;
 mod code_language;
 mod commands;
@@ -227,6 +228,7 @@ pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
 };
+pub use builtin_commands::register_builtin_commands;
 pub use chunked_list::{CHUNK_CAPACITY, List as ChunkedList};
 pub use code_language::{for_extension, for_path, read_hint};
 pub use commands::{

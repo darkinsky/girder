@@ -979,7 +979,12 @@ fn register_session_core(
 
     // Every constructor gets the command surface: a slash command is available wherever a session is, and a
     // deployment that could list sessions but not run a command would be a strange half.
-    register_command_methods(registry, &Arc::new(crate::commands::Registry::new()));
+    //
+    // The registry is populated before it is registered. An empty registry behind a working `command.list` is a surface
+    // that answers "no commands" to every client, which is indistinguishable from a broken one.
+    let commands = Arc::new(crate::commands::Registry::new());
+    crate::builtin_commands::register_builtin_commands(&commands);
+    register_command_methods(registry, &commands);
 }
 
 /// Registers `session.list`.
