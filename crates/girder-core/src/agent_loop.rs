@@ -100,6 +100,17 @@ pub enum LoopError {
     #[error(transparent)]
     Llm(#[from] crate::llm::LlmError),
 
+    /// The conversation has grown past what this model accepts.
+    ///
+    /// Reported before the request is sent, and with the number of tokens that have to go: a provider's own
+    /// over-window error names a limit without saying how far past it the request was, which leaves the caller to
+    /// guess whether to compact a little or a lot.
+    #[error("the conversation is {excess} token(s) past what this model accepts")]
+    OverBudget {
+        /// How many tokens have to be removed.
+        excess: u64,
+    },
+
     /// The stream could not be assembled.
     #[error(transparent)]
     Assemble(#[from] AssembleError),
@@ -204,6 +215,16 @@ pub struct LoopContext {
     /// recorded it — the RPC runtime writes the prompt before spawning, so that it is durable even
     /// if the model never answers, and a second write would put the same message in the log twice.
     pub record_prompt: bool,
+
+    /// The largest context the model accepts, when the deployment knows it.
+    ///
+    /// `None` means nobody stated one, and the loop does not guess: a budget check against an invented window would
+    /// refuse requests the model would have accepted, which is worse than letting the provider be the authority.
+    pub context_window: Option<u64>,
+
+    /// How many output tokens the model will be asked for, which is subtracted from the window before the input is
+    /// measured. A request that fills the window leaves nothing to answer with.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl LoopContext {
@@ -236,7 +257,24 @@ impl LoopContext {
             spill: None,
             spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
             compaction: None,
+            context_window: None,
+            max_output_tokens: None,
         }
+    }
+
+    /// Tells the loop what the model accepts, so an over-window request is refused before it is sent.
+    ///
+    /// Both numbers come from the deployment because only it knows which model it is talking to: a provider whose
+    /// catalogue states a window has one, and a provider that states nothing leaves both unset and the check skipped.
+    #[must_use]
+    pub fn with_window(
+        mut self,
+        context_window: Option<u64>,
+        max_output_tokens: Option<u32>,
+    ) -> Self {
+        self.context_window = context_window;
+        self.max_output_tokens = max_output_tokens;
+        self
     }
 
     /// Attaches the goal this loop advances.
@@ -664,6 +702,51 @@ async fn run_steps(
 /// Yields steps and appends to `messages` so the caller can decide whether to continue. Split out
 /// of [`run`] because the streaming and tool dispatch are two concerns and joining them made one
 /// function unreadable.
+/// How far past the model's input allowance a request is, if it is past at all.
+///
+/// A free function rather than a block inside `turn_stream`, which was already at the length the linter enforces and
+/// whose job is streaming rather than arithmetic.
+fn over_budget(
+    context: &LoopContext,
+    messages: &[crate::llm::Message],
+    tools: &[crate::llm::ToolSchema],
+) -> Option<u64> {
+    // A provider whose window nobody stated cannot be checked, so it is not: refusing on a guess would make an
+    // unconfigured model unusable.
+    let window = context.context_window?;
+    let usage = crate::context_budget::Usage {
+        // No system prompt is assembled at this layer, so there is nothing to measure here. A caller that grows one
+        // passes it through `LoopContext`.
+        system: 0,
+        messages: messages
+            .iter()
+            // `estimate_blocks` rather than `estimate_message`, because the request carries `llm::Message` and the
+            // estimator is written against the session's own message type. The difference is the role overhead, which
+            // the budget's margin absorbs.
+            .map(|message| crate::token_meter::estimate_blocks(&message.content))
+            .sum(),
+        tools: tools
+            .iter()
+            .map(|schema| {
+                crate::token_meter::estimate_text(&schema.name)
+                    + crate::token_meter::estimate_text(&schema.description)
+                    + crate::token_meter::estimate_text(&schema.parameters.to_string())
+            })
+            .sum(),
+    };
+    let budget = crate::context_budget::Budget {
+        window,
+        reserve_output: u64::from(context.max_output_tokens.unwrap_or(4096)),
+        // A margin rather than the exact allowance: the estimate is a character heuristic, and a check that refused at
+        // the exact number would reject requests the model would have accepted.
+        margin: window / 20,
+    };
+    match crate::context_budget::check(&budget, &usage) {
+        crate::context_budget::Decision::Fits => None,
+        crate::context_budget::Decision::Over { excess } => Some(excess),
+    }
+}
+
 fn turn_stream<'a>(
     context: &'a Arc<LoopContext>,
     messages: &'a mut Vec<Message>,
@@ -681,8 +764,15 @@ fn turn_stream<'a>(
             .map(|agent| agent.cancel_token());
         let cancel = merge_cancel(cancel, agent_cancel);
 
+        let tool_schemas = context.tools.schemas();
+        // Checked before the request exists, because the alternative is learning from the provider.
+        if let Some(excess) = over_budget(context, messages.as_slice(), &tool_schemas) {
+            yield Err(LoopError::OverBudget { excess });
+            return;
+        }
+
         let request = LlmRequest::new(context.model.clone(), messages.clone())
-            .with_tools(context.tools.schemas());
+            .with_tools(tool_schemas);
         let stream = match context.provider.stream(request, cancel.clone()).await {
             Ok(stream) => stream,
             Err(error) => {

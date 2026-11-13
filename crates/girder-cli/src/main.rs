@@ -192,7 +192,14 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let tools = Arc::new(tools);
     // The goal is attached at construction rather than by cloning the runtime afterwards: `new` returns an `Arc`,
     // and a `set_goal` on a clone would wire only that clone while the server kept driving the original.
-    let runtime = girder_core::AgentRuntime::assemble_with(
+    // The route table the model picker reads. One route for the configured provider; a deployment with more would
+    // register them here rather than in a client.
+    let mut routes = girder_core::RouteRegistry::new();
+    let route = girder_core::deepseek_route("deepseek", cli.model.clone());
+    let _ = routes.register(route);
+    let routes = Arc::new(routes);
+
+    let mut runtime = girder_core::AgentRuntime::assemble_with(
         girder_core::RuntimeConfig {
             provider,
             tools: Arc::clone(&tools) as Arc<dyn girder_core::ToolRegistryView>,
@@ -205,12 +212,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         Some(compaction_policy()),
     );
 
-    // The route table the model picker reads. One route for the configured provider; a deployment with
-    // more would register them here rather than in a client.
-    let mut routes = girder_core::RouteRegistry::new();
-    let route = girder_core::deepseek_route("deepseek", cli.model.clone());
-    let _ = routes.register(route);
-    let routes = Arc::new(routes);
+    // What the model accepts, taken from the catalogue the picker already reads. Without this the loop sends whatever
+    // the conversation has accumulated and learns the answer from the provider's error, which names a limit without
+    // saying how far past it the request was.
+    apply_model_limits(&mut runtime, &routes, &cli.model);
 
     let mut remote = girder_core::registry_with_routes(&catalog, &runtime, &routes);
 
@@ -616,6 +621,24 @@ fn print_schema(format: Option<&str>) -> Result<()> {
 ///
 /// Extracted from `print_schema` rather than left inline: that function had reached the length the linter enforces,
 /// and a block that reads every session to total its counters is a function whether or not it has a name.
+/// Tells the runtime what the configured model accepts.
+///
+/// Extracted from `serve` rather than left inline: that function had reached the length the linter enforces, and a
+/// block that reads a route table is a function whether or not it has a name.
+fn apply_model_limits(
+    runtime: &mut Arc<girder_core::AgentRuntime>,
+    routes: &Arc<girder_core::RouteRegistry>,
+    model: &str,
+) {
+    let Ok((_route, resolved)) = routes.resolve(model, None) else {
+        return;
+    };
+    let output = resolved
+        .max_tokens
+        .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
+    girder_core::AgentRuntime::set_model_limits(runtime, resolved.context_window, output);
+}
+
 fn print_metrics() {
     // The same counts `session.state` reports, rendered in the format a scraper reads. A deployment that
     // already runs Prometheus should not have to write an exporter to see whether conversations are finishing

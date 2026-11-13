@@ -85,6 +85,7 @@ mod compaction;
 mod compaction_hook;
 mod config;
 mod config_edit;
+mod context_budget;
 mod credentials;
 mod deliverable;
 mod events;
@@ -147,6 +148,7 @@ mod schedule;
 mod schedule_rpc;
 mod schedule_runner;
 mod scope;
+mod search_index;
 mod search_tools;
 mod service;
 mod session;
@@ -282,6 +284,10 @@ pub use config::{
     FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,
 };
 pub use config_edit::{SchemaError, SchemaRegistry, SettingSpec};
+pub use context_budget::{
+    Budget as ContextBudget, Decision as BudgetDecision, Usage as ContextUsage,
+    check as check_context_budget,
+};
 pub use credentials::{
     CredentialError, CredentialRef, Info as CredentialInfo, Record as CredentialRecord,
     Store as CredentialStore, valid_environment,
@@ -466,6 +472,7 @@ pub use schedule_runner::{
     wait_for as schedule_wait_for,
 };
 pub use scope::{BoxDisposer, BoxFut, Scope};
+pub use search_index::{Entry as SearchIndexEntry, Index as SearchIndex};
 pub use search_tools::{DEFAULT_LIMIT as SEARCH_DEFAULT_LIMIT, glob_tool, grep_tool};
 pub use service::ServiceKey;
 pub use session::{

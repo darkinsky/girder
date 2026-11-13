@@ -140,6 +140,10 @@ struct Running {
 
 /// Runs prompts against sessions.
 pub struct AgentRuntime {
+    /// The model's context window, when the deployment states one.
+    context_window: Option<u64>,
+    /// The output limit to ask for, which is subtracted from the window before the input is measured.
+    max_output_tokens: Option<u32>,
     config: RuntimeConfig,
     /// Where an oversized tool result is saved, when this deployment has storage for it.
     spill: Option<Arc<dyn crate::spill::Store>>,
@@ -238,7 +242,22 @@ impl AgentRuntime {
             spill_limit,
             goal,
             compaction,
+            // Unset until a deployment states them: the runtime does not know which model it is talking to beyond the
+            // name, and a guessed window would make the budget check refuse requests the model would accept.
+            context_window: None,
+            max_output_tokens: None,
         })
+    }
+
+    /// States what the model accepts, so a request is refused before it is sent rather than after.
+    ///
+    /// Takes `&mut Arc<Self>` because the runtime is shared by the time a caller knows: the same allocation every
+    /// session holds is the one that has to carry the number.
+    pub fn set_model_limits(this: &mut Arc<Self>, window: Option<u64>, output: Option<u32>) {
+        if let Some(inner) = Arc::get_mut(this) {
+            inner.context_window = window;
+            inner.max_output_tokens = output;
+        }
     }
 
     /// Attaches the goal state the loop advances to a runtime that is not shared yet.
@@ -394,6 +413,11 @@ impl AgentRuntime {
         // code: it read a field nothing ever set, so a created goal recorded an intent that never affected a turn.
         context.goal = self.goal.clone();
         context.compaction = self.compaction.clone();
+        // The model's limits, when the catalogue states them. Without this the loop sends whatever the conversation has
+        // accumulated and learns the answer from the provider's error -- which names a limit without saying how far past
+        // it the request was.
+        let (window, output) = self.model_limits();
+        context = context.with_window(window, output);
         // The prompt was already written by `prompt()`, before the spawn.
         context.record_prompt = false;
         let context = Arc::new(context);
@@ -451,6 +475,17 @@ impl AgentRuntime {
     }
 
     /// Publishes one event on the bus.
+    /// The context window and output limit the configured model declares.
+    ///
+    /// `None` for either when the catalogue is silent, which is the honest answer: a budget check against an invented
+    /// window would refuse requests the model would have accepted. A wrong window is worse than no check, because the
+    /// check is the thing that is supposed to stop the request.
+    fn model_limits(&self) -> (Option<u64>, Option<u32>) {
+        // From the runtime rather than from a route table: the routes live in the CLI's configuration, and reaching back
+        // into it from here would make the runtime depend on how one caller happens to build its provider.
+        (self.context_window, self.max_output_tokens)
+    }
+
     fn publish(&self, event: AgentEvent) {
         self.config.bus.emit::<AgentTurn>(event);
     }
