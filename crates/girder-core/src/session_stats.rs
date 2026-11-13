@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use crate::session::SessionEvent;
 
 /// What a conversation did, in counts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stats {
     /// Turns that closed at least one step.
     ///

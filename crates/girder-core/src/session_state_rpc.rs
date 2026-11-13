@@ -139,6 +139,11 @@ pub struct SessionStateValue {
     /// A number rather than a re-derivation: a client showing "the answer to turn 3" needs the turn, and counting
     /// boundaries itself is how two counts start disagreeing.
     pub last_turn: Option<u64>,
+    /// What the conversation did, in counts.
+    ///
+    /// A client showing "12 turns, 40 steps, 3 failed tool calls" reads this instead of walking the log it already
+    /// asked for, which is the same numbers computed twice.
+    pub counts: girder_core::SessionStats,
 }
 
 /// Where "a turn is executing" is found.
@@ -279,6 +284,10 @@ async fn state(
         // that has not answered yet.
         last_text: girder_core::final_text(&record.events),
         last_turn: girder_core::final_output(&record.events).map(|output| output.turn),
+        // Counts rather than durations: the log records no timestamps, so every duration a richer stats layer would
+        // report is not derivable from it. Reporting one as zero would say the model was instant rather than that
+        // nothing measured it.
+        counts: girder_core::SessionStats::of(&record.events),
     };
 
     serde_json::to_value(value).map_err(|error| RemoteError::Failed(error.to_string()))
