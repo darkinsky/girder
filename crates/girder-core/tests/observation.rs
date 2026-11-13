@@ -227,7 +227,7 @@ fn two_occurrences_are_refused_rather_than_replaced_wholesale() {
     // An editor that replaced every occurrence would change code the caller never looked at.
     let error = replace_exactly_once("a b a", "a", "X").expect_err("ambiguous");
 
-    let EditError::Ambiguous { matches } = error else {
+    let EditError::Ambiguous { matches, .. } = error else {
         panic!("expected Ambiguous");
     };
     assert_eq!(matches, 2);

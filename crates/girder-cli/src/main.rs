@@ -356,6 +356,37 @@ fn sessions_root() -> std::path::PathBuf {
 ///
 /// The capability tools are registered separately below, because they need a goal state and a workspace that only
 /// the server has.
+/// Builds the skill registry from the skills a workspace actually contains.
+///
+/// The two roots are the first upstream reads: `.dsh/skills` and `.agents/skills`. Discovery is best-effort -- a missing
+/// directory means no skills from it, not a failure to start -- and a definition that cannot be read is skipped so one
+/// bad file does not hide the rest.
+fn discovered_skills(workspace: &std::path::Path) -> girder_core::SkillRegistry {
+    let roots = vec![
+        workspace.join(".dsh/skills"),
+        workspace.join(".agents/skills"),
+    ];
+    let mut provider = girder_core::StaticSkills::new("workspace", 100);
+    for meta in girder_core::discover_skills(&roots) {
+        let Ok(text) = std::fs::read_to_string(&meta.path) else {
+            continue;
+        };
+        // The body is what the model reads once it loads the skill; the frontmatter is the catalogue entry.
+        let summary = girder_core::SkillSummary {
+            name: meta.name.clone(),
+            description: meta.description.clone(),
+            provider: "workspace".to_owned(),
+            layer: 100,
+        };
+        if let Some(definition) = girder_core::SkillDefinition::new(summary, text) {
+            provider.add(definition);
+        }
+    }
+    let registry = girder_core::SkillRegistry::new();
+    let _ = registry.register(std::sync::Arc::new(provider));
+    registry
+}
+
 fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path) {
     tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
         workspace,
@@ -555,9 +586,12 @@ fn register_capability_tools(
     ));
     tools.register(girder_core::goal_tool(std::sync::Arc::clone(goals)));
 
-    tools.register(girder_core::skill_tool(Arc::new(
-        girder_core::SkillRegistry::new(),
-    )));
+    // Skills are discovered from the workspace rather than left to a registry nobody fills: a registry created empty
+    // at the registration site offers a `skill` tool that can only ever answer "no skills", which is
+    // indistinguishable from a broken one.
+    tools.register(girder_core::skill_tool(Arc::new(discovered_skills(
+        workspace,
+    ))));
     tools.register(girder_core::lsp_tool(Arc::new(
         girder_core::LspRegistry::new(),
     )));

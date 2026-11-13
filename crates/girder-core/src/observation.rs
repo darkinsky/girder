@@ -246,6 +246,11 @@ pub enum EditError {
     Ambiguous {
         /// How many times.
         matches: usize,
+        /// The one-based lines it occurs on, when the caller could locate them.
+        ///
+        /// Carried in the error rather than computed by the display: an error's `Display` has no content, and a caller
+        /// shown "occurs 4 times" has to search the file again to find out which four.
+        lines: Vec<usize>,
     },
 
     /// The replacement did not change anything.
@@ -306,7 +311,18 @@ pub fn replace_exactly_once(text: &str, old: &str, new: &str) -> Result<String, 
             out.push_str(&text[at + old.len()..]);
             Ok(out)
         }
-        matches => Err(EditError::Ambiguous { matches }),
+        count => {
+            // Located here, where the content is in hand. An error's `Display` cannot see the text, and a caller told
+            // only "occurs four times" has to search the file again to learn which four.
+            let lines = matches
+                .iter()
+                .map(|at| text[..*at].bytes().filter(|byte| *byte == b'\n').count() + 1)
+                .collect();
+            Err(EditError::Ambiguous {
+                matches: count,
+                lines,
+            })
+        }
     }
 }
 

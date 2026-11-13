@@ -329,6 +329,20 @@ async fn edit(
 
     let edited = match observation::replace_exactly_once(&text, old, new) {
         Ok(edited) => edited,
+        Err(girder_core::EditError::Ambiguous { matches, lines }) => {
+            // The line numbers are the part the caller cannot derive: "occurs four times" sends them back to search the
+            // file again, while "on lines 4, 9, 20, 31" lets them pick which one they meant.
+            let where_ = lines
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok(ToolResult::error(format!(
+                "`{}`: the text to replace occurs {matches} times, on lines {where_}; give more context or use the \
+                 replacement tool with an occurrence index",
+                path.display()
+            )));
+        }
         Err(error) => return Ok(ToolResult::error(format!("`{}`: {error}", path.display()))),
     };
 

@@ -623,3 +623,34 @@ async fn a_refused_write_leaves_the_old_content_intact() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- ambiguity reporting -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_ambiguous_edit_names_the_lines_it_found() {
+    // "occurs 3 times" sends the caller back to search the file again; the line numbers let them pick which one they
+    // meant without a second read.
+    let dir = scratch("ambiguous");
+    std::fs::write(dir.join("a.txt"), "same\nother\nsame\nmore\nsame\n").expect("written");
+    let tool = edit_tool(dir.clone());
+
+    let result = (tool.execute)(
+        serde_json::json!({"path": "a.txt", "old": "same", "new": "different"}),
+        context(None),
+    )
+    .await
+    .expect("edit");
+
+    assert!(result.is_error, "the edit is refused");
+    let text = text_of(&result);
+    assert!(text.contains('3'), "it reports the count: {text}");
+    for line in ["1", "3", "5"] {
+        assert!(text.contains(line), "it names line {line}: {text}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).expect("read"),
+        "same\nother\nsame\nmore\nsame\n",
+        "the file is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

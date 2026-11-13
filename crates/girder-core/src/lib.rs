@@ -118,6 +118,7 @@ mod office_document;
 mod patch;
 mod paths;
 mod permissions;
+pub mod persistent_shell;
 mod present_tool;
 mod projection;
 mod projection_extra;
@@ -151,11 +152,13 @@ mod session_title;
 mod settings_rpc;
 mod shell;
 mod skill;
+mod skill_catalog;
 mod skill_tool;
 mod spill;
 mod spill_policy;
 mod ssh;
 mod storage;
+mod str_replace_editor;
 mod subagent;
 mod subagent_depth;
 mod subagent_providers;
@@ -472,6 +475,9 @@ pub use skill::{
     Definition as SkillDefinition, Provider as SkillProvider, Registry as SkillRegistry,
     SkillError, Static as StaticSkills, Summary as SkillSummary,
 };
+pub use skill_catalog::{
+    SkillMeta, discover as discover_skills, parse_frontmatter, render_list as render_skill_list,
+};
 pub use skill_tool::skill_tool;
 pub use spill::{
     LocalStore as LocalSpillStore, Reference as SpillReference, SaveRequest as SpillSaveRequest,
@@ -489,6 +495,9 @@ pub use ssh::{
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,
+};
+pub use str_replace_editor::{
+    EditFailure as ReplaceFailure, Replacement, apply as apply_replacements,
 };
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
@@ -577,3 +586,6 @@ pub use workspace_rpc_extra::{
     InMemoryPreferences, UnavailablePreferences, WorkspacePreferences,
     register_workspace_extra_methods, register_workspace_extra_methods_without_preferences,
 };
+
+// TEMPORARY (verification only): removed after the test run.
+pub use persistent_shell::{Config as PersistentShellConfig, Output as PersistentShellOutput, PersistentShell, ShellError as PersistentShellError};
