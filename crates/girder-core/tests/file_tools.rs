@@ -558,3 +558,68 @@ async fn a_plain_text_file_is_still_read() {
     assert!(text_of(&result).contains("plain words"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- atomicity ---------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_write_replaces_the_file_without_leaving_a_staging_file() {
+    // A staging file left behind is a file a later write would trip over, and a directory that slowly fills with them
+    // is worse than the write having failed.
+    let dir = scratch("atomic");
+    std::fs::write(dir.join("a.txt"), "old").expect("written");
+    let tool = write_tool(dir.clone());
+
+    (tool.execute)(
+        serde_json::json!({"path": "a.txt", "content": "new content"}),
+        context(None),
+    )
+    .await
+    .expect("write");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).expect("read"),
+        "new content"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("listed")
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.to_lowercase().ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no staging file remains: {leftovers:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_refused_write_leaves_the_old_content_intact() {
+    // The conflict check runs before anything is written, which is the whole point: discovering the conflict after the
+    // write is too late.
+    let dir = scratch("atomic-refused");
+    std::fs::write(dir.join("a.txt"), "original").expect("written");
+    let tool = write_tool(dir.clone());
+    // A real observation session: `context(None)` has none, so the conflict check has nothing to compare against and
+    // would skip the very check this test is about.
+    let ctx = context(Some(Arc::new(girder_core::ObservationSession::new())));
+    // Observe through the read tool, which records the version the session actually saw. Building a version by hand
+    // would use a different clock and never match.
+    let reader = read_tool(dir.clone());
+    (reader.execute)(serde_json::json!({"path": "a.txt"}), ctx.clone())
+        .await
+        .expect("read");
+    std::fs::write(dir.join("a.txt"), "changed by somebody else").expect("changed");
+
+    let result = (tool.execute)(serde_json::json!({"path": "a.txt", "content": "mine"}), ctx)
+        .await
+        .expect("write");
+
+    assert!(result.is_error, "the conflict is refused");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a.txt")).expect("read"),
+        "changed by somebody else",
+        "the other change survives"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

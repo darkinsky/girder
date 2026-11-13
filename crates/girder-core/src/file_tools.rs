@@ -201,11 +201,34 @@ async fn write(
         )));
     }
 
-    if let Err(error) = tokio::fs::write(&path, &content).await {
-        return Ok(ToolResult::error(format!(
-            "cannot write `{}`: {error}",
-            path.display()
-        )));
+    // Atomic rather than truncate-then-write: a process killed mid-write would leave a file shorter than either
+    // version, and the content that was there is gone because truncation is the first thing that happens. A model
+    // editing a source file is exactly the caller that must not experience this. The call blocks, so it runs on the
+    // blocking pool rather than stalling the reactor.
+    let target = path.clone();
+    let body = content.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::atomic_write::write_atomic(
+            &target,
+            body.as_bytes(),
+            crate::atomic_write::Mode::PRIVATE,
+        )
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return Ok(ToolResult::error(format!(
+                "cannot write `{}`: {error}",
+                path.display()
+            )));
+        }
+        Err(error) => {
+            return Ok(ToolResult::error(format!(
+                "cannot write `{}`: the write task failed: {error}",
+                path.display()
+            )));
+        }
     }
 
     // The write is the new expectation: a session that wrote and then wrote again must not fail its own second write.

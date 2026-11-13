@@ -334,7 +334,7 @@ pub use message::{
 };
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
-    Version as FileVersion, replace_exactly_once, replace_lines,
+    Version as FileVersion, replace_exactly_once, replace_lines, version_of,
 };
 pub use office_document::{
     Format as DocumentFormat, detect as detect_document, explain as explain_document,
