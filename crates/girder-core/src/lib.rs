@@ -70,6 +70,7 @@ mod attachment;
 mod attachment_rpc;
 mod boot;
 mod boot_check;
+mod boot_stages;
 mod brand;
 mod builtin_commands;
 mod chunked_list;
@@ -131,6 +132,7 @@ mod remote;
 mod retention;
 mod retry;
 mod retrying_provider;
+mod rpc_limits;
 mod runtime;
 mod schedule;
 mod schedule_rpc;
@@ -148,6 +150,7 @@ mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
 mod session_resume_rpc;
+mod session_rewind;
 mod session_search_tool;
 mod session_state_rpc;
 mod session_stats;
@@ -230,6 +233,7 @@ pub use boot_check::{
     Deployment, Finding, Severity, check as check_deployment, is_fatal as boot_is_fatal,
     may_be_a_directory, report as boot_report,
 };
+pub use boot_stages::{BootTrace, Stage as BootStage, StageOutcome as BootStageOutcome};
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
@@ -413,6 +417,7 @@ pub use retention::{
 };
 pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_with_retry};
 pub use retrying_provider::RetryingProvider;
+pub use rpc_limits::{Limiter, Permit, Quota, Refusal as QuotaRefusal};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
 pub use schedule::{
     CreateError, CronExpression, Firing, Instant as ScheduleInstant, MAX_TITLE_CHARS, MIN_INTERVAL,
@@ -468,6 +473,7 @@ pub use session_queue_rpc::{
     register_session_queue_methods,
 };
 pub use session_resume_rpc::register_session_resume_method;
+pub use session_rewind::{Checkpoint as RewindPoint, checkpoint_for_turn, checkpoints, rewind_to};
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
 pub use session_state_rpc::{
     LiveTurns, NoLiveTurns, register_session_state_method, register_session_state_method_with,
