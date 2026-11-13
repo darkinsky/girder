@@ -364,6 +364,10 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
     tools.register(girder_core::write_tool(workspace.to_path_buf()));
     tools.register(girder_core::edit_tool(workspace.to_path_buf()));
     tools.register(girder_core::patch_tool(workspace.to_path_buf()));
+    // Moving, copying, deleting, and making a directory. Upstream's model is expected to reach for a shell for these,
+    // which works and costs a round trip through quoting; a tool is the same capability with the paths checked before
+    // anything happens on disk.
+    girder_core::register_fs_tools(tools, workspace.to_path_buf());
     tools.register(girder_core::glob_tool(workspace.to_path_buf()));
     tools.register(girder_core::grep_tool(workspace.to_path_buf()));
 

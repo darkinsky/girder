@@ -90,6 +90,7 @@ mod file_tools;
 mod file_watch;
 mod fs;
 mod fs_rpc;
+mod fs_tools;
 mod goal;
 mod goal_tool;
 mod home_paths;
@@ -280,6 +281,7 @@ pub use fs::{
     LocalFileSystem, read_file as read_file_via_fs, target_at,
 };
 pub use fs_rpc::{DEFAULT_LIST_LIMIT as FS_LIST_LIMIT, register_fs_methods};
+pub use fs_tools::{copy_tool, delete_tool, make_dir_tool, move_tool, register_fs_tools};
 pub use girder_macros::{Typert, remote};
 pub use goal::{
     Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
