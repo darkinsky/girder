@@ -126,11 +126,13 @@ mod patch;
 mod paths;
 mod permissions;
 pub mod persistent_shell;
+mod plugin_lifecycle;
 mod present_tool;
 mod process_group;
 mod projection;
 mod projection_extra;
 mod providers;
+mod ptc_policy;
 mod questions;
 mod registry;
 mod remote;
@@ -146,6 +148,7 @@ mod scope;
 mod search_tools;
 mod service;
 mod session;
+mod session_archive;
 mod session_export_rpc;
 mod session_filter;
 mod session_layout;
@@ -172,6 +175,7 @@ mod storage;
 mod str_replace_editor;
 mod subagent;
 mod subagent_depth;
+mod subagent_pool;
 mod subagent_providers;
 mod subagent_tools;
 mod subprocess;
@@ -393,6 +397,11 @@ pub use permissions::{
     Approval, Catalogue as PermissionCatalogue, Entry as PermissionEntry, Knobs, PermissionError,
     Preset, State as PermissionState,
 };
+pub use plugin_lifecycle::{
+    Cause as LifecycleCause, History as LifecycleHistory, State as LifecycleState,
+    Transition as LifecycleTransition, TransitionError as LifecycleError,
+    allows as transition_allowed,
+};
 pub use present_tool::present_tool;
 pub use process_group::{GroupError, GroupGuard, run_isolated};
 pub use projection::{
@@ -406,6 +415,9 @@ pub use projection_extra::{
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
     RouteRegistry, deepseek_route, fits as model_fits, window_of,
+};
+pub use ptc_policy::{
+    Decision as PtcDecision, ExecRequest, Limits as PtcLimits, Policy as PtcPolicy,
 };
 pub use questions::{
     Answer, AnsweredBy, DEFAULT_TIMEOUT as DEFAULT_QUESTION_TIMEOUT, Option_ as QuestionOption,
@@ -449,6 +461,9 @@ pub use service::ServiceKey;
 pub use session::{
     MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, TurnEndReason,
     read_session_file,
+};
+pub use session_archive::{
+    ArchiveOutcome, ArchivePolicy, LogStats, analyze as analyze_log, archive as archive_session,
 };
 pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
@@ -534,6 +549,7 @@ pub use subagent::{
 pub use subagent_depth::{
     Depth as SubagentDepth, DepthError as SubagentDepthError, Limit as SubagentDepthLimit,
 };
+pub use subagent_pool::{Pool as SubagentPool, Slot as SubagentSlot};
 pub use subagent_providers::{
     Capabilities as SubagentCapabilities, ChildHandle, ProviderHandle, ProviderRegistry,
     StartError, StartRequest, SubagentProvider,

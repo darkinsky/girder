@@ -115,6 +115,11 @@ impl DeepSeekConfig {
 pub struct DeepSeekProvider {
     config: DeepSeekConfig,
     client: reqwest::Client,
+    /// Per-model limits, resolved at call time.
+    ///
+    /// Held here rather than read from the environment on each call because the resolution has to happen before the
+    /// request is built -- a body with the wrong `max_tokens` is already wrong by the time it is serialized.
+    calls: crate::call_config::ConfigTable,
 }
 
 impl DeepSeekProvider {
@@ -133,7 +138,27 @@ impl DeepSeekProvider {
             .read_timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|error| LlmError::Provider(format!("http client: {error}")))?;
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            calls: crate::call_config::ConfigTable::new(crate::call_config::CallConfig::default()),
+        })
+    }
+
+    /// Replaces the per-model limits.
+    ///
+    /// A builder rather than a constructor argument: the table is empty in every deployment that has no per-model
+    /// policy, and requiring one would make the common case write a line that means "nothing special".
+    #[must_use]
+    pub fn with_calls(mut self, calls: crate::call_config::ConfigTable) -> Self {
+        self.calls = calls;
+        self
+    }
+
+    /// The limits in force for `model`.
+    #[must_use]
+    pub fn limits(&self, model: &str) -> &crate::call_config::CallConfig {
+        self.calls.resolve(model)
     }
 
     /// The configuration in use.
@@ -189,7 +214,13 @@ impl DeepSeekProvider {
         let mut body = serde_json::json!({
             "model": if request.model.is_empty() { &self.config.default_model } else { &request.model },
             "stream": true,
-            "max_tokens": request.max_tokens.unwrap_or(self.config.max_tokens),
+            // The request wins, then the model's own limit, then the provider's default. Three levels because they
+            // answer different questions: what this call wants, what this model accepts, and what the deployment
+            // configured when it knew neither.
+            "max_tokens": request
+                .max_tokens
+                .or_else(|| self.limits(&request.model).max_tokens)
+                .unwrap_or(self.config.max_tokens),
             "messages": messages,
         });
 
@@ -250,6 +281,8 @@ impl LlmProvider for DeepSeekProvider {
         request: LlmRequest,
         cancel: CancellationToken,
     ) -> BoxFut<Result<ChunkStream, LlmError>> {
+        // `body` resolves the model's limits itself, so nothing is read here. A second read would be a second place for
+        // the resolution to disagree with what the body actually sent.
         let body = self.body(&request);
         let url = self.config.endpoint();
         let key = self.config.api_key.clone();

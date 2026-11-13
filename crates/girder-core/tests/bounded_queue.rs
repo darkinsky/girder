@@ -20,8 +20,6 @@
 #[path = "../src/bounded_queue.rs"]
 mod bounded_queue;
 
-use std::sync::Arc;
-
 use bounded_queue::{BoundedQueue, Closed, Overflow};
 
 /// A queue that yields everything it holds and then reports `None`.
@@ -141,11 +139,13 @@ async fn close_is_idempotent_and_refuses_later_sends() {
 
 #[tokio::test]
 async fn send_waits_for_room_instead_of_failing() {
-    let queue = Arc::new(BoundedQueue::new(1));
+    let mut queue = BoundedQueue::new(1);
     queue.try_send(1).unwrap();
 
+    // A clone shares the buffer, so the producer can hold a handle while this task keeps the exclusive
+    // receiving side. That is the split the type is designed around.
     let producer = {
-        let queue = Arc::clone(&queue);
+        let queue = queue.clone();
         tokio::spawn(async move { queue.send(2).await })
     };
 
@@ -153,24 +153,24 @@ async fn send_waits_for_room_instead_of_failing() {
     tokio::task::yield_now().await;
     assert!(!producer.is_finished(), "send must wait for a free slot");
 
-    // Receiving frees the slot. `recv` takes `&mut self` and the producer holds an `Arc`, so the slot is freed by
-    // closing instead -- which is the other path that wakes a waiting sender, and the one this test can drive without
-    // taking ownership back from the task.
-    queue.close();
-
+    // Draining frees the slot; the waiting send must then be accepted, not refused.
+    assert_eq!(queue.recv().await, Some(1));
     producer
         .await
         .unwrap()
-        .expect_err("a closed queue refuses the send it was waiting on");
+        .expect("the send completes once there is room");
+
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue.recv().await, Some(2));
 }
 
 #[tokio::test]
 async fn close_wakes_a_sender_that_is_waiting_for_room() {
-    let queue = Arc::new(BoundedQueue::new(1));
+    let queue = BoundedQueue::new(1);
     queue.try_send(1).unwrap();
 
     let producer = {
-        let queue = Arc::clone(&queue);
+        let queue = queue.clone();
         tokio::spawn(async move { queue.send(2).await })
     };
 
@@ -189,30 +189,18 @@ async fn close_wakes_a_sender_that_is_waiting_for_room() {
 
 #[tokio::test]
 async fn recv_waits_for_an_item_that_arrives_later() {
-    // `recv` takes `&mut self`, so the receiver owns the queue outright and a producer reaches it through a clone.
-    // Sending happens on a task because it must run while the receiver is parked inside `recv`.
-    let queue = Arc::<BoundedQueue<i32>>::new(BoundedQueue::new(2));
-    let producer = Arc::clone(&queue);
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        producer.try_send(7).expect("room for one");
-    });
+    let mut queue = BoundedQueue::new(2);
+    let sender = queue.clone();
 
-    let received = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        // Wait until the sender has filled it, then take the handle.
-        loop {
-            if queue.len() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        let mut handle = Arc::try_unwrap(queue).expect("the producer released its clone");
-        handle.recv().await
+    // The send lands after `recv` has already parked on an empty queue, so this exercises the wakeup
+    // path rather than the already-queued fast path. Without the wakeup the join would hang.
+    let received = tokio::join!(queue.recv(), async {
+        tokio::task::yield_now().await;
+        sender.try_send(7).expect("room for one");
     })
-    .await
-    .expect("the receive completes");
+    .0;
 
-    assert_eq!(received, Some(7));
+    assert_eq!(received, Some(7), "recv must yield the item, not give up");
 }
 
 #[tokio::test]
@@ -270,10 +258,10 @@ async fn concurrent_producers_never_exceed_the_bound() {
     const PRODUCERS: usize = 4;
     const PER_PRODUCER: usize = 50;
 
-    let queue = Arc::new(BoundedQueue::with_overflow(4, Overflow::DropOldest));
+    let mut queue = BoundedQueue::with_overflow(4, Overflow::DropOldest);
     let mut tasks = Vec::new();
     for producer in 0..PRODUCERS {
-        let queue = Arc::clone(&queue);
+        let queue = queue.clone();
         tasks.push(tokio::spawn(async move {
             for value in 0..PER_PRODUCER {
                 queue
@@ -293,11 +281,9 @@ async fn concurrent_producers_never_exceed_the_bound() {
     let dropped = usize::try_from(queue.dropped()).unwrap();
     assert_eq!(held + dropped, PRODUCERS * PER_PRODUCER);
 
-    // The producers are done, so the only remaining handle is this one: `try_unwrap` gives back the `&mut` that
-    // draining needs.
+    // Every producer task has finished, so these are the only items left.
     queue.close();
-    let mut owned = Arc::try_unwrap(queue).expect("every producer task finished");
-    let survivors = drain(&mut owned).await;
+    let survivors = drain(&mut queue).await;
     assert_eq!(survivors.len(), held);
     assert!(
         survivors

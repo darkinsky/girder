@@ -583,6 +583,47 @@ fn register_runtime_surfaces(
 }
 
 /// Reports what a deployment is missing, and refuses to start when it is fatal.
+/// The retry policy to use for `model`, read from the model's call configuration.
+///
+/// Read from a table rather than assumed because a reasoning model and a fast one do not fail alike: the fast one
+/// recovers from a transient 429 in a second, and the reasoning one is better retried fewer times with a longer wait
+/// than five times with a short one.
+fn call_retry_policy(model: &str) -> girder_core::RetryPolicy {
+    let calls = call_config_table();
+    let limits = calls.resolve(model);
+    girder_core::RetryPolicy {
+        max_retries: limits.retries,
+        ..girder_core::RetryPolicy::default()
+    }
+}
+
+/// Builds the per-model limits from the environment.
+///
+/// Two variables rather than a config file, because that is what the rest of this binary's configuration looks like
+/// and a deployment that already sets `GIRDER_MODEL` should not need a second mechanism for the model's limits.
+fn call_config_table() -> girder_core::ConfigTable {
+    let mut calls = girder_core::ConfigTable::new(girder_core::CallConfig::default());
+    // `GIRDER_CALL_PATTERN=GIRDER_CALL_MAX_TOKENS,GIRDER_CALL_RETRIES` would be a grammar; two plain variables that
+    // apply to every model are what a deployment with one model actually needs.
+    let max_tokens = std::env::var("GIRDER_MAX_OUTPUT")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let retries = std::env::var("GIRDER_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    if max_tokens.is_some() || retries.is_some() {
+        let limits = girder_core::CallConfig {
+            max_tokens,
+            retries: retries.unwrap_or(girder_core::CallConfig::default().retries),
+            ..girder_core::CallConfig::default()
+        };
+        // `*` matches every model: the variables are deployment-wide, and pretending they can be per-model without a
+        // grammar to say so would be a promise the configuration cannot keep.
+        let _ = calls.set("*", limits);
+    }
+    calls
+}
+
 fn boot_check(cli: &Cli) -> Result<()> {
     let workspace = std::env::current_dir().ok();
     let deployment = girder_core::Deployment {
@@ -739,7 +780,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
             // Wrapped so a transient failure is retried: a 429 or a dropped connection would otherwise end a turn that
             // the next attempt would have completed. A cancellation is never retried.
             let provider: Arc<dyn girder_core::LlmProvider> = Arc::new(
-                girder_core::RetryingProvider::new(provider, girder_core::RetryPolicy::default()),
+                girder_core::RetryingProvider::new(provider, call_retry_policy(&cli.model)),
             );
             eprintln!("[provider] live: {}", cli.model);
             provider
