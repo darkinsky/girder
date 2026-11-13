@@ -60,6 +60,35 @@ pub fn register_attachment_upload_method(registry: &mut RemoteRegistry, store: &
             let media_type = required_str(&call.args, "mediaType")?;
             let name = optional_name(&call.args)?;
 
+            // The policy answers the questions the byte limit cannot: whether this kind of file is accepted at all,
+            // and whether the session has room for another one. Checked before any decoding for the same reason the
+            // size is -- a refused upload should cost nothing.
+            let policy = crate::attachment_limits::Policy {
+                max_bytes: AttachmentLimits::default().max_image_bytes,
+                // The accepted set the crate already publishes, rather than a second list that could drift from it.
+                allowed_types: crate::attachment::ACCEPTED_IMAGE_TYPES
+                    .iter()
+                    .map(|kind| (*kind).to_owned())
+                    .collect(),
+                max_per_session: store.capacity(),
+            };
+            // The wire lets a name be omitted, so the policy is asked about a name only when one was sent. Passing an
+            // empty one would make an optional field effectively required, which is a different API than the one the
+            // schema publishes.
+            let named = name.as_deref().unwrap_or("unnamed");
+            match crate::attachment_limits::check(
+                &policy,
+                named,
+                media_type,
+                u64::try_from(data.len()).unwrap_or(u64::MAX),
+                store.len(),
+            ) {
+                crate::attachment_limits::Verdict::Accept => {}
+                crate::attachment_limits::Verdict::Reject(reason) => {
+                    return Err(invalid(reason.explain(&policy)));
+                }
+            }
+
             let limits = AttachmentLimits::default();
             // Checked before decoding, not after. `admit_image` bounds the decoded size, but by then a
             // hostile `data` has already been expanded into memory; the encoded length is a cheap

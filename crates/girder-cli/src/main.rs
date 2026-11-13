@@ -564,6 +564,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
                 serde_json::to_string_pretty(&girder_core::openapi_document(&catalogue, info))?
             );
         }
+        Some("metrics") => print_metrics(),
         Some("catalog") => {
             // What the framework offers, as a machine-readable list. The service names come from the
             // registry's own key constants, so a name that is not published cannot appear here.
@@ -604,11 +605,57 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown schema format `{other}`; expected rpc, openapi, catalog, tools-mcp, or tools-openai"
+                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, tools-mcp, or tools-openai"
             );
         }
     }
     Ok(())
+}
+
+/// Prints the aggregated conversation counts in Prometheus text format.
+///
+/// Extracted from `print_schema` rather than left inline: that function had reached the length the linter enforces,
+/// and a block that reads every session to total its counters is a function whether or not it has a name.
+fn print_metrics() {
+    // The same counts `session.state` reports, rendered in the format a scraper reads. A deployment that
+    // already runs Prometheus should not have to write an exporter to see whether conversations are finishing
+    // or failing.
+    // The layout rather than the catalog: this is a synchronous command, and the catalog's listing is async
+    // because a real deployment reads over a network. The layout reads the directory it names.
+    let layout = girder_core::SessionLayout::new(sessions_root());
+    let mut all = girder_core::SessionStats::default();
+    if let Ok(ids) = layout.ids() {
+        for id in ids {
+            let Ok(files) = layout.files(&id) else {
+                continue;
+            };
+            let Ok(events) = girder_core::read_session_file(&files.log) else {
+                continue;
+            };
+            let stats = girder_core::SessionStats::of(&events);
+            all.turns = all.turns.saturating_add(stats.turns);
+            all.steps = all.steps.saturating_add(stats.steps);
+            all.tool_calls = all.tool_calls.saturating_add(stats.tool_calls);
+            all.failed_tool_calls = all
+                .failed_tool_calls
+                .saturating_add(stats.failed_tool_calls);
+            all.unanswered_tool_calls = all
+                .unanswered_tool_calls
+                .saturating_add(stats.unanswered_tool_calls);
+            all.user_messages = all.user_messages.saturating_add(stats.user_messages);
+            all.assistant_messages = all
+                .assistant_messages
+                .saturating_add(stats.assistant_messages);
+            all.input_tokens = all.input_tokens.saturating_add(stats.input_tokens);
+            all.output_tokens = all.output_tokens.saturating_add(stats.output_tokens);
+        }
+    }
+    // Aggregated rather than per session: this command runs once, and the process-wide totals are what a
+    // scraper pointed at a one-shot command can actually use.
+    print!(
+        "{}",
+        girder_core::to_prometheus(&girder_core::to_aggregate_samples(&all))
+    );
 }
 
 /// The retry policy to use for `model`, read from the model's call configuration.
