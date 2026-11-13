@@ -407,13 +407,58 @@ pub fn storage_key(id: &str) -> Option<String> {
 #[derive(Default)]
 pub struct MemoryStore {
     images: std::sync::Mutex<std::collections::BTreeMap<String, DecodedImage>>,
+    /// How many images it will hold.
+    ///
+    /// A store with no bound is a memory leak with an API: every upload is retained for the life of the process, and
+    /// nothing in the attachment path ever removes one. The bound turns an unbounded leak into a refusal a client can
+    /// read.
+    capacity: usize,
 }
 
+/// How many images a store holds when nobody says otherwise.
+///
+/// A hundred: more than a conversation plausibly references, few enough that a decoded image is a manageable fraction
+/// of the process.
+pub const DEFAULT_CAPACITY: usize = 100;
+
 impl MemoryStore {
-    /// Creates an empty store.
+    /// Creates an empty store holding the default number of images.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(DEFAULT_CAPACITY)
+    }
+
+    /// Creates an empty store holding at most `capacity` images.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            images: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// How many it will hold.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// How many it holds now.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.images
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Whether it holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.images
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
     }
 
     /// Stores one decoded image, returning its reference.
@@ -428,10 +473,16 @@ impl MemoryStore {
             bytes: u64::try_from(image.data.len()).unwrap_or(u64::MAX),
             name: image.name.clone(),
         };
-        self.images
+        let mut images = self
+            .images
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, image);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Replacing an id that is already stored is always allowed: the bound is on distinct images, and a re-upload of
+        // the same content converging rather than accumulating is the behaviour the id is for.
+        if !images.contains_key(&key) && images.len() >= self.capacity {
+            return None;
+        }
+        images.insert(key, image);
         Some(reference)
     }
 

@@ -67,6 +67,7 @@ mod approval;
 mod assistant_output;
 mod atomic_write;
 mod attachment;
+mod attachment_limits;
 mod attachment_rpc;
 mod attribution;
 mod block_assembler;
@@ -154,6 +155,7 @@ mod session_export_rpc;
 mod session_filter;
 mod session_layout;
 mod session_lifecycle_rpc;
+mod session_metrics;
 mod session_migration;
 mod session_query;
 mod session_query_rpc;
@@ -232,9 +234,13 @@ pub use atomic_write::{
     AtomicError, DEFAULT_LOCK_WAIT, Mode, with_lock, write_atomic, write_text_atomic,
 };
 pub use attachment::{
-    ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore, DecodedImage, EncodedImage, ImageRef,
+    ACCEPTED_IMAGE_TYPES, AttachmentError, AttachmentStore,
+    DEFAULT_CAPACITY as ATTACHMENT_CAPACITY, DecodedImage, EncodedImage, ImageRef,
     Limits as AttachmentLimits, MemoryStore, admit_batch, admit_image, decode_base64_canonical,
     detect_media_type, encode_base64, storage_key as attachment_storage_key, store_batch,
+};
+pub use attachment_limits::{
+    Policy as AttachmentPolicy, RejectReason, Verdict, check as check_attachment, is_image,
 };
 pub use attachment_rpc::register_attachment_upload_method;
 pub use attribution::Attribution as ContentAttribution;
@@ -482,6 +488,9 @@ pub use session_lifecycle_rpc::{
     MemoryArchiveStore, NAMESPACE as SESSION_LIFECYCLE_NAMESPACE, UnavailableArchiveStore,
     register_session_lifecycle_methods, register_session_lifecycle_methods_with_archive,
     retain_visible,
+};
+pub use session_metrics::{
+    Sample, to_aggregate_samples, to_prometheus, to_samples as session_metric_samples,
 };
 pub use session_migration::{
     FormatVersion, Migration, MigrationError, Migrator, detect as detect_format,

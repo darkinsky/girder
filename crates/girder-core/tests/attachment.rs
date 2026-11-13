@@ -300,3 +300,58 @@ fn a_name_is_kept_but_never_interpreted_as_a_path() {
     let store = MemoryStore::new();
     assert!(store.put("safe-id", admitted).is_some());
 }
+
+// ---- the store's bound -------------------------------------------------------------------------
+
+/// A decoded image wrapping `bytes`, which is what the store holds.
+fn decoded(bytes: &[u8]) -> girder_core::DecodedImage {
+    girder_core::DecodedImage {
+        data: bytes.to_vec(),
+        media_type: "image/png".to_owned(),
+        name: None,
+    }
+}
+
+#[test]
+fn a_store_refuses_a_new_image_past_its_capacity() {
+    // A store with no bound is a memory leak with an API: every upload is retained for the life of the process, and
+    // nothing in the attachment path removes one.
+    let store = girder_core::MemoryStore::with_capacity(2);
+    store.put("a", decoded(b"a")).expect("room for one");
+    store.put("b", decoded(b"b")).expect("room for two");
+
+    assert_eq!(store.put("c", decoded(b"c")), None, "the third is refused");
+    assert_eq!(store.len(), 2);
+}
+
+#[test]
+fn replacing_an_existing_id_is_allowed_at_capacity() {
+    // The bound is on distinct images, not on writes: a re-upload of the same content converging rather than
+    // accumulating is the behaviour the id exists for.
+    let store = girder_core::MemoryStore::with_capacity(1);
+    store.put("a", decoded(b"first")).expect("room");
+
+    assert!(store.put("a", decoded(b"second")).is_some());
+    assert_eq!(store.len(), 1);
+}
+
+#[test]
+fn the_default_capacity_is_finite() {
+    // The property under test is that a number exists at all: an unbounded default is the leak.
+    assert_eq!(
+        girder_core::MemoryStore::new().capacity(),
+        girder_core::ATTACHMENT_CAPACITY
+    );
+    // Compile-time rather than runtime: a zero default would be a constant, and a constant assertion is a build that
+    // fails rather than a test that does.
+    const { assert!(girder_core::ATTACHMENT_CAPACITY > 0) };
+}
+
+#[test]
+fn a_zero_capacity_is_raised_to_one() {
+    // A store that can never hold anything is a configuration mistake whose only symptom is every upload failing.
+    let store = girder_core::MemoryStore::with_capacity(0);
+
+    assert_eq!(store.capacity(), 1);
+    assert!(store.put("a", decoded(b"a")).is_some());
+}
