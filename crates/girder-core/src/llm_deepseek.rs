@@ -124,7 +124,13 @@ impl DeepSeekProvider {
     ///
     /// Returns [`LlmError::Provider`] when the HTTP client cannot be constructed.
     pub fn new(config: DeepSeekConfig) -> Result<Self, LlmError> {
+        // A connect timeout and a read timeout, because a client with neither waits forever: a provider that accepts
+        // the connection and then stalls holds the turn open until the outer cancellation, and a provider that never
+        // accepts it holds it open forever. These are the transport's bounds rather than a call's -- `CallConfig`
+        // carries the per-model policy, and this keeps the underlying socket from outliving any policy at all.
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .read_timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|error| LlmError::Provider(format!("http client: {error}")))?;
         Ok(Self { config, client })
