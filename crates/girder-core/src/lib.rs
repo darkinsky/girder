@@ -87,6 +87,7 @@ mod extension_runtime;
 mod extensions;
 mod fiber;
 mod file_tools;
+mod file_watch;
 mod fs;
 mod fs_rpc;
 mod goal;
@@ -134,6 +135,7 @@ mod search_tools;
 mod service;
 mod session;
 mod session_export_rpc;
+mod session_filter;
 mod session_lifecycle_rpc;
 mod session_migration;
 mod session_query;
@@ -269,6 +271,10 @@ pub use extensions::{
 };
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
 pub use file_tools::{MAX_READ_BYTES, ask_tool, edit_tool, patch_tool, read_tool, write_tool};
+pub use file_watch::{
+    Change as FileChange, ChangeKind as FileChangeKind, PollingWatcher, snapshot as watch_snapshot,
+    stamp as watch_stamp,
+};
 pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
@@ -414,6 +420,10 @@ pub use session::{
     read_session_file,
 };
 pub use session_export_rpc::register_session_export_method;
+pub use session_filter::{
+    Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,
+    apply as apply_session_filter,
+};
 pub use session_lifecycle_rpc::{
     ARCHIVE_METHOD, ArchiveError, ArchiveStore, COPY_SUFFIX,
     DECLARED_ACCESS as SESSION_LIFECYCLE_ACCESS, DUPLICATE_METHOD, MAX_COPY_TITLE_CHARS,

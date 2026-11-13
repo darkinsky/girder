@@ -1,10 +1,10 @@
 //! Filtering a session list by structural properties.
 //!
-//! [`crate::session_query`] answers "which session contains this word", which needs the full event
-//! log. This answers "which sessions are worth opening at all" — recent ones, long ones, ones that
-//! actually ran a tool — and a list view asks that question on every keystroke of a filter box. Those
-//! are different costs: a text search has to decode every event of every candidate, while a
-//! structural filter over metadata decodes no conversation at all.
+//! The text search ([`crate::search_sessions`]) answers "which session contains this word", which
+//! needs the full event log. This answers "which sessions are worth opening at all" — recent ones,
+//! long ones, ones that actually ran a tool — and a list view asks that question on every keystroke
+//! of a filter box. Those are different costs: a text search has to decode every event of every
+//! candidate, while a structural filter over metadata decodes no conversation at all.
 //!
 //! # Why a summary rather than the session itself
 //!
@@ -18,17 +18,16 @@
 //! So the input here is the flat handful of facts a filter can decide on, produced once per row while
 //! the catalog already has the file open or the row in hand:
 //!
-//! - `id` and `modified_ms` come straight from the catalog row (`SessionRecord::id`,
-//!   `SessionRecord::updated_at`, or [`crate::remote::SessionSummary::session_id`] /
-//!   `updated_at` on the remote path).
-//! - `title` is the stored title when there is one, else the last [`crate::SessionEvent::SessionTitle`]
-//!   in the log, else a title derived from the first prompt ([`crate::session_title::derive`]) — the
-//!   same fallback order `session_lifecycle_rpc` uses. It stays an `Option` because a session can
-//!   legitimately have no title at all.
-//! - `events` is [`crate::session::SessionStore::event_count`], which exists so a caller that needs
-//!   the length does not have to clone the events to get it.
-//! - `tool_calls` is [`crate::session_stats::Stats::tool_calls`], a fold that already exists because
-//!   "how much did this conversation do" is a separate question with its own answer.
+//! - `id` and `modified_ms` come straight from the catalog row ([`crate::SessionRecord::id`],
+//!   [`crate::SessionRecord::updated_at`], or the remote summary row's `sessionId` / `updatedAt`).
+//! - `title` is the stored title when there is one, else the last
+//!   [`crate::SessionEvent::SessionTitle`] in the log, else a title derived from the first prompt
+//!   ([`crate::derive_title`]) — the same fallback order the session lifecycle surface uses. It
+//!   stays an `Option` because a session can legitimately have no title at all.
+//! - `events` is [`crate::SessionStore::event_count`], which exists so a caller that needs the
+//!   length does not have to clone the events to get it.
+//! - `tool_calls` is [`crate::SessionStats::tool_calls`], a fold that already exists because "how
+//!   much did this conversation do" is a separate question with its own answer.
 //!
 //! A caller that has an index supplies these from the index and pays neither cost. A caller walking
 //! the directory pays exactly one pass per session, which is the price of the metadata, not of the
@@ -36,16 +35,17 @@
 //!
 //! # Why structured fields rather than a query string
 //!
-//! Same reasoning as `session_query`: the caller is a program, so a bad request should be a type
+//! Same reasoning as the text search: the caller is a program, so a bad request should be a type
 //! error at the caller rather than a parse error at the server. A grammar would also have to be
 //! documented, versioned, and defended against injection, in exchange for saving a struct literal.
 //!
 //! # Matching rules
 //!
 //! Every populated field must hold, so the constraints compose as a conjunction; an unset field
-//! constrains nothing, so the empty [`Filter`] matches every session. `min_events` and `modified_after` are inclusive, because a bound
-//! a person types ("at least 5", "since Tuesday") is inclusive in the language they typed it in and a
-//! UI that quietly excluded the boundary would be off by one against the number it just showed them.
+//! constrains nothing, so the empty [`Filter`] matches every session. `min_events` and
+//! `modified_after` are inclusive, because a bound a person types ("at least 5", "since Tuesday")
+//! reads as inclusive in the language they typed it in, and a UI that quietly excluded the boundary
+//! would be off by one against the number it had just shown them.
 
 /// One session filter condition.
 ///

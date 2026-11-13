@@ -123,9 +123,11 @@ pub fn is_skipped_dir(name: &str) -> bool {
 
 /// Takes one snapshot of `root`: relative path to `(mtime_millis, size_bytes)`.
 ///
-/// Directories are included, with a size of zero, so that a removed file's parent directory and a
-/// created one are both represented; that keeps the comparison in [`PollingWatcher::scan`] a plain
-/// key diff over one map.
+/// Directories are included so that an added, renamed, or deleted empty directory is still visible,
+/// but they are recorded with a zero stamp rather than their own mtime. A directory's mtime moves
+/// whenever a child is added or removed, so recording it would report the parent as `Modified` in
+/// the very scan that already reports the child — duplicate noise carrying no new information.
+/// Directories therefore only ever appear as `Created` or `Removed`.
 ///
 /// A path that cannot be read is omitted rather than reported as an error. A watcher is a best-
 /// effort observer: one unreadable entry must not blind it to every other entry, and re-reporting
@@ -161,13 +163,17 @@ fn walk(root: &Path, dir: &Path, depth: usize, entries: &mut BTreeMap<String, (u
             if is_skipped_dir(&entry.file_name().to_string_lossy()) {
                 continue;
             }
-            entries.insert(key, (mtime_millis(&metadata), 0));
+            // A zero stamp, deliberately: see the note on this function about parent-directory
+            // mtime churn producing duplicate reports for a change already covered by its child.
+            entries.insert(key, (0, 0));
             walk(root, &path, depth + 1, entries);
         } else if metadata.is_file() {
             entries.insert(key, (mtime_millis(&metadata), metadata.len()));
         }
-        // Sockets, fifos, and dangling symlinks are skipped: they carry neither a meaningful size
-        // nor stable content, so reporting them would be noise the caller cannot act on.
+        // `DirEntry::metadata` does not follow a symlink, so a linked directory is neither walked
+        // nor reported: following links risks a cycle that no depth bound can distinguish from a
+        // deep tree, and a link's own target changes without the link itself changing anyway.
+        // Sockets and fifos are skipped for the same reason — no stable size, no content.
     }
 }
 
@@ -211,7 +217,7 @@ fn mtime_millis(metadata: &fs::Metadata) -> u64 {
 ///
 /// ```
 /// use std::time::Duration;
-/// use girder_core::file_watch::PollingWatcher;
+/// use girder_core::PollingWatcher;
 ///
 /// let mut watcher = PollingWatcher::new(std::env::temp_dir(), Duration::from_secs(1));
 /// assert!(watcher.scan().is_empty(), "the first scan is the baseline");
