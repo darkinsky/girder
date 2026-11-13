@@ -134,7 +134,7 @@ const ELLIPSIS: char = '…';
 /// A segment is one turn: everything between a `turn/start` and the `turn/end` that closes it, or the
 /// still-open turn at the end of a log. See the module docs for why the step, not the turn, was
 /// rejected as the unit.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     /// Which turn this is.
     ///

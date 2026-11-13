@@ -146,6 +146,13 @@ pub struct SessionStateValue {
     pub counts: girder_core::SessionStats,
     /// Characters written by each kind of producer.
     pub attribution: girder_core::ContentAttribution,
+    /// What each turn did, one line each.
+    pub timeline: Vec<girder_core::TimelineSegment>,
+    /// The turn still running, when the log ends inside one.
+    ///
+    /// Separate from the segments rather than inferred from the last one: a turn can be unfinished and still have a
+    /// complete summary, and a client that treated "has a summary" as "is done" would hide the live row.
+    pub open_turn: Option<u64>,
 }
 
 /// Where "a turn is executing" is found.
@@ -294,6 +301,11 @@ async fn state(
         // happened; this says who filled the context, and they are different questions -- one long model answer and one
         // short question is a conversation where the model wrote almost all of it.
         attribution: girder_core::ContentAttribution::of(&messages_of(&record.events)),
+        // One line per turn, so a client rendering a sidebar does not fold the log a second time to find out what
+        // happened. The `open` marker is separate from the segments because a turn can be both unfinished and have a
+        // complete summary -- guessing from an empty one would report a live turn as a blank.
+        timeline: girder_core::session_outline(&record.events),
+        open_turn: girder_core::open_turn(&record.events),
     };
 
     serde_json::to_value(value).map_err(|error| RemoteError::Failed(error.to_string()))

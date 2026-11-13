@@ -167,6 +167,7 @@ mod session_rewind;
 mod session_search_tool;
 mod session_state_rpc;
 mod session_stats;
+mod session_timeline;
 mod session_title;
 mod settings_rpc;
 mod shell;
@@ -525,6 +526,7 @@ pub use session_state_rpc::{
     LiveTurns, NoLiveTurns, register_session_state_method, register_session_state_method_with,
 };
 pub use session_stats::Stats as SessionStats;
+pub use session_timeline::{Segment as TimelineSegment, open_turn, outline as session_outline};
 pub use session_title::{Source as TitleSource, derive as derive_title};
 pub use settings_rpc::{
     MemorySettingsStore, SettingsStore, UnavailableSettingsStore, register_settings_methods,
