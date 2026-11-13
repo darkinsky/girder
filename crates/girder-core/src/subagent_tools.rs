@@ -221,10 +221,22 @@ struct Slot {
 /// Shared as an `Arc` between the spawn tool that writes and the listing and wait tools that read.
 /// Interior mutability rather than `&mut self` because those are separate tool bodies, each holding
 /// its own clone of the handle.
-#[derive(Default)]
+/// How many subagents may run at once when nobody says otherwise.
+///
+/// Eight, matching upstream: enough for a fan-out a person would actually ask for, small enough that the provider's
+/// rate limit is not split beyond usefulness.
+pub const DEFAULT_CONCURRENCY: usize = 8;
+
 pub struct SubagentRegistry {
     slots: std::sync::Mutex<BTreeMap<String, Slot>>,
     next_seq: AtomicU64,
+    /// How many may run at once.
+    ///
+    /// A registry with no bound answers "how many are running" truthfully while letting the caller start a hundred
+    /// provider streams, which is a fan-out the process-wide rate limit then gets divided across. The bound belongs
+    /// here because this is where a delegation is recorded, and a limit enforced somewhere else would be a second
+    /// place for the count to disagree.
+    limit: usize,
 }
 
 impl std::fmt::Debug for SubagentRegistry {
@@ -235,11 +247,81 @@ impl std::fmt::Debug for SubagentRegistry {
     }
 }
 
+/// Why a spawn was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartRefusal {
+    /// The bound is reached.
+    AtCapacity {
+        /// How many may run.
+        limit: usize,
+        /// How many are running.
+        active: usize,
+    },
+}
+
+impl std::fmt::Display for StartRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AtCapacity { limit, active } => write!(
+                f,
+                "{active} subagent(s) already running and the limit is {limit}; wait for one to finish"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StartRefusal {}
+
+impl Default for SubagentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubagentRegistry {
-    /// An empty registry.
+    /// An empty registry that allows the default concurrency.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_concurrency(DEFAULT_CONCURRENCY)
+    }
+
+    /// An empty registry that allows `limit` subagents at once.
+    ///
+    /// A limit of zero is raised to one rather than refused: a registry that can never admit anything is a
+    /// configuration mistake whose only symptom is every delegation failing, and the error would be several layers
+    /// away from the cause.
+    #[must_use]
+    pub fn with_concurrency(limit: usize) -> Self {
+        Self {
+            slots: std::sync::Mutex::new(BTreeMap::new()),
+            next_seq: AtomicU64::new(0),
+            limit: limit.max(1),
+        }
+    }
+
+    /// How many may run at once.
+    #[must_use]
+    pub fn concurrency(&self) -> usize {
+        self.limit
+    }
+
+    /// How many are running now.
+    #[must_use]
+    pub fn active(&self) -> usize {
+        self.entries()
+            .iter()
+            .filter(|entry| matches!(entry.status, Status::Running))
+            .count()
+    }
+
+    /// Whether a further delegation is allowed.
+    ///
+    /// A cheap question for a caller deciding whether to offer the tool at all, as [`Self::try_record_start`] does
+    /// before it takes the lock. It is a snapshot: between this answer and the attempt, another caller may take the
+    /// last slot, which is why the admission itself re-counts under the lock.
+    #[must_use]
+    pub fn has_room(&self) -> bool {
+        self.active() < self.limit
     }
 
     /// An empty registry behind a shareable handle.
@@ -253,6 +335,49 @@ impl SubagentRegistry {
     /// Called *before* the child runs, so an observer that lists while the child works sees it. The
     /// caller must follow with [`Self::record_finished`] or [`Self::record_failed`], or the entry
     /// stays `running` for the life of the process.
+    /// # Errors
+    ///
+    /// Returns [`StartRefusal::AtCapacity`] when the bound is already reached. Refusing here rather than letting the
+    /// caller start a hundred is the point of keeping the count in one place: a limit checked anywhere else would be a
+    /// second count that could disagree with this one.
+    pub fn try_record_start(
+        &self,
+        description: &str,
+        depth: Depth,
+    ) -> Result<String, StartRefusal> {
+        // Checked and recorded under one lock, so two callers racing cannot both see room and both take it.
+        let mut slots = self.lock();
+        // Counted from the map under the same lock the insert takes, rather than through `active()`, which would take
+        // the lock a second time and could see a different count than the one it inserts against.
+        let active = slots
+            .values()
+            .filter(|slot| matches!(slot.entry.status, Status::Running))
+            .count();
+        if active >= self.limit {
+            return Err(StartRefusal::AtCapacity {
+                limit: self.limit,
+                active,
+            });
+        }
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let entry = SubagentEntry {
+            id: format!("{ID_PREFIX}{seq}"),
+            description: summarize(description),
+            depth,
+            status: Status::Running,
+            answer: None,
+            seq,
+        };
+        let id = entry.id.clone();
+        let (tx, _rx) = watch::channel(entry.clone());
+        slots.insert(id.clone(), Slot { entry, tx });
+        Ok(id)
+    }
+
+    /// Records a spawn, ignoring the bound.
+    ///
+    /// Kept for a caller that has already admitted the work by some other route; new code should prefer
+    /// [`Self::try_record_start`], which cannot exceed the limit.
     pub fn record_start(&self, description: &str, depth: Depth) -> String {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let entry = SubagentEntry {
@@ -459,7 +584,30 @@ pub fn traced_subagent_tool(
                     )));
                 }
 
-                let ticket = registry.record_start(prompt, context.depth);
+                // The bound is enforced here, where a delegation is actually dispatched. A depth limit alone constrained
+                // how deep a chain could go and said nothing about how wide, so a model could start as many children as
+                // it liked at the same depth -- each one a provider stream, each sharing one rate limit.
+                // A cheap pre-check before the lock: the common case is a registry with room, and asking the question
+                // twice costs less than taking the lock for every delegation that will be admitted anyway.
+                if !registry.has_room() {
+                    return Ok(ToolResult::error(format!(
+                        "delegation refused: {} subagent(s) are running and this registry allows {}. Wait for one \
+                         to finish, or do this work yourself.",
+                        registry.active(),
+                        registry.concurrency()
+                    )));
+                }
+                let ticket = match registry.try_record_start(prompt, context.depth) {
+                    Ok(ticket) => ticket,
+                    Err(refusal) => {
+                        return Ok(ToolResult::error(format!(
+                            "delegation refused: {refusal}. This registry allows {} at a time and {} are \
+                             running; do this work yourself, or wait for one to finish.",
+                            registry.concurrency(),
+                            registry.active()
+                        )));
+                    }
+                };
                 let outcome = delegate(
                     &context,
                     prompt.to_owned(),

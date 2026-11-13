@@ -559,9 +559,9 @@ pub use subagent_providers::{
     StartError, StartRequest, SubagentProvider,
 };
 pub use subagent_tools::{
-    Status as SubagentStatus, SubagentEntry, SubagentRegistry, WaitError, register_subagent_tools,
-    subagent_list_tool, subagent_send_tool, subagent_wait_tool, traced_subagent_tool,
-    wait_timeout_ms,
+    DEFAULT_CONCURRENCY, StartRefusal, Status as SubagentStatus, SubagentEntry, SubagentRegistry,
+    WaitError, register_subagent_tools, subagent_list_tool, subagent_send_tool, subagent_wait_tool,
+    traced_subagent_tool, wait_timeout_ms,
 };
 pub use subprocess::{
     ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,
