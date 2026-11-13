@@ -128,6 +128,17 @@ pub struct SessionStateValue {
     /// no event that can carry "outcome unknown", and appending a fabricated closer would hand the model
     /// an observation that never happened.
     pub interrupted: bool,
+    /// The last assistant text in the log, when there is any.
+    ///
+    /// `None` covers two states a client renders differently: no assistant message at all, and a final message that
+    /// carried only tool calls. Distinguishing them needs the log, which is why this comes from
+    /// [`crate::final_text`] rather than from a live buffer that a cold read would not have.
+    pub last_text: Option<String>,
+    /// Which turn the last assistant message belonged to.
+    ///
+    /// A number rather than a re-derivation: a client showing "the answer to turn 3" needs the turn, and counting
+    /// boundaries itself is how two counts start disagreeing.
+    pub last_turn: Option<u64>,
 }
 
 /// Where "a turn is executing" is found.
@@ -262,6 +273,12 @@ async fn state(
         projections: folded,
         running: turns.is_running(session_id),
         interrupted: ends_mid_turn(&record.events),
+        // The last thing the model said, as text. Taken from the log rather than from a live buffer so a cold read
+        // answers it: a client opening a conversation shows the final answer whether or not the turn that produced it
+        // is still running, and a turn that only called tools has no text at all -- which is a different state from one
+        // that has not answered yet.
+        last_text: girder_core::final_text(&record.events),
+        last_turn: girder_core::final_output(&record.events).map(|output| output.turn),
     };
 
     serde_json::to_value(value).map_err(|error| RemoteError::Failed(error.to_string()))

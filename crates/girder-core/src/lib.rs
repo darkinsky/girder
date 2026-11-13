@@ -64,6 +64,7 @@ pub mod api_job;
 mod api_key;
 pub mod api_session;
 mod approval;
+mod assistant_output;
 mod atomic_write;
 mod attachment;
 mod attachment_rpc;
@@ -151,6 +152,7 @@ mod spill_policy;
 mod ssh;
 mod storage;
 mod subagent;
+mod subagent_depth;
 mod subagent_providers;
 mod subagent_tools;
 mod subprocess;
@@ -197,6 +199,7 @@ pub use approval::{
     Record as ApprovalRecord, Request as ApprovalRequest, Scripted as ScriptedApprover,
     Unavailable as UnavailableApprover,
 };
+pub use assistant_output::{FinalOutput, final_output, final_text};
 pub use atomic_write::{
     AtomicError, DEFAULT_LOCK_WAIT, Mode, with_lock, write_atomic, write_text_atomic,
 };
@@ -472,6 +475,9 @@ pub use storage::{
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
     subagent_tool,
+};
+pub use subagent_depth::{
+    Depth as SubagentDepth, DepthError as SubagentDepthError, Limit as SubagentDepthLimit,
 };
 pub use subagent_providers::{
     Capabilities as SubagentCapabilities, ChildHandle, ProviderHandle, ProviderRegistry,

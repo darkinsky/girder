@@ -349,6 +349,12 @@ impl Job {
     }
 }
 
+/// How many settled jobs a registry keeps when a new one starts.
+///
+/// A few dozen is what a client scrolls back through; the rest are records of work nobody is looking at, and each holds
+/// an output ring up to the registry's ring size.
+pub const SETTLED_KEPT: usize = 64;
+
 /// A lifecycle driver for jobs.
 ///
 /// Holding the jobs behind one lock rather than a registry with per-job locks: every operation here
@@ -547,6 +553,52 @@ impl JobRegistry {
     /// The check a caller runs before starting a second job that needs the same resource — a port, a
     /// lock file, a build directory.
     #[must_use]
+    /// Forgets settled jobs older than `older_than_ms`, returning how many were removed.
+    ///
+    /// Nothing removed them before: a long-lived server accumulated a record for every job it ever ran, each holding its
+    /// output ring. The registry is a view of what is running, and keeping a settled job forever makes it a log that
+    /// happens to be unbounded.
+    ///
+    /// A running job is never removed whatever its age, because removing it would make a job a client is watching
+    /// disappear. `now` is passed rather than read so a caller can decide what "old" means and a test can state it.
+    pub fn retain_recent(&self, now: u64, older_than_ms: u64) -> usize {
+        let mut jobs = self.lock();
+        let before = jobs.len();
+        jobs.retain(|_, job| {
+            // `is_settled` is the test, not the status name: a job that is stopping has not stopped, and dropping it
+            // while it is still winding down would hide the outcome a client is waiting for.
+            !job.is_settled()
+                || job
+                    .settled_at
+                    .is_none_or(|settled| now.saturating_sub(settled) <= older_than_ms)
+        });
+        before - jobs.len()
+    }
+
+    /// Forgets at most `keep` settled jobs, oldest first, returning how many were removed.
+    ///
+    /// A count rather than an age for a caller that cannot reason about clocks, and a bound on this pass so one call
+    /// does not walk a registry that is already huge.
+    pub fn forget_settled(&self, keep: usize) -> usize {
+        let mut jobs = self.lock();
+        let mut settled: Vec<(u64, String)> = jobs
+            .iter()
+            .filter(|(_, job)| job.is_settled())
+            // A settled job with no recorded time sorts first: it is the least recently accounted for, so it is the
+            // first that may go.
+            .map(|(id, job)| (job.settled_at.unwrap_or(0), id.clone()))
+            .collect();
+        if settled.len() <= keep {
+            return 0;
+        }
+        settled.sort();
+        let remove = settled.len() - keep;
+        for (_, id) in settled.into_iter().take(remove) {
+            jobs.remove(&id);
+        }
+        remove
+    }
+
     pub fn live_of_kind(&self, kind: &str) -> Vec<String> {
         self.lock()
             .values()
@@ -602,6 +654,10 @@ pub fn spawn_job(
 ) -> Result<tokio::task::JoinHandle<()>, JobError> {
     let id_for_task = id.clone();
     registry.register(id, kind, label)?;
+    // Swept here because this is the only moment the map can have grown: a registry nobody starts jobs on cannot
+    // accumulate settled ones. A background timer would be a second thing to shut down and would fire on a registry
+    // that has nothing to do.
+    registry.forget_settled(SETTLED_KEPT);
 
     let handle = tokio::spawn(async move {
         let id = id_for_task;
