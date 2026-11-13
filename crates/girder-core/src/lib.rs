@@ -113,6 +113,7 @@ mod lsp_tool;
 mod mcp;
 mod mcp_tools;
 mod message;
+mod model_catalog_extra;
 mod observation;
 mod office_document;
 mod patch;
@@ -120,6 +121,7 @@ mod paths;
 mod permissions;
 pub mod persistent_shell;
 mod present_tool;
+mod process_group;
 mod projection;
 mod projection_extra;
 mod providers;
@@ -139,6 +141,7 @@ mod service;
 mod session;
 mod session_export_rpc;
 mod session_filter;
+mod session_layout;
 mod session_lifecycle_rpc;
 mod session_migration;
 mod session_query;
@@ -349,6 +352,10 @@ pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
     MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
 };
+pub use model_catalog_extra::{
+    Capabilities as ModelCapabilities, ModelEntry, filter_by as filter_models,
+    to_catalog_json as models_to_catalog_json,
+};
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
     Version as FileVersion, replace_exactly_once, replace_lines, version_of,
@@ -372,6 +379,7 @@ pub use permissions::{
     Preset, State as PermissionState,
 };
 pub use present_tool::present_tool;
+pub use process_group::{GroupError, GroupGuard, run_isolated};
 pub use projection::{
     ModelSelectionProjection, ProjectedSession, Projection, ProjectionError, ProjectionHandle,
     ProjectionRegistry, Seq as ProjectionSeq, TitleProjection, TurnBoundary,
@@ -430,6 +438,9 @@ pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
     Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,
     apply as apply_session_filter,
+};
+pub use session_layout::{
+    Layout as SessionLayout, LayoutError as SessionLayoutError, SessionFiles,
 };
 pub use session_lifecycle_rpc::{
     ARCHIVE_METHOD, ArchiveError, ArchiveStore, COPY_SUFFIX,

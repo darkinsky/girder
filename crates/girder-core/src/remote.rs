@@ -1767,6 +1767,17 @@ pub fn register_model_catalog(
                             // Omitted rather than zeroed when the catalogue is silent: a client that
                             // showed "0 tokens" would be claiming a fact nobody stated.
                             "contextWindow": model.context_window,
+                            "maxOutput": model.max_tokens,
+                            // What this model can do, so a client can disable an option instead of offering one
+                            // that will fail. A selector that lists a tool-capable and a non-tool-capable model
+                            // identically makes the user discover which is which by losing a turn.
+                            "capabilities": {
+                                "tools": model.supports_tools,
+                                "vision": model.input_modalities.iter().any(|modality| {
+                                    matches!(modality, crate::providers::Modality::Image)
+                                }),
+                                "reasoning": model.supports_reasoning,
+                            },
                         })
                     })
                     .collect();
