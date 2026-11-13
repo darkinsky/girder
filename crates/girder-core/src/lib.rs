@@ -177,6 +177,7 @@ mod ssh;
 mod storage;
 mod str_replace_editor;
 mod stream_blocks;
+mod stream_method;
 mod subagent;
 mod subagent_depth;
 mod subagent_pool;
@@ -555,6 +556,7 @@ pub use str_replace_editor::{
     EditFailure as ReplaceFailure, Replacement, apply as apply_replacements,
 };
 pub use stream_blocks::{StreamObserver, assemble_message};
+pub use stream_method::{StreamError, StreamHandle, StreamMethod, Streams};
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
     subagent_tool,
