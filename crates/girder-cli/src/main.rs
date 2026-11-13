@@ -56,6 +56,10 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
+    /// Which document `schema` prints: `rpc` (the default), `openapi`, `tools-mcp`, or `tools-openai`.
+    #[arg(long, value_name = "FORMAT")]
+    schema_format: Option<String>,
+
     /// Tool the offline provider asks for when the prompt mentions files: `list` or `bash`.
     #[arg(long, default_value = "list")]
     tool: String,
@@ -124,7 +128,65 @@ async fn main() -> Result<()> {
 
     match mode {
         Mode::Schema => {
-            println!("{}", serde_json::to_string_pretty(&girder_rpc::schema())?);
+            // Three audiences read this one command: a client author wants the wire schema, a tool ecosystem wants
+            // OpenAPI, and an MCP or OpenAI integration wants the tool list. One command with a format is easier to
+            // discover than three commands nobody remembers.
+            match cli.schema_format.as_deref() {
+                None | Some("rpc") => {
+                    println!("{}", serde_json::to_string_pretty(&girder_rpc::schema())?);
+                }
+                Some("openapi") => {
+                    // The three catalogues are separate because the namespaces were written separately; a document
+                    // that showed one of them would be a document of a third of the surface.
+                    let mut catalogue = girder_core::api_session::session_catalogue();
+                    for other in [
+                        girder_core::api_config::config_catalogue(),
+                        girder_core::api_job::job_catalogue(),
+                    ] {
+                        for method in other.methods {
+                            catalogue.add(method);
+                        }
+                        for (name, schema) in other.types {
+                            catalogue.types.entry(name).or_insert(schema);
+                        }
+                    }
+                    let info = girder_core::OpenApiInfo {
+                        title: "Girder".to_owned(),
+                        version: env!("CARGO_PKG_VERSION").to_owned(),
+                        description: Some(
+                            "The RPC surface a client can call over /api/remote.invoke.".to_owned(),
+                        ),
+                    };
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&girder_core::openapi_document(
+                            &catalogue, info
+                        ))?
+                    );
+                }
+                Some("tools-mcp" | "tools-openai") => {
+                    let tools = girder_core::ToolRegistry::new();
+                    let workspace = std::env::current_dir()?;
+                    register_tools(&tools, &workspace);
+                    // The capability tools are the other half of the tool list: a document that showed fourteen of
+                    // thirty-one would describe a smaller harness than the one being documented.
+                    let goals = std::sync::Arc::new(std::sync::Mutex::new(
+                        girder_core::GoalState::default(),
+                    ));
+                    register_capability_tools(&tools, &workspace, &goals);
+                    let document = if cli.schema_format.as_deref() == Some("tools-mcp") {
+                        girder_core::to_mcp(&tools)
+                    } else {
+                        girder_core::to_openai(&tools)
+                    };
+                    println!("{}", serde_json::to_string_pretty(&document)?);
+                }
+                Some(other) => {
+                    anyhow::bail!(
+                        "unknown schema format `{other}`; expected rpc, openapi, tools-mcp, or tools-openai"
+                    );
+                }
+            }
             return Ok(());
         }
         Mode::Serve { bind, watch } => {
