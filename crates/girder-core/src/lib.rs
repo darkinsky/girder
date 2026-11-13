@@ -73,6 +73,7 @@ mod block_assembler;
 mod boot;
 mod boot_check;
 mod boot_stages;
+mod bounded_queue;
 mod brand;
 mod builtin_commands;
 mod call_config;
@@ -120,6 +121,7 @@ mod message;
 mod model_catalog_extra;
 mod observation;
 mod office_document;
+mod openapi;
 mod patch;
 mod paths;
 mod permissions;
@@ -185,6 +187,7 @@ mod token_meter;
 mod tool_batching;
 mod tool_contracts;
 mod tool_result_pruning;
+mod tool_schema_export;
 mod tools;
 mod typert;
 mod typert_json;
@@ -239,6 +242,7 @@ pub use boot_check::{
     may_be_a_directory, report as boot_report,
 };
 pub use boot_stages::{BootTrace, Stage as BootStage, StageOutcome as BootStageOutcome};
+pub use bounded_queue::{BoundedQueue, Closed, Overflow};
 pub use brand::{
     AgentId, AgentIdBrand, Brand, Id, IdError, MAX_ID_LEN, MessageId, MessageIdBrand, SessionId,
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
@@ -374,6 +378,7 @@ pub use office_document::{
     Format as DocumentFormat, detect as detect_document, explain as explain_document,
     from_extension as document_from_extension, is_document, is_readable as document_is_readable,
 };
+pub use openapi::{Info as OpenApiInfo, document as openapi_document};
 pub use patch::{
     Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
     Operation as PatchOperation, ParseError as PatchParseError, Reason as PatchFailureReason,
@@ -571,6 +576,7 @@ pub use token_meter::{
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
+pub use tool_schema_export::{same_tool_set, to_mcp, to_openai};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,

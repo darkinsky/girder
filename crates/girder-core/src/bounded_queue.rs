@@ -142,12 +142,27 @@ enum Attempt<T> {
 
 /// A bounded queue whose behaviour when full is chosen at construction.
 ///
-/// Producers share one through [`Arc`] and never need `&mut`: [`BoundedQueue::try_send`] and
-/// [`BoundedQueue::send`] both take `&self`. The draining side takes `&mut self`, which is what makes
-/// one owner the only receiver even when many producers exist.
+/// Cloning is cheap and shares the buffer, so a producer task can hold its own handle while the
+/// owner of the queue drains it: [`BoundedQueue::try_send`] and [`BoundedQueue::send`] take `&self`,
+/// and only [`BoundedQueue::recv`] takes `&mut self`. That split is the point — the sending side is
+/// shared and the receiving side is exclusive, so no lock of the caller's own is needed to keep one
+/// consumer from racing itself.
 #[derive(Debug)]
 pub struct BoundedQueue<T> {
     state: Arc<State<T>>,
+}
+
+impl<T> Clone for BoundedQueue<T> {
+    /// Shares the same buffer; the clone is the same queue, not a copy of its contents.
+    ///
+    /// Draining from two clones at once is memory-safe and simply splits the stream between them.
+    /// That is rarely what a caller wants, which is why `recv` takes `&mut self`: a design that needs
+    /// one consumer should own one handle for receiving and pass clones only to producers.
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+        }
+    }
 }
 
 impl<T> BoundedQueue<T> {
@@ -190,6 +205,7 @@ impl<T> BoundedQueue<T> {
 
     /// The number of items the queue can hold at once.
     #[must_use]
+    #[allow(dead_code)]
     pub fn capacity(&self) -> usize {
         self.state.capacity
     }
@@ -363,7 +379,10 @@ impl<T> BoundedQueue<T> {
     /// released — so a panic elsewhere cannot have left the queue half-updated. Propagating the
     /// poison would turn an unrelated panic into a permanent outage of the transport.
     fn lock(&self) -> MutexGuard<'_, Inner<T>> {
-        self.state.queue.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Applies the policy once, without notifying anyone.
