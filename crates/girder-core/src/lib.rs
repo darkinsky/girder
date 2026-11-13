@@ -199,6 +199,7 @@ mod token_meter;
 mod tool_batching;
 mod tool_contracts;
 mod tool_result_pruning;
+mod tool_retry;
 mod tool_schema_export;
 mod tools;
 mod typert;
@@ -616,6 +617,10 @@ pub use token_meter::{
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
+pub use tool_retry::{
+    Failure as ToolFailure, FailureReason as ToolFailureReason, Policy as ToolRetryPolicy,
+    corrective_message,
+};
 pub use tool_schema_export::{same_tool_set, to_mcp, to_openai};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,

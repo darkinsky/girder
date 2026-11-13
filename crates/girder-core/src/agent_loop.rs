@@ -1024,10 +1024,16 @@ async fn run_body(
     let arguments: serde_json::Value = match serde_json::from_str(&execution.arguments) {
         Ok(value) => value,
         Err(error) => {
-            return ToolResult::error(format!(
-                "arguments for `{}` are not valid JSON: {error}",
-                execution.name
-            ));
+            // The parser's message names a line and column, and a model given only that has to scan the whole argument
+            // string to find them. The corrective text points at the position and lists the four shapes that produce
+            // one, which is the difference between a model that can fix this and one that retries the same mistake.
+            let failure = crate::tool_retry::Failure {
+                tool: execution.name.clone(),
+                reason: crate::tool_retry::FailureReason::MalformedJson {
+                    detail: error.to_string(),
+                },
+            };
+            return ToolResult::error(crate::tool_retry::corrective_message(&failure));
         }
     };
 
