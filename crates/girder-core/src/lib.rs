@@ -68,11 +68,14 @@ mod assistant_output;
 mod atomic_write;
 mod attachment;
 mod attachment_rpc;
+mod attribution;
+mod block_assembler;
 mod boot;
 mod boot_check;
 mod boot_stages;
 mod brand;
 mod builtin_commands;
+mod call_config;
 mod chunked_list;
 mod code_language;
 mod commands;
@@ -225,6 +228,8 @@ pub use attachment::{
     detect_media_type, encode_base64, storage_key as attachment_storage_key, store_batch,
 };
 pub use attachment_rpc::register_attachment_upload_method;
+pub use attribution::Attribution as ContentAttribution;
+pub use block_assembler::{Assembler as BlockAssembler, AssemblyError};
 pub use boot::{
     BootConfig, BootError, BootReport, Booted, DEFAULT_ENDPOINT, DEFAULT_MODEL,
     Outcome as BootOutcome, boot,
@@ -239,6 +244,7 @@ pub use brand::{
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
 };
 pub use builtin_commands::register_builtin_commands;
+pub use call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
 pub use chunked_list::{CHUNK_CAPACITY, List as ChunkedList};
 pub use code_language::{for_extension, for_path, read_hint};
 pub use commands::{
