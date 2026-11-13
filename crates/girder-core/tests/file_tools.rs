@@ -512,3 +512,49 @@ async fn a_read_of_an_unknown_extension_has_no_hint() {
     assert!(text.starts_with("1\t"), "no hint line: {text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- documents --------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_docx_is_refused_with_an_explanation_instead_of_noise() {
+    // A .docx is a zip. Decoding its bytes as text gives a model a screenful of noise it will try to reason about, which
+    // is worse than being told the file needs a different tool.
+    let dir = scratch("docx");
+    // A zip local-file header: `PK\x03\x04`, which is what detect reads.
+    let mut bytes = vec![0x50, 0x4b, 0x03, 0x04];
+    bytes.extend_from_slice(&[0u8; 64]);
+    std::fs::write(dir.join("report.docx"), &bytes).expect("written");
+    let tool = read_tool(dir.clone());
+
+    let result = (tool.execute)(serde_json::json!({"path": "report.docx"}), context(None))
+        .await
+        .expect("read");
+
+    assert!(
+        result.is_error,
+        "a document is refused: {:?}",
+        text_of(&result)
+    );
+    assert!(
+        text_of(&result).contains("docx") || text_of(&result).to_lowercase().contains("document"),
+        "the refusal names the format: {}",
+        text_of(&result)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_plain_text_file_is_still_read() {
+    // The check must not refuse everything: a file with no NUL byte and no known magic is text.
+    let dir = scratch("still-text");
+    std::fs::write(dir.join("notes.txt"), "plain words\n").expect("written");
+    let tool = read_tool(dir.clone());
+
+    let result = (tool.execute)(serde_json::json!({"path": "notes.txt"}), context(None))
+        .await
+        .expect("read");
+
+    assert!(!result.is_error);
+    assert!(text_of(&result).contains("plain words"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

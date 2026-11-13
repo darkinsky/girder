@@ -66,6 +66,29 @@ async fn read(
     let Ok(path) = resolve(args, workspace) else {
         return Ok(ToolResult::error("`path` is required"));
     };
+    // A document is refused with an explanation rather than decoded as text: a .docx is a zip, and showing its bytes
+    // as text gives a model a screenful of noise it will try to reason about.
+    if let Ok(head) = tokio::fs::read(&path).await {
+        let shown = path.display().to_string();
+        if let Some(format) = crate::office_document::detect(&head) {
+            if !crate::office_document::is_readable(format) {
+                return Ok(ToolResult::error(crate::office_document::explain(format)));
+            }
+        } else if head.starts_with(b"PK\x03\x04") {
+            // A zip the format table could not name: an archive is still not text, and its local file headers decoded as
+            // text are the noise this check exists to prevent. Naming the container is more useful than guessing which
+            // office format it holds, because a caller can list it.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a zip archive, so it has no text to read; list its entries to find the document inside"
+            )));
+        } else if crate::office_document::is_document(&shown, &head) && head.contains(&0) {
+            // A binary file the format table does not know: still not text, and reading it would produce replacement
+            // characters a model would treat as content.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a binary file, so it has no text to read; use a tool that understands its format"
+            )));
+        }
+    }
     let text = match tokio::fs::read_to_string(&path).await {
         Ok(text) => text,
         Err(error) => {
@@ -240,6 +263,29 @@ async fn edit(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
 
+    // A document is refused with an explanation rather than decoded as text: a .docx is a zip, and showing its bytes
+    // as text gives a model a screenful of noise it will try to reason about.
+    if let Ok(head) = tokio::fs::read(&path).await {
+        let shown = path.display().to_string();
+        if let Some(format) = crate::office_document::detect(&head) {
+            if !crate::office_document::is_readable(format) {
+                return Ok(ToolResult::error(crate::office_document::explain(format)));
+            }
+        } else if head.starts_with(b"PK\x03\x04") {
+            // A zip the format table could not name: an archive is still not text, and its local file headers decoded as
+            // text are the noise this check exists to prevent. Naming the container is more useful than guessing which
+            // office format it holds, because a caller can list it.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a zip archive, so it has no text to read; list its entries to find the document inside"
+            )));
+        } else if crate::office_document::is_document(&shown, &head) && head.contains(&0) {
+            // A binary file the format table does not know: still not text, and reading it would produce replacement
+            // characters a model would treat as content.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a binary file, so it has no text to read; use a tool that understands its format"
+            )));
+        }
+    }
     let text = match tokio::fs::read_to_string(&path).await {
         Ok(text) => text,
         Err(error) => {

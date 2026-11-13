@@ -831,3 +831,40 @@ impl SessionEvent {
         Self::AssistantMessage { message }
     }
 }
+
+impl SessionStore {
+    /// The events after `after_seq`, without handing back the ones the caller already has.
+    ///
+    /// [`SessionStore::read_all`] answers the same question by cloning every event, which is the right shape for a
+    /// caller that wants the log and the wrong one for a caller that already holds it: a poller resuming from a cursor
+    /// paid to copy the whole conversation on every poll it made no progress on.
+    ///
+    /// The cursor is one-based like every other sequence in this crate, so `after_seq = 0` means "from the start" and
+    /// `after_seq = n` means "everything after the nth event". A sequence past the end returns nothing rather than an
+    /// error: a poller that has not missed anything is the normal case, not a mistake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the log cannot be read or decoded. A truncated tail is not an error -- it is what
+    /// an interrupted write looks like, and [`SessionStore::read_all`] already treats it as one.
+    pub fn read_after(&self, after_seq: u64) -> Result<Vec<SessionEvent>, SessionError> {
+        let all = self.read_all()?;
+        // `skip` on a collected Vec would walk it; the index is what `after_seq` already is, since the sequence is
+        // one-based and the vector is zero-based.
+        let start = usize::try_from(after_seq).unwrap_or(usize::MAX);
+        Ok(all.into_iter().skip(start).collect())
+    }
+
+    /// The number of events in the log, without cloning them.
+    ///
+    /// A caller showing "3 of 40 events" needs the length, not the events, and asking for the events to count them is
+    /// how a status line ends up decoding a conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the log cannot be read.
+    pub fn event_count(&self) -> Result<u64, SessionError> {
+        let all = self.read_all()?;
+        Ok(u64::try_from(all.len()).unwrap_or(u64::MAX))
+    }
+}

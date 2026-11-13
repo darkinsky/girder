@@ -109,6 +109,7 @@ mod mcp;
 mod mcp_tools;
 mod message;
 mod observation;
+mod office_document;
 mod patch;
 mod paths;
 mod permissions;
@@ -162,6 +163,7 @@ mod time;
 mod todo_tool;
 mod token_meter;
 mod tool_batching;
+mod tool_contracts;
 mod tool_result_pruning;
 mod tools;
 mod typert;
@@ -330,6 +332,10 @@ pub use message::{
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
     Version as FileVersion, replace_exactly_once, replace_lines,
+};
+pub use office_document::{
+    Format as DocumentFormat, detect as detect_document, explain as explain_document,
+    from_extension as document_from_extension, is_document, is_readable as document_is_readable,
 };
 pub use patch::{
     Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
@@ -506,6 +512,7 @@ pub use token_meter::{
     Price, cost as token_cost, estimate_blocks, estimate_message, estimate_text, price_for,
 };
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
+pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
