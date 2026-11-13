@@ -171,6 +171,7 @@ mod tool_contracts;
 mod tool_result_pruning;
 mod tools;
 mod typert;
+mod typert_json;
 mod web;
 mod web_tools;
 mod workflow;
@@ -532,6 +533,7 @@ pub use tools::{
 pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
 };
+pub use typert_json::{catalogue_to_json_schema, method_to_json_schema, to_json_schema};
 pub use web::{
     EndpointProvider, FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider,
     SearchRequest, SearchResult, SearchSource, Web, WebError, build_web_from_env,

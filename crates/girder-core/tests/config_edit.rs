@@ -19,12 +19,8 @@
 //! Isolation: every test builds its own registry and store, so tests in one binary cannot see each
 //! other's declarations.
 //!
-//! # Why the modules are compiled by path
-//!
-//! `config_edit` is not wired into the crate root yet; that change belongs to the integrator, and
-//! it is the same `#[path]` arrangement the neighbouring tests use. The real source file is
-//! compiled — nothing is duplicated — and `config_edit`'s `crate::settings_rpc` import resolves
-//! against the sibling module included just below.
+//! These tests reach the registry through the crate's re-exports, so they exercise the same path a
+//! consumer uses.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,21 +29,16 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-// Included for its `SettingsStore` seam and in-process store. The rest of its surface is not under
-// test here, so unused-code warnings are silenced rather than left to hide a real one.
-#[allow(
-    dead_code,
-    reason = "only the storage seam of this module is used by these tests"
-)]
-#[path = "../src/settings_rpc.rs"]
-mod settings_rpc;
+use girder_core::{MemorySettingsStore, SchemaError, SchemaRegistry, SettingSpec, SettingsStore};
 
-#[path = "../src/config_edit.rs"]
-mod config_edit;
+/// The literal a redacted value is reported as.
+///
+/// Pinned as a literal rather than read from `config_edit::REDACTED`, which is not part of the
+/// crate's re-exports: the wire value a client compares against is what these tests must catch
+/// changing.
+const REDACTED: &str = "***";
 
-use config_edit::{REDACTED, SchemaError, SchemaRegistry, SettingSpec};
 use serde_json::{Value, json};
-use settings_rpc::{MemorySettingsStore, SettingsStore};
 
 // ---- fixtures ---------------------------------------------------------------------------------
 
@@ -173,7 +164,7 @@ fn an_unavailable_store_describes_the_declared_defaults() {
         .expect("a plain name is declarable");
 
     // A deployment with no storage still has a describable form; it simply has nothing stored.
-    let store = settings_rpc::UnavailableSettingsStore::default_reason();
+    let store = girder_core::UnavailableSettingsStore::default_reason();
     let described = registry.describe(&store);
     let entry = find(&described, "provider", "model");
 

@@ -1,7 +1,7 @@
 //! JSON Schema emission for the Remote type catalogue.
 //!
 //! [`girder_core::typert`] decides what a Remote value *is*; this module spells that decision in
-//! JSON Schema (draft 2020-12), which is the format MCP, OpenAI function calling and most tool
+//! JSON Schema (draft 2020-12), which is the format MCP, `OpenAI` function calling and most tool
 //! ecosystems consume. The TypeScript emitter in [`girder_core::to_typescript`] stays where it is:
 //! a browser client wants a `zod` runtime schema, a model-facing tool wants JSON Schema, and one
 //! emitter cannot serve both without serving one of them badly.
@@ -12,7 +12,7 @@
 //! more. Mapping them wrongly is the usual way a generated schema lies:
 //!
 //! 1. [`Schema::Optional`] says the *value* may be `null`. Draft 2020-12 has no `nullable`
-//!    keyword — that is OpenAPI 3.0 — so this module widens the type to `["string", "null"]`, or
+//!    keyword — that is `OpenAPI` 3.0 — so this module widens the type to `["string", "null"]`, or
 //!    wraps in `anyOf` when the inner schema has no single type to widen.
 //! 2. [`Field::required`] and [`Field::added_in`] say the *property* may be missing. JSON Schema
 //!    says that by leaving the name out of `required`, not by widening the type: an omitted field
@@ -245,7 +245,7 @@ pub fn to_json_schema(schema: &Schema) -> Value {
 ///
 /// The root of the document *is* the body: `type: object`, one property per parameter, and the
 /// required parameters in `required`. That shape is what a tool definition wants, so a caller can
-/// hand the result to an MCP or OpenAI tool declaration without digging the body out of a wrapper.
+/// hand the result to an MCP or `OpenAI` tool declaration without digging the body out of a wrapper.
 ///
 /// The return value is attached as `x-girder-output`, outside the validation keywords: it is not
 /// part of the request, and a property named `output` would be a lie about the wire shape.
