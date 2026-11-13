@@ -240,16 +240,13 @@ impl SchemaRegistry {
     /// How many settings are declared, across every namespace.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.namespaces
-            .iter()
-            .map(|(_, specs)| specs.len())
-            .sum()
+        self.namespaces.values().map(BTreeMap::len).sum()
     }
 
     /// Whether nothing is declared.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.namespaces.values().all(|specs| specs.is_empty())
+        self.namespaces.values().all(BTreeMap::is_empty)
     }
 
     /// Builds the `describe` response: every declared setting with its resolved value.
@@ -299,12 +296,7 @@ impl SchemaRegistry {
     ///
     /// A declaration whose schema has no `type`, or a type name this build does not know, is
     /// accepted unchecked; see the module documentation for why.
-    pub fn validate(
-        &self,
-        namespace: &str,
-        key: &str,
-        value: &Value,
-    ) -> Result<(), SchemaError> {
+    pub fn validate(&self, namespace: &str, key: &str, value: &Value) -> Result<(), SchemaError> {
         let Some(spec) = self.get(namespace, key) else {
             return Err(SchemaError::Undeclared {
                 namespace: namespace.to_owned(),
@@ -391,7 +383,9 @@ fn name_problem(name: &str) -> Option<&'static str> {
         return Some("it has leading or trailing whitespace, so two names would look alike");
     }
     if name.contains("..") {
-        return Some("it contains `..`, which a file-backed store may resolve as a parent directory");
+        return Some(
+            "it contains `..`, which a file-backed store may resolve as a parent directory",
+        );
     }
     if name.contains('/') || name.contains('\\') {
         return Some("it contains a path separator, and a setting name is not a path");

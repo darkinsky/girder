@@ -109,7 +109,9 @@ fn declare_then_describe_reports_the_declared_setting() {
     let mut registry = SchemaRegistry::new();
     let mut declared = spec("provider", "model", json!({"type": "string"}));
     declared.description = "The model to call.".to_owned();
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     let store = MemorySettingsStore::new();
     let described = registry.describe(&store);
@@ -128,7 +130,9 @@ fn describe_resolves_a_declared_default_when_the_store_is_empty() {
     let mut registry = SchemaRegistry::new();
     let mut declared = spec("provider", "model", json!({"type": "string"}));
     declared.default = Some(json!("deepseek-chat"));
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     let described = registry.describe(&MemorySettingsStore::new());
     let entry = find(&described, "provider", "model");
@@ -143,7 +147,9 @@ fn describe_prefers_the_stored_value_over_the_default() {
     let mut registry = SchemaRegistry::new();
     let mut declared = spec("provider", "model", json!({"type": "string"}));
     declared.default = Some(json!("deepseek-chat"));
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     let store = MemorySettingsStore::new();
     store
@@ -162,7 +168,9 @@ fn an_unavailable_store_describes_the_declared_defaults() {
     let mut registry = SchemaRegistry::new();
     let mut declared = spec("provider", "model", json!({"type": "string"}));
     declared.default = Some(json!("deepseek-chat"));
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     // A deployment with no storage still has a describable form; it simply has nothing stored.
     let store = settings_rpc::UnavailableSettingsStore::default_reason();
@@ -190,7 +198,12 @@ fn duplicate_declaration_is_refused() {
         }
     );
     // The refused declaration must not have replaced the first one.
-    let entry = find(&registry.describe(&MemorySettingsStore::new()), "provider", "model").clone();
+    let entry = find(
+        &registry.describe(&MemorySettingsStore::new()),
+        "provider",
+        "model",
+    )
+    .clone();
     assert_eq!(entry["schema"], json!({"type": "string"}));
     assert_eq!(registry.len(), 1);
 }
@@ -203,8 +216,8 @@ fn the_same_key_in_two_namespaces_is_not_a_duplicate() {
         .expect("two namespaces are two settings");
 
     assert_eq!(registry.len(), 2);
-    assert_eq!(registry.get("provider", "model").is_some(), true);
-    assert_eq!(registry.get("search", "model").is_some(), true);
+    assert!(registry.get("provider", "model").is_some());
+    assert!(registry.get("search", "model").is_some());
 }
 
 // ---- secrets: the property that matters ------------------------------------------------------
@@ -218,7 +231,9 @@ fn a_secret_value_is_redacted() {
     let mut declared = spec("provider", "api_key", json!({"type": "string"}));
     declared.secret = true;
     declared.description = "The provider API key.".to_owned();
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     let store = MemorySettingsStore::new();
     store
@@ -248,7 +263,9 @@ fn a_secret_default_is_not_reported() {
     let mut declared = spec("provider", "api_key", json!({"type": "string"}));
     declared.secret = true;
     declared.default = Some(json!(SECRET_VALUE));
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     // An unset secret has no value to show, and its default must not stand in for one: a default
     // is written down in the deployment's source and is as sensitive as a stored value.
@@ -264,16 +281,19 @@ fn a_secret_default_is_not_reported() {
 #[test]
 fn a_secret_does_not_leak_through_a_type_mismatch_error() {
     let mut registry = SchemaRegistry::new();
-    let mut declared = spec("provider", "api_key", json!({"type": "string"}));
+    let mut declared = spec("provider", "api_key", json!({"type": "number"}));
     declared.secret = true;
-    registry.declare(declared).expect("a plain name is declarable");
+    registry
+        .declare(declared)
+        .expect("a plain name is declarable");
 
     let error = registry
         .validate("provider", "api_key", &json!(SECRET_VALUE))
         .expect_err("a string is not a number");
     let rendered = error.to_string();
 
-    assert!(rendered.contains("string"), "the message names the type");
+    assert!(rendered.contains("number"), "the message names the type");
+    assert!(rendered.contains("string"), "the message names the kind");
     assert!(
         !rendered.contains(SECRET_VALUE),
         "a refusal may be logged, so it must not repeat the value: {rendered}"
@@ -441,13 +461,21 @@ fn undeclared_stored_keys_are_counted_but_not_shown() {
     // Neither the names nor the values of the hidden keys are published: no declaration marked
     // them secret, so the only safe reading is that this surface does not own them.
     let serialized = described.to_string();
-    for hidden in ["legacy.hostname", "internal.example", "credentials.token", SECRET_VALUE] {
+    for hidden in [
+        "legacy.hostname",
+        "internal.example",
+        "credentials.token",
+        SECRET_VALUE,
+    ] {
         assert!(
             !serialized.contains(hidden),
             "an undeclared key leaked into the response: {hidden}"
         );
     }
-    assert_eq!(find(&described, "provider", "model")["configured"], json!(true));
+    assert_eq!(
+        find(&described, "provider", "model")["configured"],
+        json!(true)
+    );
 }
 
 #[test]
@@ -466,9 +494,7 @@ fn an_empty_registry_describes_nothing_and_counts_what_it_hides() {
     assert_eq!(registry.len(), 0);
     assert_eq!(registry.get("anything", "at_all"), None);
     assert!(
-        registry
-            .validate("anything", "at_all", &json!(1))
-            .is_err(),
+        registry.validate("anything", "at_all", &json!(1)).is_err(),
         "an empty registry vouches for nothing"
     );
 }
@@ -504,26 +530,22 @@ fn declaration_names_are_checked() {
 fn dotted_names_are_allowed_because_they_are_this_crates_convention() {
     let mut registry = SchemaRegistry::new();
     registry
-        .declare(spec("provider.deepseek", "model.name", json!({"type": "string"})))
+        .declare(spec(
+            "provider.deepseek",
+            "model.name",
+            json!({"type": "string"}),
+        ))
         .expect("a dot inside a segment is not a path traversal");
 
-    let entry = find(
-        &registry.describe(&MemorySettingsStore::new()),
-        "provider.deepseek",
-        "model.name",
-    );
+    let described = registry.describe(&MemorySettingsStore::new());
+    let entry = find(&described, "provider.deepseek", "model.name");
     assert_eq!(entry["store_key"], json!("provider.deepseek.model.name"));
 }
 
 #[test]
 fn namespaces_and_keys_are_rendered_in_name_order() {
     let mut registry = SchemaRegistry::new();
-    for (namespace, key) in [
-        ("zeta", "b"),
-        ("alpha", "z"),
-        ("zeta", "a"),
-        ("alpha", "a"),
-    ] {
+    for (namespace, key) in [("zeta", "b"), ("alpha", "z"), ("zeta", "a"), ("alpha", "a")] {
         registry
             .declare(spec(namespace, key, json!({"type": "string"})))
             .expect("a plain name is declarable");

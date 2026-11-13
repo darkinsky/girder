@@ -77,6 +77,7 @@ mod commands;
 mod compaction;
 mod compaction_hook;
 mod config;
+mod config_edit;
 mod credentials;
 mod deliverable;
 mod events;
@@ -156,6 +157,7 @@ mod subagent_depth;
 mod subagent_providers;
 mod subagent_tools;
 mod subprocess;
+mod system_prompt;
 mod terminal;
 mod terminal_local;
 mod terminal_rpc;
@@ -240,6 +242,7 @@ pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
     FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,
 };
+pub use config_edit::{SchemaError, SchemaRegistry, SettingSpec};
 pub use credentials::{
     CredentialError, CredentialRef, Info as CredentialInfo, Record as CredentialRecord,
     Store as CredentialStore, valid_environment,
@@ -492,6 +495,7 @@ pub use subprocess::{
     ProcessError, ProcessOutcome, SpawnOptions, has_program as has_program_in_path,
     run as run_process, spawn as spawn_process,
 };
+pub use system_prompt::{Parts as PromptParts, assemble as assemble_prompt};
 pub use terminal::{
     DEFAULT_MAX_BYTES as DEFAULT_TRANSCRIPT_BYTES, Launch as TerminalLaunch,
     Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,

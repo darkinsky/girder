@@ -63,10 +63,10 @@
 //! # What is deliberately not here
 //!
 //! No tool descriptions: tool schemas travel in the request, and duplicating their prose in the
-//! prompt would let the two drift. No line-numbered code of any kind: this is text assembly only.
-//! No interpolation of `{{variables}}` (upstream's `renderPrompt` does that): nothing in this
-//! crate produces templates yet, and a template language with no templates is a parser to test for
-//! no output.
+//! prompt would let the two drift. No interpolation of `{{variables}}` (upstream's `renderPrompt`
+//! does that): nothing in this crate produces templates yet, and a template language with no
+//! templates is a parser to test for no output. Nothing here reads the clock or the filesystem —
+//! assembly is a pure function of [`Parts`], so a replayed session renders the same prompt.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -137,16 +137,16 @@ impl Parts {
 /// ```
 /// use std::path::PathBuf;
 ///
-/// use girder_core::system_prompt::{Parts, assemble};
+/// use girder_core::{PromptParts, assemble_prompt};
 ///
-/// let parts = Parts {
+/// let parts = PromptParts {
 ///     base: "You are a documentation agent.".to_owned(),
 ///     workspace: Some(PathBuf::from("/srv/docs")),
-///     ..Parts::default()
+///     ..PromptParts::default()
 /// };
 ///
 /// assert_eq!(
-///     assemble(&parts),
+///     assemble_prompt(&parts),
 ///     "You are a documentation agent.\n\nCurrent working directory: \"/srv/docs\".",
 /// );
 /// ```
