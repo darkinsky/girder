@@ -472,6 +472,18 @@ fn compact_history(context: &LoopContext, messages: &mut Vec<Message>) {
     match plan {
         crate::compaction_hook::Plan::KeepAll | crate::compaction_hook::Plan::Refuse { .. } => {}
         crate::compaction_hook::Plan::Compact { keep, .. } => {
+            // What is dropped is summarised before it is removed. Without this the conversation became a transcript
+            // with a hole in it, and a request made before the cut -- "keep the old spelling for one release" -- was
+            // gone, not shortened.
+            let dropped: Vec<crate::message::Message> = recorded
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !keep.contains(index))
+                .map(|(_, message)| message.clone())
+                .collect();
+            let summary = (!dropped.is_empty()).then(|| {
+                crate::compaction_summary::render(&crate::compaction_summary::summarize(&dropped))
+            });
             // The indices were computed against this vector and are used against it: `plan` returns positions in the
             // input, so applying them to a different vector would drop the wrong messages.
             let kept: Vec<Message> = keep
@@ -479,7 +491,19 @@ fn compact_history(context: &LoopContext, messages: &mut Vec<Message>) {
                 .filter_map(|index| messages.get(index).cloned())
                 .collect();
             if !kept.is_empty() {
-                *messages = kept;
+                // The note goes in front, where a reader starts: it describes what came before the first kept message,
+                // and putting it anywhere else would read as a remark about the middle of the conversation.
+                let mut next: Vec<Message> = summary
+                    .filter(|text| !text.is_empty())
+                    .map(|text| Message {
+                        role: crate::llm::Role::User,
+                        content: vec![ContentBlock::Text { text }],
+                        tool_call_id: None,
+                    })
+                    .into_iter()
+                    .collect();
+                next.extend(kept);
+                *messages = next;
             }
         }
     }
