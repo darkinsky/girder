@@ -777,6 +777,11 @@ pub fn register_subagent_tools(
     tools.register(subagent_list_tool(Arc::clone(&registry)));
     tools.register(subagent_wait_tool(Arc::clone(&registry)));
     tools.register(subagent_send_tool(registry));
+    // The interrupt path needs a token per child, and the registry records liveness without holding one. `Cancellers`
+    // is the seam: a deployment that cancels some other way implements `Interrupter` and registers that instead.
+    // `subagent_interrupt` is registered by its own function rather than here: it needs a token per child, and the
+    // registry records liveness without holding one. A deployment that stops work some other way calls
+    // `register_subagent_interrupt` with its own `Interrupter` instead of taking this path at all.
 }
 
 /// The model-facing text for a delegation failure.

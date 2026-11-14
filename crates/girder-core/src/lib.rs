@@ -124,6 +124,7 @@ mod model_catalog_extra;
 mod observation;
 mod office_document;
 mod openapi;
+mod output_budget;
 mod patch;
 mod paths;
 mod permissions;
@@ -159,6 +160,7 @@ mod session_layout;
 mod session_lifecycle_rpc;
 mod session_metrics;
 mod session_migration;
+mod session_portable;
 mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
@@ -183,6 +185,7 @@ mod stream_blocks;
 mod stream_method;
 mod subagent;
 mod subagent_depth;
+mod subagent_interrupt;
 mod subagent_pool;
 mod subagent_providers;
 mod subagent_tools;
@@ -400,6 +403,9 @@ pub use office_document::{
     from_extension as document_from_extension, is_document, is_readable as document_is_readable,
 };
 pub use openapi::{Info as OpenApiInfo, document as openapi_document};
+pub use output_budget::{
+    Allocation as OutputAllocation, Budget as OutputBudget, allocate as allocate_output,
+};
 pub use patch::{
     Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
     Operation as PatchOperation, ParseError as PatchParseError, Reason as PatchFailureReason,
@@ -506,6 +512,10 @@ pub use session_migration::{
     FormatVersion, Migration, MigrationError, Migrator, detect as detect_format,
     upgrade as upgrade_event, upgrade_in_session,
 };
+pub use session_portable::{
+    Bundle as SessionBundle, BundleError, VERSION as BUNDLE_VERSION, export as export_bundle,
+    import as import_bundle,
+};
 pub use session_query::{
     Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,
     Query as SearchQuery, Results as SearchResults, excerpt as session_excerpt,
@@ -573,6 +583,10 @@ pub use subagent::{
 };
 pub use subagent_depth::{
     Depth as SubagentDepth, DepthError as SubagentDepthError, Limit as SubagentDepthLimit,
+};
+pub use subagent_interrupt::{
+    Armed as InterruptArmed, Cancellers, InterruptOutcome, Interrupter, default_interrupter,
+    register_subagent_interrupt, subagent_interrupt_tool,
 };
 pub use subagent_pool::{Pool as SubagentPool, Slot as SubagentSlot};
 pub use subagent_providers::{

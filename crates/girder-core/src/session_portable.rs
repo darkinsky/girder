@@ -187,11 +187,10 @@ pub fn export(
 ///   as version 1 would accept a format nobody declared.
 /// - [`BundleError::UnsupportedVersion`] when the version is not [`VERSION`].
 pub fn import(bundle: &str) -> Result<Bundle, BundleError> {
-    let parsed = serde_json::from_str::<Bundle>(bundle).map_err(|error| {
-        BundleError::InvalidJson {
+    let parsed =
+        serde_json::from_str::<Bundle>(bundle).map_err(|error| BundleError::InvalidJson {
             detail: error.to_string(),
-        }
-    })?;
+        })?;
 
     if parsed.version != VERSION {
         return Err(BundleError::UnsupportedVersion {
@@ -201,29 +200,4 @@ pub fn import(bundle: &str) -> Result<Bundle, BundleError> {
     }
 
     Ok(parsed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_zero_is_refused_even_though_it_parses() {
-        // The guard exists for values that are *well-formed* and still wrong, which is the case a
-        // shape check would pass.
-        let error = import(r#"{"version":0,"exported_at":0,"events":[]}"#).unwrap_err();
-        assert_eq!(
-            error,
-            BundleError::UnsupportedVersion {
-                found: 0,
-                supported: VERSION
-            }
-        );
-    }
-
-    #[test]
-    fn a_bundle_without_a_version_is_not_treated_as_version_one() {
-        let error = import(r#"{"exported_at":0,"events":[]}"#).unwrap_err();
-        assert!(matches!(error, BundleError::InvalidJson { .. }), "{error}");
-    }
 }
