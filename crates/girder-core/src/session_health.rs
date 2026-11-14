@@ -222,252 +222,324 @@ struct OpenCall {
     unanswered: u32,
 }
 
+/// The state of a log walk: what is open at the current position.
+///
+/// A struct rather than four locals in [`diagnose`] because the three record handlers all need to
+/// close things, and passing four mutable references to a free function was less readable than the
+/// state it was mutating. The fields are private: an `Issue` is the only thing a caller sees.
+#[derive(Default)]
+struct Walker {
+    /// The turn being accumulated, if one is open.
+    turn: Option<OpenTurn>,
+
+    /// The step being accumulated, if one is open.
+    step: Option<OpenStep>,
+
+    /// Tool calls with no result yet, keyed by id.
+    ///
+    /// Ordered rather than hashed so the report is deterministic: two runs over one log must produce
+    /// the same list, or a test that compares issues would flake and a diff between two sweeps would
+    /// show churn that is not there.
+    calls: BTreeMap<String, OpenCall>,
+
+    /// What has been found so far.
+    issues: Vec<Issue>,
+}
+
+impl Walker {
+    /// The record at `at` opened a turn.
+    fn turn_started(&mut self, at: usize, number: u64) {
+        match self.turn.take() {
+            // The writer has produced two `turn/start` records for one boundary before (see
+            // `event_index`), so this is a hint rather than a fault: splitting the turn here would
+            // report one turn as two.
+            Some(open) if open.number == number => {
+                self.issue(
+                    at,
+                    Kind::OutOfOrder,
+                    Severity::Info,
+                    format!(
+                        "`turn/start` for turn {number} repeats the turn already open at {}",
+                        open.at
+                    ),
+                );
+                self.turn = Some(open);
+            }
+            // A session cannot run two turns at once, so this is the first evidence that the previous
+            // turn never wrote its `turn/end`.
+            Some(open) => {
+                self.issue(
+                    open.at,
+                    Kind::UnclosedTurn,
+                    Severity::Warning,
+                    format!(
+                        "turn {} opened here never wrote `turn/end`; turn {number} started at {at} \
+                         instead",
+                        open.number
+                    ),
+                );
+                self.close_turn(at);
+                self.turn = Some(OpenTurn { number, at });
+            }
+            None => self.turn = Some(OpenTurn { number, at }),
+        }
+    }
+
+    /// The record at `at` closed a turn.
+    fn turn_ended(&mut self, at: usize, number: u64) {
+        match self.turn.take() {
+            // The ordinary close. Whatever the turn left open can never be answered now, because the
+            // results would have been written before this record existed.
+            Some(open) if open.number == number => self.close_turn(at),
+            // An end naming another turn is not evidence about the open one, so the open turn is kept:
+            // closing it here would invent a boundary the log never recorded.
+            Some(open) => {
+                self.issue(
+                    at,
+                    Kind::OutOfOrder,
+                    Severity::Error,
+                    format!(
+                        "`turn/end` for turn {number} while turn {} opened at {} is the open one; the \
+                         end closes a turn this log never started",
+                        open.number, open.at
+                    ),
+                );
+                self.turn = Some(open);
+            }
+            None => self.issue(
+                at,
+                Kind::OutOfOrder,
+                Severity::Error,
+                format!("`turn/end` for turn {number} with no `turn/start` before it"),
+            ),
+        }
+    }
+
+    /// The record at `at` opened a step.
+    fn step_started(&mut self, at: usize, number: u64, index: u64) {
+        if let Some(open) = self.step.take() {
+            self.issue(
+                open.at,
+                Kind::UnclosedStep,
+                Severity::Warning,
+                format!(
+                    "step {}/{} opened here never wrote `step/end`; step {index} of turn {number} \
+                     started at {at} instead",
+                    open.turn, open.step
+                ),
+            );
+        }
+        // A step outside any turn is unusual but readable, so it is recorded rather than refused: it
+        // can still be closed, and treating it as a fault would turn a trimmed log into an unusable
+        // one.
+        if self.turn.is_none() {
+            self.issue(
+                at,
+                Kind::OutOfOrder,
+                Severity::Warning,
+                format!("`step/start` for turn {number} step {index} while no turn is open"),
+            );
+        }
+        self.step = Some(OpenStep {
+            turn: number,
+            step: index,
+            at,
+        });
+    }
+
+    /// The record at `at` closed a step.
+    fn step_ended(&mut self, at: usize, number: u64, index: u64) {
+        match self.step.take() {
+            Some(open) if open.turn == number && open.step == index => {}
+            Some(open) => {
+                self.issue(
+                    at,
+                    Kind::OutOfOrder,
+                    Severity::Error,
+                    format!(
+                        "`step/end` for turn {number} step {index} does not close step {}/{} opened \
+                         at {}",
+                        open.turn, open.step, open.at
+                    ),
+                );
+                self.step = Some(open);
+            }
+            None => self.issue(
+                at,
+                Kind::OutOfOrder,
+                Severity::Error,
+                format!("`step/end` for turn {number} step {index} with no matching `step/start`"),
+            ),
+        }
+    }
+
+    /// The record at `at` asked for a tool.
+    fn called(&mut self, at: usize, id: &str, name: &str) {
+        // Resolved before the issue is pushed rather than inside the match: pushing needs the whole
+        // walker, which cannot overlap a borrow of the entry that describes the duplicate.
+        let first = self.calls.get_mut(id).map(|open| {
+            open.unanswered = open.unanswered.saturating_add(1);
+            open.at
+        });
+        match first {
+            Some(first) => self.issue(
+                at,
+                Kind::OutOfOrder,
+                Severity::Warning,
+                format!(
+                    "tool call `{id}` ({name}) repeats the id of the unanswered call at {first}; one \
+                     result cannot answer both"
+                ),
+            ),
+            None => {
+                self.calls.insert(id.to_owned(), OpenCall { at, unanswered: 1 });
+            }
+        }
+    }
+
+    /// The record at `at` answered a tool.
+    fn answered(&mut self, at: usize, id: &str) {
+        let settled = self.calls.get_mut(id).map(|open| {
+            open.unanswered = open.unanswered.saturating_sub(1);
+            open.unanswered == 0
+        });
+        match settled {
+            // Removed only once nothing is left to answer: a repeated id is two calls, and one result
+            // satisfies one of them.
+            Some(true) => {
+                self.calls.remove(id);
+            }
+            Some(false) => {}
+            // A result with no open call is the one shape nothing normal produces: the call is always
+            // written before the tool runs.
+            None => self.issue(
+                at,
+                Kind::OrphanResult,
+                Severity::Error,
+                format!(
+                    "tool result for `{id}` with no unanswered `tool/call` for that id before it"
+                ),
+            ),
+        }
+    }
+
+    /// Closes whatever the finished turn left open and reports it.
+    ///
+    /// Both callers are cases where the turn is over -- its own `turn/end`, or a later `turn/start`
+    /// that proves the end was never written -- so everything still open inside it is a warning
+    /// rather than a hint: no result or step end can arrive for a turn that is finished.
+    fn close_turn(&mut self, at: usize) {
+        if let Some(open) = self.step.take() {
+            self.issue(
+                open.at,
+                Kind::UnclosedStep,
+                Severity::Warning,
+                format!(
+                    "step {}/{} opened here never wrote `step/end` before the turn ended at {at}",
+                    open.turn, open.step
+                ),
+            );
+        }
+        // Taken so the calls of a closed turn are not carried into the next one, which would attribute
+        // an old failure to a new turn.
+        for (id, open) in std::mem::take(&mut self.calls) {
+            self.issue(
+                open.at,
+                Kind::UnansweredCall,
+                Severity::Warning,
+                format!(
+                    "tool call `{id}` has no result and its turn ended at {at}{}; a result written \
+                     after this would be an orphan",
+                    shared_id_note(open.unanswered)
+                ),
+            );
+        }
+    }
+
+    /// Reports what is still open at the end of the log.
+    ///
+    /// Nothing after this position can answer anything, so every item here is a hint: the session may
+    /// simply still be running.
+    fn finish(mut self) -> Vec<Issue> {
+        if let Some(open) = self.step.take() {
+            self.issue(
+                open.at,
+                Kind::UnclosedStep,
+                Severity::Info,
+                format!(
+                    "step {}/{} is still open at the end of the log; a live session between \
+                     `step/start` and `step/end` looks exactly like this",
+                    open.turn, open.step
+                ),
+            );
+        }
+        if let Some(open) = self.turn.take() {
+            self.issue(
+                open.at,
+                Kind::UnclosedTurn,
+                Severity::Info,
+                format!(
+                    "turn {} is still open at the end of the log; it may be the turn running now",
+                    open.number
+                ),
+            );
+        }
+        for (id, open) in std::mem::take(&mut self.calls) {
+            self.issue(
+                open.at,
+                Kind::UnansweredCall,
+                Severity::Info,
+                format!(
+                    "tool call `{id}` has no result yet{}; a session waiting on a tool looks like \
+                     this",
+                    shared_id_note(open.unanswered)
+                ),
+            );
+        }
+
+        // Position order, stably: issues pushed while closing a turn point back at the record that was
+        // left dangling, so pushing order is not log order.
+        self.issues.sort_by_key(|issue| issue.at);
+        self.issues
+    }
+
+    /// Pushes one issue.
+    fn issue(&mut self, at: usize, kind: Kind, severity: Severity, detail: String) {
+        self.issues.push(Issue {
+            at,
+            kind,
+            severity,
+            detail,
+        });
+    }
+}
+
 /// Diagnoses one session log.
 ///
-/// One pass, no I/O, no allocation beyond the returned issues: the caller holds the events already,
+/// One pass, no I/O, and no allocation beyond the returned issues: the caller holds the events already,
 /// so this is cheap enough to run over every log a deployment can read.
 ///
-/// The result is ordered by [`Issue::at`], so it reads in log order rather than in the order the
-/// checks happened to fire.
+/// The result is ordered by [`Issue::at`], so it reads in log order rather than in the order the checks
+/// happened to fire.
 #[must_use]
 pub fn diagnose(events: &[SessionEvent]) -> Vec<Issue> {
-    let mut issues: Vec<Issue> = Vec::new();
-    let mut turn: Option<OpenTurn> = None;
-    let mut step: Option<OpenStep> = None;
-    let mut calls: BTreeMap<String, OpenCall> = BTreeMap::new();
+    let mut walker = Walker::default();
 
     for (at, event) in events.iter().enumerate() {
         match event {
-            SessionEvent::TurnStart { turn: number } => {
-                // Taken rather than borrowed so the arms can open the next turn while inspecting the
-                // previous one; every arm but the last puts it back.
-                match turn.take() {
-                    // The writer has produced two `turn/start` records for one boundary before (see
-                    // `event_index`), so this is a hint rather than a fault: splitting the turn here
-                    // would report one turn as two.
-                    Some(open) if open.number == *number => {
-                        issues.push(Issue {
-                            at,
-                            kind: Kind::OutOfOrder,
-                            severity: Severity::Info,
-                            detail: format!(
-                                "`turn/start` for turn {number} repeats the turn already open at {}",
-                                open.at
-                            ),
-                        });
-                        turn = Some(open);
-                    }
-                    // A session cannot run two turns at once, so this is the first evidence that the
-                    // previous turn never wrote its `turn/end`.
-                    Some(open) => {
-                        issues.push(Issue {
-                            at: open.at,
-                            kind: Kind::UnclosedTurn,
-                            severity: Severity::Warning,
-                            detail: format!(
-                                "turn {} opened here never wrote `turn/end`; turn {number} started at \
-                                 {at} instead",
-                                open.number
-                            ),
-                        });
-                        close_turn(&mut step, &mut calls, at, &mut issues);
-                        turn = Some(OpenTurn {
-                            number: *number,
-                            at,
-                        });
-                    }
-                    None => {
-                        turn = Some(OpenTurn {
-                            number: *number,
-                            at,
-                        })
-                    }
-                }
-            }
-            SessionEvent::TurnEnd { turn: number, .. } => match turn.take() {
-                // The ordinary close. Whatever the turn left open can never be answered now, because
-                // the results would be written before this record existed.
-                Some(open) if open.number == *number => {
-                    close_turn(&mut step, &mut calls, at, &mut issues);
-                }
-                // An end naming another turn is not evidence about the open one, so the open turn is
-                // kept: closing it here would invent a boundary the log never recorded.
-                Some(open) => {
-                    issues.push(Issue {
-                        at,
-                        kind: Kind::OutOfOrder,
-                        severity: Severity::Error,
-                        detail: format!(
-                            "`turn/end` for turn {number} while turn {} opened at {} is the open one; \
-                             the end closes a turn this log never started",
-                            open.number, open.at
-                        ),
-                    });
-                    turn = Some(open);
-                }
-                None => issues.push(Issue {
-                    at,
-                    kind: Kind::OutOfOrder,
-                    severity: Severity::Error,
-                    detail: format!("`turn/end` for turn {number} with no `turn/start` before it"),
-                }),
-            },
-            SessionEvent::StepStart {
-                turn: number,
-                step: index,
-            } => {
-                if let Some(open) = step.take() {
-                    issues.push(Issue {
-                        at: open.at,
-                        kind: Kind::UnclosedStep,
-                        severity: Severity::Warning,
-                        detail: format!(
-                            "step {}/{} opened here never wrote `step/end`; step {index} of turn \
-                             {number} started at {at} instead",
-                            open.turn, open.step
-                        ),
-                    });
-                }
-                // The step is recorded rather than refused: it can still be closed, and a log whose
-                // turn boundary was trimmed is readable apart from this record.
-                if turn.is_none() {
-                    issues.push(Issue {
-                        at,
-                        kind: Kind::OutOfOrder,
-                        severity: Severity::Warning,
-                        detail: format!(
-                            "`step/start` for turn {number} step {index} while no turn is open"
-                        ),
-                    });
-                }
-                step = Some(OpenStep {
-                    turn: *number,
-                    step: *index,
-                    at,
-                });
-            }
-            SessionEvent::StepEnd {
-                turn: number,
-                step: index,
-            } => match step.take() {
-                Some(open) if open.turn == *number && open.step == *index => {}
-                Some(open) => {
-                    issues.push(Issue {
-                        at,
-                        kind: Kind::OutOfOrder,
-                        severity: Severity::Error,
-                        detail: format!(
-                            "`step/end` for turn {number} step {index} does not close step {}/{} \
-                             opened at {}",
-                            open.turn, open.step, open.at
-                        ),
-                    });
-                    step = Some(open);
-                }
-                None => issues.push(Issue {
-                    at,
-                    kind: Kind::OutOfOrder,
-                    severity: Severity::Error,
-                    detail: format!(
-                        "`step/end` for turn {number} step {index} with no matching `step/start`"
-                    ),
-                }),
-            },
-            SessionEvent::ToolCall { id, name, .. } => {
-                let key = id.as_str().to_owned();
-                match calls.get_mut(&key) {
-                    Some(open) => {
-                        open.unanswered = open.unanswered.saturating_add(1);
-                        issues.push(Issue {
-                            at,
-                            kind: Kind::OutOfOrder,
-                            severity: Severity::Warning,
-                            detail: format!(
-                                "tool call `{key}` ({name}) repeats the id of the unanswered call at \
-                                 {}; one result cannot answer both",
-                                open.at
-                            ),
-                        });
-                    }
-                    None => {
-                        calls.insert(key, OpenCall { at, unanswered: 1 });
-                    }
-                }
-            }
-            // A result answers exactly one call, so a repeated id is counted down rather than
-            // removed: two calls that share an id and one result leaves one of them unanswered, and
-            // dropping the whole entry would hide it.
-            SessionEvent::ToolResult { id, .. } => {
-                let key = id.as_str();
-                let settled = calls.get_mut(key).map(|open| {
-                    open.unanswered = open.unanswered.saturating_sub(1);
-                    open.unanswered == 0
-                });
-                match settled {
-                    // `remove` after the borrow rather than inside the closure: the entry is gone
-                    // only once nothing is left to answer.
-                    Some(true) => {
-                        calls.remove(key);
-                    }
-                    Some(false) => {}
-                    // A result with no open call is the one shape nothing normal produces: the call
-                    // is always written before the tool runs.
-                    None => issues.push(Issue {
-                        at,
-                        kind: Kind::OrphanResult,
-                        severity: Severity::Error,
-                        detail: format!(
-                            "tool result for `{key}` with no unanswered `tool/call` for that id \
-                             before it"
-                        ),
-                    }),
-                }
-            }
+            SessionEvent::TurnStart { turn } => walker.turn_started(at, *turn),
+            SessionEvent::TurnEnd { turn, .. } => walker.turn_ended(at, *turn),
+            SessionEvent::StepStart { turn, step } => walker.step_started(at, *turn, *step),
+            SessionEvent::StepEnd { turn, step } => walker.step_ended(at, *turn, *step),
+            SessionEvent::ToolCall { id, name, .. } => walker.called(at, id.as_str(), name),
+            SessionEvent::ToolResult { id, .. } => walker.answered(at, id.as_str()),
+            // Every other variant -- messages, accounting, the selection records -- is content rather
+            // than structure, so it cannot contradict the boundaries and is not the subject here.
             _ => {}
         }
     }
 
-    // The tail. Nothing after this position can answer anything, so every open item is a hint: the
-    // session may simply still be running.
-    if let Some(open) = step.take() {
-        issues.push(Issue {
-            at: open.at,
-            kind: Kind::UnclosedStep,
-            severity: Severity::Info,
-            detail: format!(
-                "step {}/{} is still open at the end of the log; a live session between `step/start` \
-                 and `step/end` looks exactly like this",
-                open.turn, open.step
-            ),
-        });
-    }
-    if let Some(open) = turn.take() {
-        issues.push(Issue {
-            at: open.at,
-            kind: Kind::UnclosedTurn,
-            severity: Severity::Info,
-            detail: format!(
-                "turn {} is still open at the end of the log; it may be the turn running now",
-                open.number
-            ),
-        });
-    }
-    for (id, open) in calls {
-        issues.push(Issue {
-            at: open.at,
-            kind: Kind::UnansweredCall,
-            severity: Severity::Info,
-            detail: format!(
-                "tool call `{id}` has no result yet{}; a session waiting on a tool looks like this",
-                shared_id_note(open.unanswered)
-            ),
-        });
-    }
-
-    // Position order, stably: issues pushed while closing a turn point back at the record that was
-    // left dangling, so pushing order is not log order.
-    issues.sort_by_key(|issue| issue.at);
-    issues
+    walker.finish()
 }
 
 /// Reports whether a log is healthy.
@@ -497,48 +569,6 @@ pub fn score(events: &[SessionEvent]) -> u8 {
     diagnose(events).iter().fold(FULL_SCORE, |total, issue| {
         total.saturating_sub(issue.severity.weight())
     })
-}
-
-/// Closes the open turn and reports what it leaves dangling.
-///
-/// Both callers are cases where the turn is over — its own `turn/end`, or a later `turn/start` that
-/// proves the end was never written — so everything still open inside it is a warning rather than a
-/// hint: no result or step end can arrive for a turn that is finished.
-///
-/// `at` is the position of the record that ended the turn, used only in the detail so the reader can
-/// see what the turn was overtaken by.
-fn close_turn(
-    step: &mut Option<OpenStep>,
-    calls: &mut BTreeMap<String, OpenCall>,
-    at: usize,
-    issues: &mut Vec<Issue>,
-) {
-    if let Some(open) = step.take() {
-        issues.push(Issue {
-            at: open.at,
-            kind: Kind::UnclosedStep,
-            severity: Severity::Warning,
-            detail: format!(
-                "step {}/{} opened here never wrote `step/end` before the turn ended at {at}",
-                open.turn, open.step
-            ),
-        });
-    }
-
-    // `take` so the caller's map is left empty: these calls belong to the turn being closed, and
-    // carrying them into the next turn would attribute an old failure to a new one.
-    for (id, open) in std::mem::take(calls) {
-        issues.push(Issue {
-            at: open.at,
-            kind: Kind::UnansweredCall,
-            severity: Severity::Warning,
-            detail: format!(
-                "tool call `{id}` has no result and its turn ended at {at}{}; a result written after \
-                 this would be an orphan",
-                shared_id_note(open.unanswered)
-            ),
-        });
-    }
 }
 
 /// A parenthetical for a call id that several unanswered calls share, or nothing when only one does.

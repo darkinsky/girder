@@ -153,6 +153,11 @@ pub struct SessionStateValue {
     /// Heaviest by calls rather than by bytes: a tool called once that returned a megabyte is an interesting outlier, but
     /// a list sorted by a rare tool's result size would put it above the tool the model reaches for every turn.
     pub tool_usage: Vec<girder_core::ToolStats>,
+    /// What the conversation came to, in one value.
+    ///
+    /// The counts say how much work happened, the timeline says what each turn did, and neither says what the last answer
+    /// was -- which is the question someone returning to a long conversation asks first.
+    pub digest: girder_core::Digest,
     /// Where this session forked from, when its id records it.
     ///
     /// Reconstructed from the id rather than read from the log, because a fork writes no edge: it copies a prefix and
@@ -336,6 +341,7 @@ async fn state(
         // Per tool, because the totals say how much work happened and this says which tools did it. A deployment asking
         // "is the shell slow or the build" needs the second, and `SessionStats` keeps only the first.
         tool_usage: girder_core::tool_usage(&record.events),
+        digest: girder_core::digest_session(&record.events),
         // The directory's own ids are the only record of the relationship, so it is read here rather than asked of the
         // log. A missing parent directory leaves both fields empty rather than failing the call.
         forked_from: origin_of(&record.id),

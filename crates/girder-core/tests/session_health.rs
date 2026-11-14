@@ -26,6 +26,10 @@ use session_health::{
     ERROR_PENALTY, Issue, Kind, Severity, WARNING_PENALTY, diagnose, is_healthy, score,
 };
 
+// Re-exported by the crate root under names that say what is being diagnosed, so a caller need not
+// import `session_health` (which is a private module) to reach it. Named here to pin that contract.
+use girder_core::{diagnose_health as exported_diagnose, health_score as exported_score};
+
 // ---- fixtures ----------------------------------------------------------------------------------
 
 /// The tool call a log records when the model asks for a tool.
@@ -177,13 +181,14 @@ fn an_unanswered_call_in_a_closed_turn_is_a_warning() {
 
     assert_eq!(issue.severity, Severity::Warning);
     assert!(!is_healthy(&events));
-    assert_eq!(score(&events), 100 - u8::from(WARNING_PENALTY));
+    assert_eq!(score(&events), 100 - WARNING_PENALTY);
 }
 
 #[test]
 fn an_unanswered_call_overtaken_by_the_next_turn_is_a_warning() {
     // No `turn/end` was written, but the next `turn/start` proves this turn is over. The issue points
-    // at the call, not at the boundary that revealed it.
+    // at the call, not at the boundary that revealed it. Three warnings, because the abandoned turn
+    // is reported too: the turn itself, the step it left open, and the call it never answered.
     let events = vec![
         turn_start(1),
         step_start(1, 1),
@@ -197,7 +202,7 @@ fn an_unanswered_call_overtaken_by_the_next_turn_is_a_warning() {
     let issue = only_issue_of(&events, Kind::UnansweredCall, 2);
 
     assert_eq!(issue.severity, Severity::Warning);
-    assert_eq!(score(&events), 100 - u8::from(WARNING_PENALTY));
+    assert_eq!(score(&events), 100 - 3 * WARNING_PENALTY);
 }
 
 #[test]
@@ -210,7 +215,7 @@ fn an_orphan_result_is_always_an_error() {
 
     assert_eq!(issue.severity, Severity::Error);
     assert!(!is_healthy(&events));
-    assert_eq!(score(&events), 100 - u8::from(ERROR_PENALTY));
+    assert_eq!(score(&events), 100 - ERROR_PENALTY);
 }
 
 #[test]
@@ -414,6 +419,41 @@ fn the_penalties_are_ordered_and_info_is_free() {
     assert!(Severity::Warning.weight() < Severity::Error.weight());
 }
 
+#[test]
+fn the_names_are_stable_strings_not_debug_output() {
+    // These end up in dashboards and metric labels, so they are spelled here rather than derived.
+    assert_eq!(Kind::UnansweredCall.as_str(), "unanswered_call");
+    assert_eq!(Kind::OrphanResult.as_str(), "orphan_result");
+    assert_eq!(Kind::UnclosedTurn.as_str(), "unclosed_turn");
+    assert_eq!(Kind::UnclosedStep.as_str(), "unclosed_step");
+    assert_eq!(Kind::OutOfOrder.as_str(), "out_of_order");
+
+    assert_eq!(Severity::Info.as_str(), "info");
+    assert_eq!(Severity::Warning.as_str(), "warning");
+    assert_eq!(Severity::Error.as_str(), "error");
+}
+
+#[test]
+fn the_crate_level_reexports_answer_the_same_as_the_module() {
+    // The deployment-facing path is `girder_core::diagnose_health`, so the two must not drift apart.
+    let events = vec![turn_start(1), call("call-1"), step_end(1, 1), turn_end(1)];
+
+    // The file is compiled twice -- once as a library module, once as this test's module -- so the
+    // two `Issue` types are distinct and are compared field by field rather than by identity.
+    let via_crate = exported_diagnose(&events);
+    let via_module = diagnose(&events);
+    assert_eq!(via_crate.len(), via_module.len());
+    for (left, right) in via_crate.iter().zip(via_module.iter()) {
+        assert_eq!(left.at, right.at);
+        assert_eq!(left.kind.as_str(), right.kind.as_str());
+        assert_eq!(left.severity.as_str(), right.severity.as_str());
+        assert_eq!(left.detail, right.detail);
+    }
+
+    assert_eq!(exported_score(&events), score(&events));
+    assert_eq!(girder_core::is_healthy(&events), is_healthy(&events));
+}
+
 // ---- empty and multiple problems --------------------------------------------------------------
 
 #[test]
@@ -455,10 +495,10 @@ fn several_problems_are_all_reported_in_log_order() {
     );
     // Positions are non-decreasing, which is what makes the list readable as a log walk.
     assert!(issues.windows(2).all(|pair| pair[0].at <= pair[1].at));
-    assert_eq!(
-        score(&events),
-        100 - u8::from(WARNING_PENALTY) - u8::from(WARNING_PENALTY) - u8::from(ERROR_PENALTY)
-    );
+    // Three warnings -- the abandoned turn, the step it left open, and the call that turn never
+    // answered -- plus the orphan result.
+    assert_eq!(score(&events), 100 - 3 * WARNING_PENALTY - ERROR_PENALTY);
+    assert_eq!(score(&events), 60);
 }
 
 #[test]

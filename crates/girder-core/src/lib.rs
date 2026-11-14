@@ -171,8 +171,10 @@ mod service;
 mod session;
 mod session_archive;
 mod session_branch;
+mod session_digest;
 mod session_export_rpc;
 mod session_filter;
+mod session_health;
 mod session_layout;
 mod session_lifecycle_rpc;
 mod session_link;
@@ -582,10 +584,15 @@ pub use session_archive::{
 pub use session_branch::{
     BranchError, Forest as SessionForest, Link as SessionLink, forest_from_ids, links_from_ids,
 };
+pub use session_digest::{Digest, digest as digest_session, one_line as digest_one_line};
 pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
     Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,
     apply as apply_session_filter,
+};
+pub use session_health::{
+    Issue as HealthIssue, Kind as HealthKind, Severity as HealthSeverity,
+    diagnose as diagnose_health, is_healthy, score as health_score,
 };
 pub use session_layout::{
     Layout as SessionLayout, LayoutError as SessionLayoutError, SessionFiles,
