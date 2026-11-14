@@ -187,6 +187,16 @@ pub struct LoopContext {
     /// Bytes of tool output this turn has added so far. Reset at the start of each turn.
     pub round_output_spent: std::sync::atomic::AtomicUsize,
 
+    /// How many times one tool may be called in a turn, and how often it may fail in a row.
+    ///
+    /// A turn budget bounds how many turns happen and nothing bounds how many calls one tool receives within them: forty
+    /// reads and forty shell invocations are the same shape to `max_turns` and a different situation to a person
+    /// watching. `None` leaves it unbounded, which is the behaviour before this field existed.
+    pub tool_limits: Option<crate::tool_limits::Limit>,
+
+    /// The counts `tool_limits` needs, shared because the dispatch path does not own the context.
+    pub tool_tracker: Option<std::sync::Mutex<crate::tool_limits::Tracker>>,
+
     /// How the history is compacted when it outgrows the context.
     ///
     /// `None` keeps everything: a deployment that has not decided what to drop should not have a default decide for
@@ -268,10 +278,25 @@ impl LoopContext {
             spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
             round_output_limit: None,
             round_output_spent: std::sync::atomic::AtomicUsize::new(0),
+            tool_limits: None,
+            tool_tracker: None,
             compaction: None,
             context_window: None,
             max_output_tokens: None,
         }
+    }
+
+    /// Bounds how many times one tool may be called in a turn.
+    ///
+    /// Built from the limits so the two cannot disagree: a tracker with its own ceiling and a field with another would
+    /// be two answers to one question.
+    #[must_use]
+    pub fn with_tool_limits(mut self, limits: crate::tool_limits::Limit) -> Self {
+        self.tool_tracker = Some(std::sync::Mutex::new(crate::tool_limits::Tracker::new(
+            limits,
+        )));
+        self.tool_limits = Some(limits);
+        self
     }
 
     /// Tells the loop what the model accepts, so an over-window request is refused before it is sent.
@@ -976,6 +1001,35 @@ fn tool_calls<'a>(
                     arguments: arguments.to_owned(),
                 })
                 .await;
+
+            // Checked before the call is recorded, so a refused call does not appear in the log as one that happened.
+            // The count still rises: a model that asked fifty times should be visible as having asked fifty times, not
+            // as having asked five and been silently ignored.
+            if let Some(tracker) = &context.tool_tracker {
+                let verdict = tracker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(name, true);
+                if let crate::tool_limits::Verdict::Allow = verdict {
+                    // Admitted; the failure count is corrected below if the call fails.
+                } else {
+                    let text = verdict.explain();
+                    let _ = context
+                        .session
+                        .append(SessionEvent::ToolResult {
+                            id: id.clone(),
+                            content: vec![ContentBlock::Text { text: text.clone() }],
+                            is_error: true,
+                        })
+                        .await;
+                    yield Ok(LoopStep::ToolFinished {
+                        id: id.to_string(),
+                        content: vec![ContentBlock::Text { text }],
+                        is_error: true,
+                    });
+                    continue;
+                }
+            }
 
             let result = match dispatch(context, execution, cancel.clone()).await {
                 Ok(result) => result,
