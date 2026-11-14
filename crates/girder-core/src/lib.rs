@@ -195,6 +195,7 @@ mod session_search_tool;
 mod session_state_rpc;
 mod session_static;
 mod session_stats;
+mod session_stream;
 mod session_tag;
 mod session_timeline;
 mod session_title;
@@ -212,6 +213,7 @@ mod storage;
 mod storage_quota;
 mod str_replace_editor;
 mod stream_blocks;
+mod stream_flow;
 mod stream_method;
 mod stream_validate;
 mod subagent;
@@ -223,6 +225,7 @@ mod subagent_tools;
 mod subprocess;
 mod system_prompt;
 mod terminal;
+mod terminal_attach;
 mod terminal_buffer;
 mod terminal_local;
 mod terminal_rpc;
@@ -665,6 +668,7 @@ pub use session_static::{
     Page as StaticPage, escape as escape_html, render as render_static_export,
 };
 pub use session_stats::Stats as SessionStats;
+pub use session_stream::{EndReason as StreamEndReason, Frame as SessionFrame, SessionStream};
 pub use session_tag::{Source as TagSource, Tag, TagError, TagSet, normalize as normalize_tag};
 pub use session_timeline::{Segment as TimelineSegment, open_turn, outline as session_outline};
 pub use session_title::{Source as TitleSource, derive as derive_title};
@@ -714,6 +718,7 @@ pub use str_replace_editor::{
     EditFailure as ReplaceFailure, Replacement, apply as apply_replacements,
 };
 pub use stream_blocks::{StreamObserver, assemble_message};
+pub use stream_flow::{Flow, SendResult, SlowDetector};
 pub use stream_method::{StreamError, StreamHandle, StreamMethod, Streams};
 pub use stream_validate::{
     Ending as StreamEnding, Problem as StreamProblem, ProblemKind as StreamProblemKind,
@@ -751,6 +756,7 @@ pub use terminal::{
     Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,
     Status as TerminalStatus, TerminalError, Transcript,
 };
+pub use terminal_attach::{Attachment as TerminalAttachment, Fanout as TerminalFanout};
 pub use terminal_buffer::{Buffer as TerminalBuffer, Chunk as TerminalChunk};
 pub use terminal_local::{LocalLauncher, ProcessShell};
 pub use terminal_rpc::{

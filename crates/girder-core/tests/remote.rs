@@ -173,11 +173,14 @@ async fn a_typo_reports_unknown_method() {
 
 #[tokio::test]
 async fn a_declared_gap_reports_not_implemented() {
-    // The distinction that makes a half-implemented client legible: `resume` exists upstream, so a client author
-    // should see a gap, not a typo. The probe is a name from the declaration rather than a literal, so a method that
-    // starts working cannot leave this test passing against a name that no longer means anything.
+    // The distinction that makes a half-implemented client legible: a gap upstream should read as a gap, not a typo. The
+    // probe is a name from the declaration rather than a literal, so a method that starts working cannot leave this test
+    // passing against a name that no longer means anything.
+    //
+    // An empty list is now the correct state: `stream` was the last declared gap and it answers with frames. Asserting
+    // that a gap exists would pin the gap rather than the distinction, which is what this test is for.
     let Some(probe) = girder_core::declared_gaps().first() else {
-        panic!("this build declares at least one gap; an empty list is not a gap");
+        return;
     };
     let registry = default_registry(Arc::new(FixedCatalog(vec![])));
 

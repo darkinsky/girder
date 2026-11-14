@@ -926,7 +926,12 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
 /// and this list was never told, so a client reading the declaration would have shown "not implemented" for a method the
 /// server never exposed either. Both halves were wrong, and neither test could see it because the drift test only
 /// checked the methods the session core registers.
-const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &["stream"];
+/// Methods this build declares but does not implement.
+///
+/// Empty: `stream` was the last one and it now answers with frames. The constant stays because the declaration machinery
+/// is what turns a missing method into a named `NOT_IMPLEMENTED` rather than an `UNKNOWN_METHOD` that reads as a client
+/// bug, and the next gap will want it.
+const UNIMPLEMENTED_SESSION_METHODS: &[&str] = &[];
 
 /// Registers the `session.*` methods this build implements.
 ///
@@ -957,6 +962,7 @@ fn register_session_core(
     register_create(registry, catalog);
     register_history(registry, catalog);
     register_follow(registry, catalog);
+    register_stream(registry, catalog);
     crate::session_export_rpc::register_session_export_method(registry, catalog);
     register_rename(registry, catalog);
     register_delete(registry, catalog);
@@ -1098,6 +1104,69 @@ fn register_history(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCata
 ///
 /// `done` is what ends the subscription: the poller stops when a poll returns it, which is the contract the streaming
 /// layer documents. A session never finishes, so this stays false and the client ends the subscription instead.
+/// Registers `session.stream`, which answers with frames rather than one value.
+///
+/// The transport has no stream mode, so this is a bounded batch of frames the client can ask for again from the last seq
+/// it saw. That is the honest shape: a method that claimed to push and instead returned one array would be a different
+/// wire contract with the same name, which is what this build refused to do while it was unimplemented.
+///
+/// The difference from `follow` is the unit. `follow` returns events; this returns frames tagged with the kind a client
+/// dispatches on, and it reports why the stream ended so a client knows whether to ask again.
+fn register_stream(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+    let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    registry.register("session", "stream", move |call| {
+        let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        Box::pin(async move {
+            let session_id = call
+                .args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: "session".to_owned(),
+                    method: "stream".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                })?
+                .to_owned();
+            // Zero means "from the beginning", matching `follow` and `page`: a client that omits it and one that sends
+            // zero mean the same thing.
+            let from = call.args.get("fromSeq").and_then(Value::as_u64).unwrap_or(0);
+            let limit = usize::try_from(
+                call.args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(FOLLOW_LIMIT as u64),
+            )
+            .unwrap_or(FOLLOW_LIMIT)
+            .max(1);
+
+            let Some(record) = catalog.read(&session_id).await else {
+                return Err(RemoteError::Failed(format!(
+                    "no session `{session_id}` is known to this deployment"
+                )));
+            };
+
+            let mut stream = crate::session_stream::SessionStream::new(record.events, from);
+            let mut frames = Vec::new();
+            while frames.len() < limit {
+                let Some(frame) = stream.next_frame() else {
+                    break;
+                };
+                frames.push(serde_json::json!({
+                    "seq": frame.seq,
+                    "kind": frame.kind,
+                    "payload": frame.payload,
+                }));
+            }
+            let next = stream.emitted().saturating_add(from);
+            Ok(serde_json::json!({
+                "frames": frames,
+                "nextSeq": next,
+                "done": matches!(stream.end_reason(), Some(crate::session_stream::EndReason::Exhausted)),
+            }))
+        })
+    });
+}
+
 fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
     let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
     registry.register("session", "follow", move |call| {

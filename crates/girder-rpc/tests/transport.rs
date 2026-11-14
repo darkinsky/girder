@@ -565,10 +565,11 @@ async fn an_invoke_call_to_a_gap_reports_the_code() {
     let (url, cancel) = start_server_with_remote().await;
 
     // A name from the declaration rather than a literal: `search` was this probe until it was implemented, and the
-    // literal kept asserting a gap that no longer existed.
-    let probe = girder_core::declared_gaps()
-        .first()
-        .expect("this build declares at least one gap");
+    // literal kept asserting a gap that no longer existed. `stream` was the last one, so an empty list is now the
+    // correct state and the distinction is unobservable over the wire until a gap returns.
+    let Some(probe) = girder_core::declared_gaps().first() else {
+        return;
+    };
     let response = invoke(
         &url,
         serde_json::json!({"namespace": "session", "method": probe, "args": {}, "peer": "p"}),
