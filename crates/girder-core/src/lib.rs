@@ -121,6 +121,7 @@ mod mcp;
 mod mcp_tools;
 mod message;
 mod model_catalog_extra;
+mod model_fallback;
 mod observation;
 mod office_document;
 mod openapi;
@@ -136,6 +137,7 @@ mod projection;
 mod projection_extra;
 mod projection_host;
 mod prompt_template;
+mod provider_health;
 mod providers;
 mod ptc_policy;
 mod questions;
@@ -402,6 +404,10 @@ pub use model_catalog_extra::{
     Capabilities as ModelCapabilities, ModelEntry, filter_by as filter_models,
     to_catalog_json as models_to_catalog_json,
 };
+pub use model_fallback::{
+    Candidate as FallbackCandidate, Needs as ModelNeeds, Shortfall as ModelShortfall,
+    choose as choose_model,
+};
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
     Version as FileVersion, replace_exactly_once, replace_lines, version_of,
@@ -445,6 +451,7 @@ pub use projection_extra::{
 };
 pub use projection_host::{HostError, ProjectionHost, Registry as ProjectionHosts};
 pub use prompt_template::{TemplateError, Variables, render as render_template};
+pub use provider_health::{Health as ProviderHealth, HealthTracker};
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
     RouteRegistry, deepseek_route, fits as model_fits, window_of,
