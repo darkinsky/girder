@@ -71,6 +71,7 @@ mod attachment;
 mod attachment_limits;
 mod attachment_rpc;
 mod attribution;
+mod backoff;
 mod block_assembler;
 mod boot;
 mod boot_check;
@@ -106,6 +107,7 @@ mod goal;
 mod goal_tool;
 mod home_paths;
 mod host_rpc;
+mod image_block;
 mod inbox;
 mod injection_guard;
 mod instructions;
@@ -178,10 +180,12 @@ mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
 mod session_recovery;
+mod session_replay;
 mod session_resume_rpc;
 mod session_rewind;
 mod session_search_tool;
 mod session_state_rpc;
+mod session_static;
 mod session_stats;
 mod session_tag;
 mod session_timeline;
@@ -196,6 +200,7 @@ mod spill;
 mod spill_policy;
 mod ssh;
 mod storage;
+mod storage_quota;
 mod str_replace_editor;
 mod stream_blocks;
 mod stream_method;
@@ -224,6 +229,7 @@ mod tool_limits;
 mod tool_output_view;
 mod tool_result_pruning;
 mod tool_retry;
+mod tool_schedule;
 mod tool_schema_export;
 mod tool_usage;
 mod tool_watchdog;
@@ -281,6 +287,9 @@ pub use attachment_limits::{
 };
 pub use attachment_rpc::register_attachment_upload_method;
 pub use attribution::Attribution as ContentAttribution;
+pub use backoff::{
+    Retryable as BackoffRetryable, Strategy as BackoffStrategy, should_retry as should_retry_after,
+};
 pub use block_assembler::{Assembler as BlockAssembler, AssemblyError};
 pub use boot::{
     BootConfig, BootError, BootReport, Booted, DEFAULT_ENDPOINT, DEFAULT_MODEL,
@@ -374,6 +383,10 @@ pub use goal_tool::goal_tool;
 pub use home_paths::Paths as HomePaths;
 pub use host_rpc::{
     Opener, SystemOpener, UnavailableOpener, register_host_methods, register_host_methods_with,
+};
+pub use image_block::{
+    ImageError, ImagePayload, MAX_BYTES as MAX_IMAGE_BYTES, SUPPORTED_TYPES as IMAGE_TYPES,
+    decode as decode_image, encode as encode_image, sniff_type as sniff_image_type,
 };
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
 pub use injection_guard::{
@@ -607,11 +620,18 @@ pub use session_queue_rpc::{
 pub use session_recovery::{
     Diagnosis, Recovery, diagnose as diagnose_session, repair as repair_session,
 };
+pub use session_replay::{
+    Diff as ReplayDiff, Snapshot as ReplaySnapshot, diff as diff_events, divergence_turn,
+    replay_until, snapshot as snapshot_events,
+};
 pub use session_resume_rpc::register_session_resume_method;
 pub use session_rewind::{Checkpoint as RewindPoint, checkpoint_for_turn, checkpoints, rewind_to};
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
 pub use session_state_rpc::{
     LiveTurns, NoLiveTurns, register_session_state_method, register_session_state_method_with,
+};
+pub use session_static::{
+    Page as StaticPage, escape as escape_html, render as render_static_export,
 };
 pub use session_stats::Stats as SessionStats;
 pub use session_tag::{Source as TagSource, Tag, TagError, TagSet, normalize as normalize_tag};
@@ -650,6 +670,10 @@ pub use ssh::{
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,
+};
+pub use storage_quota::{
+    Footprint, Quota as StorageQuota, Usage as StorageUsage, evict as evict_storage, is_oversized,
+    usage as storage_usage,
 };
 pub use str_replace_editor::{
     EditFailure as ReplaceFailure, Replacement, apply as apply_replacements,
@@ -725,6 +749,9 @@ pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as de
 pub use tool_retry::{
     Failure as ToolFailure, FailureReason as ToolFailureReason, Policy as ToolRetryPolicy,
     corrective_message,
+};
+pub use tool_schedule::{
+    Call as ScheduleCall, Plan as SchedulePlan, is_read_only, plan as plan_schedule,
 };
 pub use tool_schema_export::{same_tool_set, to_mcp, to_openai};
 pub use tool_usage::{ToolStats, usage as tool_usage};
