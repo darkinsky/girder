@@ -64,6 +64,7 @@ pub mod api_job;
 mod api_key;
 pub mod api_session;
 mod approval;
+mod approval_rules;
 mod assistant_output;
 mod atomic_write;
 mod attachment;
@@ -105,6 +106,7 @@ mod goal_tool;
 mod home_paths;
 mod host_rpc;
 mod inbox;
+mod injection_guard;
 mod instructions;
 mod instructions_tool;
 mod job_follow_rpc;
@@ -167,6 +169,7 @@ mod session_export_rpc;
 mod session_filter;
 mod session_layout;
 mod session_lifecycle_rpc;
+mod session_link;
 mod session_metrics;
 mod session_migration;
 mod session_portable;
@@ -253,6 +256,10 @@ pub use approval::{
     ApprovalError, Approver, DEFAULT_TIMEOUT as DEFAULT_APPROVAL_TIMEOUT, DecidedBy, Decision,
     Record as ApprovalRecord, Request as ApprovalRequest, Scripted as ScriptedApprover,
     Unavailable as UnavailableApprover,
+};
+pub use approval_rules::{
+    Action as ApprovalAction, Decision as ApprovalDecision, Rule as ApprovalRule,
+    Rules as ApprovalRules,
 };
 pub use assistant_output::{FinalOutput, final_output, final_text};
 pub use atomic_write::{
@@ -360,6 +367,10 @@ pub use host_rpc::{
     Opener, SystemOpener, UnavailableOpener, register_host_methods, register_host_methods_with,
 };
 pub use inbox::{Inbox, InboxError, Splice, Target as InboxTarget, replay as replay_inbox};
+pub use injection_guard::{
+    Pattern as InjectionPattern, Severity as InjectionSeverity, Signal as InjectionSignal,
+    annotate as annotate_injection, default_patterns as injection_patterns, scan as scan_injection,
+};
 pub use instructions::{
     DEFAULT_MAX_BYTES_PER_FILE, DEFAULT_MAX_TOTAL_BYTES, HARNESS_GLOBAL_DIRECTORY,
     INSTRUCTION_FILE_NAME, InstructionFile, InstructionLimits, InstructionState, LoadedInstruction,
@@ -554,6 +565,10 @@ pub use session_lifecycle_rpc::{
     MemoryArchiveStore, NAMESPACE as SESSION_LIFECYCLE_NAMESPACE, UnavailableArchiveStore,
     register_session_lifecycle_methods, register_session_lifecycle_methods_with_archive,
     retain_visible,
+};
+pub use session_link::{
+    Graph as SessionLinkGraph, Kind as SessionLinkKind, Link as CrossSessionLink,
+    LinkError as SessionLinkError,
 };
 pub use session_metrics::{
     Sample, to_aggregate_samples, to_prometheus, to_samples as session_metric_samples,
