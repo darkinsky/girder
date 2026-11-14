@@ -26,7 +26,7 @@
 #[path = "../src/checkpoint_store.rs"]
 mod checkpoint_store;
 
-use checkpoint_store::{Checkpoint, FILE_SUFFIX, Kind, Store, StoreError, now_ms};
+use checkpoint_store::{Checkpoint, FILE_SUFFIX, Kind, Store, StoreError};
 use std::path::PathBuf;
 
 // ---- fixtures ----------------------------------------------------------------------------------
@@ -54,7 +54,10 @@ fn at(session: &str, seq: u64) -> Checkpoint {
 
 /// The sequences of a checkpoint list, for assertions about order and contents.
 fn seqs(checkpoints: &[Checkpoint]) -> Vec<u64> {
-    checkpoints.iter().map(|checkpoint| checkpoint.seq).collect()
+    checkpoints
+        .iter()
+        .map(|checkpoint| checkpoint.seq)
+        .collect()
 }
 
 /// The file names directly inside `dir`, sorted.
@@ -138,7 +141,10 @@ fn checkpoints_come_back_ordered_by_seq() {
         store.save(at("s1", seq)).expect("saved");
     }
 
-    assert_eq!(seqs(&store.load("s1").expect("loaded")), vec![5, 10, 20, 30]);
+    assert_eq!(
+        seqs(&store.load("s1").expect("loaded")),
+        vec![5, 10, 20, 30]
+    );
 }
 
 #[test]
@@ -233,7 +239,11 @@ fn truncate_after_an_unknown_session_removes_nothing() {
         store.load("s1").expect("loaded").is_empty(),
         "truncating a session with no file must not create one"
     );
-    assert!(names(&dir).is_empty(), "no file was written: {:?}", names(&dir));
+    assert!(
+        names(&dir).is_empty(),
+        "no file was written: {:?}",
+        names(&dir)
+    );
 }
 
 #[test]
@@ -269,19 +279,28 @@ fn truncating_one_session_leaves_another_alone() {
 fn an_unusable_session_id_is_refused_before_anything_is_written() {
     let dir = scratch("invalid");
     let store = Store::new(&dir);
-    for id in ["", ".", "..", "a/b", "a\\b", "../escape", "a..b", "nul\0byte"] {
+    for id in [
+        "",
+        ".",
+        "..",
+        "a/b",
+        "a\\b",
+        "../escape",
+        "a..b",
+        "nul\0byte",
+    ] {
         assert!(
-            matches!(
-                store.path_for(id),
-                Err(StoreError::InvalidSession { .. })
-            ),
+            matches!(store.path_for(id), Err(StoreError::InvalidSession { .. })),
             "`{id}` should not name a file"
         );
         // Save and load refuse through the same check, so a caller cannot get in by another door.
         let mut checkpoint = at(id, 1);
         checkpoint.session = id.to_owned();
         assert!(
-            matches!(store.save(checkpoint), Err(StoreError::InvalidSession { .. })),
+            matches!(
+                store.save(checkpoint),
+                Err(StoreError::InvalidSession { .. })
+            ),
             "`{id}` should not be savable"
         );
         assert!(matches!(
@@ -414,18 +433,45 @@ fn a_reader_never_sees_a_torn_file() {
     handle.join().expect("the writer finished");
 
     assert!(reads > 0, "the reader never ran");
-    assert_eq!(seqs(&store.load("s1").expect("loaded")), (1..=64).collect::<Vec<_>>());
+    assert_eq!(
+        seqs(&store.load("s1").expect("loaded")),
+        (1..=64).collect::<Vec<_>>()
+    );
 }
 
 // ---- clock -------------------------------------------------------------------------------------
 
 #[test]
-fn now_ms_is_in_milliseconds() {
+fn a_checkpoint_built_with_now_is_stamped_in_milliseconds() {
     // A fixed past instant, so the assertion holds for any correct clock and fails loudly if the unit
     // ever becomes seconds: 1_600_000_000_000 ms is 2020-09-13, and 1_600_000_000 is 1970-01-19.
+    let checkpoint = Checkpoint::now("s1", 3, Kind::Manual);
+
+    assert_eq!(checkpoint.session, "s1");
+    assert_eq!(checkpoint.seq, 3);
+    assert_eq!(checkpoint.kind, Kind::Manual);
+    assert_eq!(checkpoint.summary, None);
     assert!(
-        now_ms() > 1_600_000_000_000,
-        "now_ms() is not in milliseconds: {}",
-        now_ms()
+        checkpoint.at_ms > 1_600_000_000_000,
+        "at_ms is not in milliseconds: {}",
+        checkpoint.at_ms
     );
+}
+
+#[test]
+fn an_omitted_timestamp_is_defaulted_on_read() {
+    let dir = scratch("clock-default");
+    let store = Store::new(&dir);
+    let path = store.path_for("s1").expect("a path");
+    // An older file, or one written by hand, that predates the field: reading it must not fail, since
+    // the position is the part a rewind needs and the timestamp is metadata.
+    std::fs::write(
+        &path,
+        br#"[{"session":"s1","seq":4,"kind":"automatic","summary":null}]"#,
+    )
+    .expect("written");
+
+    let loaded = store.load("s1").expect("loaded");
+    assert_eq!(seqs(&loaded), vec![4]);
+    assert!(loaded[0].at_ms > 1_600_000_000_000, "{}", loaded[0].at_ms);
 }

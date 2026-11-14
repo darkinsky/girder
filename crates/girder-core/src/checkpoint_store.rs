@@ -74,7 +74,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use girder_core::{Mode, write_atomic};
+use girder_core::{Mode, now_millis, write_atomic};
 
 /// The suffix that turns a session id into the name of its checkpoint file.
 ///
@@ -193,7 +193,28 @@ pub struct Checkpoint {
     ///
     /// Milliseconds rather than seconds because these are taken inside a turn: two compaction
     /// checkpoints a second apart are ordinary, and a whole-second clock would order them by luck.
+    /// [`now_millis`] produces this value, and defaults it when the field is omitted from a file.
+    #[serde(default = "now_millis")]
     pub at_ms: u64,
+}
+
+impl Checkpoint {
+    /// Records that `session` reached `seq`, stamping it with the current time.
+    ///
+    /// The constructor exists so the clock is read in one place: a caller assembling the struct by
+    /// hand can pass seconds where milliseconds were meant, and the result typechecks and sorts
+    /// almost correctly. Nothing here can refuse a wrong `at_ms` — it is plain data — but there is
+    /// then only one obvious way to get a right one.
+    #[must_use]
+    pub fn now(session: impl Into<String>, seq: u64, kind: Kind) -> Self {
+        Self {
+            session: session.into(),
+            seq,
+            kind,
+            summary: None,
+            at_ms: now_millis(),
+        }
+    }
 }
 
 /// A directory of checkpoint files, one per session.
@@ -253,7 +274,7 @@ impl Store {
         } else {
             checkpoints.push(checkpoint);
         }
-        self.replace(&path, &checkpoints)
+        Self::replace(&path, &checkpoints)
     }
 
     /// Every checkpoint recorded for `session`, ordered by [`Checkpoint::seq`].
@@ -296,10 +317,7 @@ impl Store {
         {
             return Err(StoreError::Corrupt {
                 path: path.display().to_string(),
-                detail: format!(
-                    "it holds a checkpoint for session `{}`",
-                    foreign.session
-                ),
+                detail: format!("it holds a checkpoint for session `{}`", foreign.session),
             });
         }
 
@@ -355,7 +373,7 @@ impl Store {
         if removed == 0 {
             return Ok(0);
         }
-        self.replace(&path, &checkpoints)?;
+        Self::replace(&path, &checkpoints)?;
         Ok(removed)
     }
 
@@ -365,7 +383,10 @@ impl Store {
     /// checkpoint was truncated" and "this session was never checkpointed" both answer the same way
     /// to [`Store::load`], but only the file distinguishes them for a person looking at the
     /// directory, and a delete is one more failure path for no gain.
-    fn replace(&self, path: &Path, checkpoints: &[Checkpoint]) -> Result<(), StoreError> {
+    ///
+    /// An associated function rather than a method because it needs no state from [`Store`] beyond
+    /// the path it is handed, and saying so keeps the state that does exist visible.
+    fn replace(path: &Path, checkpoints: &[Checkpoint]) -> Result<(), StoreError> {
         // Compact rather than pretty: the file is machine-read, and it is rewritten on every mark.
         let bytes = serde_json::to_vec(checkpoints).map_err(|error| StoreError::Corrupt {
             path: path.display().to_string(),
@@ -411,19 +432,4 @@ fn validate_session(session: &str) -> Result<(), StoreError> {
         }),
         None => Ok(()),
     }
-}
-
-/// The current time in milliseconds since the Unix epoch, for [`Checkpoint::at_ms`].
-///
-/// Provided rather than left to each caller because the unit is the part that goes wrong: a caller
-/// that reached for seconds would still typecheck and would only be visible as wrongly ordered
-/// checkpoints long afterwards. A clock set before the epoch yields `0`, which sorts first and is
-/// visibly wrong rather than an error on a path nobody expects to fail.
-#[must_use]
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }

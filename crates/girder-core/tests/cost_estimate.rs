@@ -182,10 +182,7 @@ fn the_intermediate_product_uses_u128_so_it_does_not_wrap() {
     };
     assert_eq!(estimate.amount, 30_000_000_000_000);
     assert!(
-        u64::try_from(
-            u128::from(3_000_000_000_u64) * u128::from(10_000_000_000_u64)
-        )
-        .is_err(),
+        u64::try_from(u128::from(3_000_000_000_u64) * u128::from(10_000_000_000_u64)).is_err(),
         "the product really does exceed u64, so this test does exercise the u128 path"
     );
 }
@@ -287,10 +284,7 @@ fn estimate_batch_saturates_its_total() {
     table.set("absurd", cents(u64::MAX, u64::MAX));
     let batch = estimate_batch(
         &table,
-        &[
-            usage("absurd", u64::MAX, 0),
-            usage("absurd", u64::MAX, 0),
-        ],
+        &[usage("absurd", u64::MAX, 0), usage("absurd", u64::MAX, 0)],
     );
     assert_eq!(batch.priced, u64::MAX);
     assert!(batch.unpriced_models.is_empty());

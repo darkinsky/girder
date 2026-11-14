@@ -79,6 +79,7 @@ mod bounded_queue;
 mod brand;
 mod builtin_commands;
 mod call_config;
+mod checkpoint_store;
 mod chunked_list;
 mod code_language;
 mod commands;
@@ -220,6 +221,7 @@ mod tool_batching;
 mod tool_cache;
 mod tool_contracts;
 mod tool_limits;
+mod tool_output_view;
 mod tool_result_pruning;
 mod tool_retry;
 mod tool_schema_export;
@@ -296,6 +298,10 @@ pub use brand::{
 };
 pub use builtin_commands::register_builtin_commands;
 pub use call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
+pub use checkpoint_store::{
+    Checkpoint as StoredCheckpoint, Kind as CheckpointKind, Store as CheckpointStore,
+    StoreError as CheckpointError,
+};
 pub use chunked_list::{CHUNK_CAPACITY, List as ChunkedList};
 pub use code_language::{for_extension, for_path, read_hint};
 pub use commands::{
@@ -714,6 +720,7 @@ pub use tool_cache::{
 };
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
 pub use tool_limits::{Limit as ToolLimit, Tracker as ToolTracker, Verdict as ToolVerdict};
+pub use tool_output_view::{Outcome as OutputOutcome, View as ToolOutputView, block_cost};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
 pub use tool_retry::{
     Failure as ToolFailure, FailureReason as ToolFailureReason, Policy as ToolRetryPolicy,

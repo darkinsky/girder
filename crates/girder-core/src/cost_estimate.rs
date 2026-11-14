@@ -26,7 +26,7 @@
 //! - **Integer arithmetic, multiply before divide.** Amounts are in the smallest currency unit, so
 //!   they are `u64` and there is no floating point to round. A per-million rate is applied as
 //!   `tokens * rate / 1_000_000` in `u128` for two reasons: dividing first discards the sub-unit
-//!   remainder before it is scaled up (999_999 tokens at 3 per million is 2 units, not 0), and
+//!   remainder before it is scaled up (`999_999` tokens at 3 per million is 2 units, not 0), and
 //!   `u64 * u64` can exceed `u64` even when the final amount does not.
 //!
 //! # What this module does not do
@@ -181,7 +181,7 @@ pub fn estimate(table: &Table, usage: &Usage) -> Option<Estimate> {
 /// Multiplication happens in `u128` and before the division. `u128` because the product of two
 /// `u64` values can exceed `u64` even when the resulting per-million amount fits — a large session
 /// on a high rate is enough — and an intermediate wrap would report a cheap call. Multiply first
-/// because `(tokens / 1_000_000) * rate` truncates every fraction of a million to zero: 999_999
+/// because `(tokens / 1_000_000) * rate` truncates every fraction of a million to zero: `999_999`
 /// tokens at 3 per million costs 2 units, and dividing first would report 0.
 ///
 /// Truncation at the end is intentional and unavoidable: the smallest currency unit cannot be
