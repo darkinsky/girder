@@ -42,6 +42,7 @@
 //! actually uses is a buffer, a `data:` prefix, and a blank-line terminator.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use futures::StreamExt as _;
 use serde_json::{Value, json};
@@ -359,9 +360,15 @@ impl LlmProvider for OpenAiProvider {
                 // A stream that ends before `[DONE]` is truncated. Accepting it would let a network
                 // cut look like a complete answer, which is the failure this check exists for.
                 if !translator.finished {
-                    yield Err(LlmError::Provider(
-                        "stream ended before [DONE]".to_owned(),
-                    ));
+                    // A partial event left in the parser says the connection was cut mid-frame; none says the endpoint
+                    // stopped after a complete one. The two are different stalls and a caller reading the error should
+                    // be able to tell them apart.
+                    let detail = if parser.has_pending() {
+                        "stream ended before [DONE], with a partial event buffered"
+                    } else {
+                        "stream ended before [DONE]"
+                    };
+                    yield Err(LlmError::Provider(detail.to_owned()));
                 }
             };
 
@@ -453,7 +460,10 @@ impl SseParser {
         }
     }
 
-    /// Whether a partial event is buffered.
+    /// Whether a partial frame is buffered.
+    ///
+    /// A diagnostic rather than a step: the parser does not need the question, and a caller watching an idle connection
+    /// does -- "nothing arrived" and "half a frame arrived" are different stalls.
     #[must_use]
     pub fn has_pending(&self) -> bool {
         !self.buffer.is_empty() || !self.data.is_empty()
@@ -502,9 +512,9 @@ impl OpenBlock {
     /// The block index this block was assigned.
     fn index(&self) -> usize {
         match self {
-            Self::Text { index, .. } | Self::Reasoning { index, .. } | Self::ToolCall { index, .. } => {
-                *index
-            }
+            Self::Text { index, .. }
+            | Self::Reasoning { index, .. }
+            | Self::ToolCall { index, .. } => *index,
         }
     }
 
@@ -728,59 +738,30 @@ impl Translator {
             .and_then(Value::as_str)
             .unwrap_or_default();
 
-        let state = self.tools.entry(wire_index).or_default();
-        // The id is identity, not accumulation: a continuation delta repeats it as `""` or `null`
-        // to mean "unchanged", and taking that literally would leave a call no result can answer.
-        if let Some(raw) = call
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            && let Ok(id) = ToolCallId::new(raw)
-        {
-            state.id = Some(id);
-        }
-        let known_id = state.id.clone();
-        let opened = state.block;
-
-        let index = match opened {
-            Some(index) => index,
-            None => {
-                // A delta that carries only identity has nothing to emit yet. Opening a block here
-                // would produce a tool call with neither a name nor arguments, which no consumer
-                // can dispatch; the call opens on the delta that says something.
-                if name.is_none() && fragment.is_empty() {
-                    return;
-                }
-                let index = self.take_index();
-                // A stream that never sends a usable id still gets a call the model asked for. The
-                // synthesized id is derived from the wire index rather than random, so a replayed
-                // stream assembles to the same message.
-                let id = known_id.or_else(|| ToolCallId::new(format!("call-{wire_index}")).ok());
-                let Some(id) = id else {
-                    // Unreachable: the derived id is always well formed. Dropping the call is still
-                    // the only honest option, because an id that cannot be built cannot be
-                    // correlated with its result.
-                    return;
-                };
-                self.blocks.insert(
-                    index,
-                    OpenBlock::ToolCall {
-                        index,
-                        id,
-                        name: String::new(),
-                        arguments: String::new(),
-                        name_sent: false,
-                    },
-                );
-                if let Some(state) = self.tools.get_mut(&wire_index) {
-                    state.block = Some(index);
-                }
-                out.push(StreamChunk::BlockStart {
-                    index,
-                    block_type: "tool-call".to_owned(),
-                });
-                index
+        let (known_id, opened) = {
+            let state = self.tools.entry(wire_index).or_default();
+            // The id is identity, not accumulation: a continuation delta repeats it as `""` or
+            // `null` to mean "unchanged", and taking that literally would leave a call no result
+            // can answer.
+            if let Some(raw) = call
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                && let Ok(id) = ToolCallId::new(raw)
+            {
+                state.id = Some(id);
             }
+            (state.id.clone(), state.block)
+        };
+        let index = if let Some(index) = opened {
+            index
+        } else {
+            let Some(index) = self.open_tool_call(wire_index, known_id, name, fragment, out) else {
+                // A delta that carries only identity has nothing to emit yet; the call opens on the
+                // delta that says something.
+                return;
+            };
+            index
         };
 
         let Some(OpenBlock::ToolCall {
@@ -816,6 +797,47 @@ impl Translator {
             name: delta_name.map(str::to_owned),
             arguments_delta: fragment.to_owned(),
         });
+    }
+
+    /// Opens a tool-call block for `wire_index`, returning its new block index.
+    ///
+    /// Returns `None` when the delta carries neither a name nor an argument: a block opened there
+    /// would be an unnamed, argument-less call, which no consumer can dispatch. The id, when one is
+    /// already known, is carried into the block so the call stays correlatable with its result.
+    fn open_tool_call(
+        &mut self,
+        wire_index: u64,
+        known_id: Option<ToolCallId>,
+        name: Option<&str>,
+        fragment: &str,
+        out: &mut Vec<StreamChunk>,
+    ) -> Option<usize> {
+        if name.is_none() && fragment.is_empty() {
+            return None;
+        }
+        // A stream that never sends a usable id still gets a call the model asked for. The
+        // synthesized id is derived from the wire index rather than random, so a replayed stream
+        // assembles to the same message.
+        let id = known_id.or_else(|| ToolCallId::new(format!("call-{wire_index}")).ok())?;
+        let index = self.take_index();
+        self.blocks.insert(
+            index,
+            OpenBlock::ToolCall {
+                index,
+                id,
+                name: String::new(),
+                arguments: String::new(),
+                name_sent: false,
+            },
+        );
+        if let Some(state) = self.tools.get_mut(&wire_index) {
+            state.block = Some(index);
+        }
+        out.push(StreamChunk::BlockStart {
+            index,
+            block_type: "tool-call".to_owned(),
+        });
+        Some(index)
     }
 
     /// Allocates the next block index.
@@ -916,11 +938,7 @@ fn usage_from(usage: &Value) -> TokenUsage {
         .and_then(Value::as_u64)
         // `prompt_cache_hit_tokens` is the vendor spelling of the same count; some endpoints send
         // only that one.
-        .or_else(|| {
-            usage
-                .get("prompt_cache_hit_tokens")
-                .and_then(Value::as_u64)
-        })
+        .or_else(|| usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
         .unwrap_or(0);
     TokenUsage {
         input: prompt.saturating_sub(cached),
@@ -945,5 +963,46 @@ fn finish_reason(reason: &str) -> FinishReason {
         other => FinishReason::Error {
             message: format!("model stopped: {other}"),
         },
+    }
+}
+
+/// Builds whichever provider the environment describes.
+///
+/// Two variables decide: `GIRDER_PROTOCOL` names the wire format (`anthropic` by default, or `openai`), and the key
+/// variables differ per protocol. One entry point rather than two because a caller that has to know the protocol before
+/// calling is a caller that has to duplicate this decision.
+///
+/// # Errors
+///
+/// Returns [`LlmError::Provider`] when the chosen protocol's key is unset or the client cannot be built.
+pub fn provider_from_env() -> Result<Arc<dyn girder_core::LlmProvider>, LlmError> {
+    let protocol = std::env::var("GIRDER_PROTOCOL").unwrap_or_else(|_| "anthropic".to_owned());
+    match protocol.as_str() {
+        "openai" => {
+            // `OPENAI_API_KEY` first because that is what the ecosystem sets, then the harness's own prefixed name for a
+            // deployment that talks to a compatible endpoint under a different product.
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .or_else(|_| std::env::var("GIRDER_OPENAI_API_KEY"))
+                .map_err(|_| {
+                    LlmError::Provider(
+                        "GIRDER_PROTOCOL is `openai` but OPENAI_API_KEY is not set".to_owned(),
+                    )
+                })?;
+            let base_url =
+                std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
+            let default_model = std::env::var("GIRDER_MODEL")
+                .or_else(|_| std::env::var("OPENAI_MODEL"))
+                .unwrap_or_else(|_| "gpt-4o-mini".to_owned());
+            let config = OpenAiConfig {
+                base_url,
+                api_key,
+                default_model,
+                max_tokens: 8192,
+            };
+            Ok(Arc::new(OpenAiProvider::new(config)?))
+        }
+        // Anything else is the Anthropic format, including an unknown name: this build's default protocol, and refusing
+        // to start on a typo would be a worse failure than using the format every other variable already describes.
+        _ => girder_core::provider_from_env(),
     }
 }

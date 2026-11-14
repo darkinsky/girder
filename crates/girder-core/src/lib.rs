@@ -114,6 +114,7 @@ mod launch_environment;
 mod limits;
 mod llm;
 mod llm_deepseek;
+mod llm_openai;
 mod llm_stats;
 mod lsp;
 mod lsp_tool;
@@ -382,6 +383,11 @@ pub use llm::{
 };
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
+};
+pub use llm_openai::{
+    DEFAULT_BASE_URL as OPENAI_DEFAULT_BASE_URL, OpenAiConfig, OpenAiProvider,
+    SseParser as OpenAiSseParser, Translator as OpenAiTranslator,
+    provider_from_env as provider_from_environment,
 };
 pub use llm_stats::Stats as LlmStats;
 pub use lsp::{

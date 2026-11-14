@@ -693,6 +693,42 @@ fn print_metrics() {
 /// Read from a table rather than assumed because a reasoning model and a fast one do not fail alike: the fast one
 /// recovers from a transient 429 in a second, and the reasoning one is better retried fewer times with a longer wait
 /// than five times with a short one.
+/// Builds the provider chain: transport, retry, cache -- or the scripted one.
+///
+/// Extracted from `run_prompt`, which had reached the length the linter enforces. The chain's order is the interesting
+/// part and it reads better named than inline: the cache sits outside the retry so a hit never reaches the transport,
+/// and a retry that failed is retried again.
+fn build_provider(cli: &Cli) -> Arc<dyn girder_core::LlmProvider> {
+    let Ok(provider) = girder_core::provider_from_environment() else {
+        // Named per protocol, because a deployment that set GIRDER_PROTOCOL=openai and no key would be told to set a
+        // variable for a protocol it explicitly did not choose.
+        if std::env::var("GIRDER_PROTOCOL").as_deref() == Ok("openai") {
+            eprintln!(
+                "[provider] offline (set OPENAI_API_KEY to use a real model over the openai protocol)"
+            );
+        } else {
+            eprintln!("[provider] offline (set DEEPSEEK_API_KEY to use a real model)");
+        }
+        return Arc::new(OfflineProvider {
+            tool: cli.tool.clone(),
+        });
+    };
+    eprintln!("[provider] live: {}", cli.model);
+    // Wrapped so a transient failure is retried: a 429 or a dropped connection would otherwise end a turn that the next
+    // attempt would have completed.
+    let retrying: Arc<dyn girder_core::LlmProvider> = Arc::new(girder_core::RetryingProvider::new(
+        provider,
+        call_retry_policy(&cli.model),
+    ));
+    // Cached outside the retry: a hit should never reach the transport, and a retry that failed should be retried
+    // again. An unstated temperature is not cached -- the provider's default is invisible here, and caching a sampled
+    // answer would make the second call return the first call's dice roll.
+    Arc::new(girder_core::CachingProvider::new(
+        retrying,
+        temperature_from_env(),
+    ))
+}
+
 /// The temperature the deployment configured, if it stated one.
 ///
 /// Read from the environment rather than from `LlmRequest` because the request does not carry it: temperature lives in
@@ -742,7 +778,7 @@ fn call_config_table() -> girder_core::ConfigTable {
 fn boot_check(cli: &Cli) -> Result<()> {
     let workspace = std::env::current_dir().ok();
     let deployment = girder_core::Deployment {
-        provider: girder_core::provider_from_env().is_ok(),
+        provider: girder_core::provider_from_environment().is_ok(),
         sessions_root: Some(sessions_root()),
         workspace,
         terminal: true,
@@ -905,30 +941,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
     register_capability_tools(&tools, &workspace, &goals);
 
-    // A live provider when a key is present, the scripted one otherwise. The choice is reported on
-    // stderr so a run never silently looks live when it is not.
-    let provider: Arc<dyn girder_core::LlmProvider> =
-        if let Ok(provider) = girder_core::provider_from_env() {
-            // Wrapped so a transient failure is retried: a 429 or a dropped connection would otherwise end a turn that
-            // the next attempt would have completed. A cancellation is never retried.
-            let retrying: Arc<dyn girder_core::LlmProvider> = Arc::new(
-                girder_core::RetryingProvider::new(provider, call_retry_policy(&cli.model)),
-            );
-            // Cached outside the retry, not inside it: a retry that failed should be retried again, and a hit should
-            // never reach the transport at all. `None` for the temperature means the deployment did not state one, and
-            // an unstated temperature is not cached -- the provider's default is invisible here, and caching a sampled
-            // answer would make the second call return the first call's dice roll.
-            let provider: Arc<dyn girder_core::LlmProvider> = Arc::new(
-                girder_core::CachingProvider::new(retrying, temperature_from_env()),
-            );
-            eprintln!("[provider] live: {}", cli.model);
-            provider
-        } else {
-            eprintln!("[provider] offline (set DEEPSEEK_API_KEY to use a real model)");
-            Arc::new(OfflineProvider {
-                tool: cli.tool.clone(),
-            })
-        };
+    let provider = build_provider(&cli);
 
     let mut context = LoopContext::new(
         provider,
