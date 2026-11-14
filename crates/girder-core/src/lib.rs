@@ -65,6 +65,7 @@ mod api_key;
 pub mod api_session;
 mod approval;
 mod approval_rules;
+mod argument_infer;
 mod argument_limits;
 mod assistant_output;
 mod atomic_write;
@@ -93,6 +94,8 @@ mod compaction_summary;
 mod config;
 mod config_edit;
 mod context_budget;
+mod cost_estimate;
+mod credential_ref;
 mod credentials;
 mod deliverable;
 mod diff_patch;
@@ -209,6 +212,7 @@ mod session_stream;
 mod session_tag;
 mod session_timeline;
 mod session_title;
+mod session_transcript;
 mod session_workspace;
 mod settings_rpc;
 mod share_link;
@@ -220,6 +224,7 @@ mod spill;
 mod spill_policy;
 mod ssh;
 mod stats_csv;
+mod stats_trend;
 mod storage;
 mod storage_quota;
 mod str_replace_editor;
@@ -269,6 +274,7 @@ mod tools;
 mod trace_span;
 mod typert;
 mod typert_json;
+mod usage_quota;
 mod web;
 mod web_tools;
 mod workflow;
@@ -303,6 +309,10 @@ pub use approval::{
 pub use approval_rules::{
     Action as ApprovalAction, Decision as ApprovalDecision, Rule as ApprovalRule,
     Rules as ApprovalRules,
+};
+pub use argument_infer::{
+    Completion as ArgumentCompletion, Provenance as ArgumentProvenance, complete_from_defaults,
+    provenance as argument_provenance,
 };
 pub use argument_limits::{
     Kind as ArgumentLimitKind, Limits as ArgumentLimits, Violation as ArgumentViolation,
@@ -376,6 +386,13 @@ pub use config_edit::{SchemaError, SchemaRegistry, SettingSpec};
 pub use context_budget::{
     Budget as ContextBudget, Decision as BudgetDecision, Usage as ContextUsage,
     check as check_context_budget,
+};
+pub use cost_estimate::{
+    Batch as CostBatch, Estimate as CostEstimate, Price as ModelPrice, Table as PriceTable,
+    Usage as CostUsage, estimate as estimate_cost, estimate_batch as estimate_cost_batch,
+};
+pub use credential_ref::{
+    CredentialRef as SecretRef, KNOWN_PREFIXES, RefError as SecretRefError, redact,
 };
 pub use credentials::{
     CredentialError, CredentialRef, Info as CredentialInfo, Record as CredentialRecord,
@@ -719,6 +736,10 @@ pub use session_stream::{EndReason as StreamEndReason, Frame as SessionFrame, Se
 pub use session_tag::{Source as TagSource, Tag, TagError, TagSet, normalize as normalize_tag};
 pub use session_timeline::{Segment as TimelineSegment, open_turn, outline as session_outline};
 pub use session_title::{Source as TitleSource, derive as derive_title};
+pub use session_transcript::{
+    Format as TranscriptFormat, Message as TranscriptMessage, Transcript as SessionTranscript,
+    export as export_transcript, to_json as transcript_to_json,
+};
 pub use session_workspace::{
     Association as WorkspaceAssociation, Index as WorkspaceIndex,
     WorkspaceError as WorkspacePathError, WorkspaceId as WorkspaceRoot,
@@ -754,6 +775,10 @@ pub use ssh::{
     Transport as SshTransport, Unavailable as UnavailableSsh,
 };
 pub use stats_csv::{Table as CsvTable, escape_field, session_table, tool_table};
+pub use stats_trend::{
+    Comparison as TrendComparison, Point as TrendPoint, Trend, analyze as analyze_trend,
+    compare as compare_windows, outliers as trend_outliers,
+};
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,
@@ -881,6 +906,10 @@ pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
 };
 pub use typert_json::{catalogue_to_json_schema, method_to_json_schema, to_json_schema};
+pub use usage_quota::{
+    Quota as UsageQuota, Totals as UsageTotals, Tracker as UsageTracker, Usage as UsageRecord,
+    Verdict as UsageVerdict,
+};
 pub use web::{
     EndpointProvider, FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider,
     SearchRequest, SearchResult, SearchSource, Web, WebError, build_web_from_env,
