@@ -409,6 +409,10 @@ impl AgentRuntime {
         context.budget = self.config.token_budget;
         context.spill = self.spill.clone();
         context.spill_limit = self.spill_limit;
+        // A deadline around every tool call. Without one, `tool.execute().await` is a future that never returns if the
+        // tool never does, and the cancellation token is only read between steps -- which is exactly what a hung tool
+        // prevents. The budget is per tool so a build can take minutes and a read cannot.
+        context = context.with_tool_timeout(crate::tool_watchdog::Policy::default());
         // The loop's own goal, shared with the tool. Without this assignment the continuation logic below was dead
         // code: it read a field nothing ever set, so a created goal recorded an intent that never affected a turn.
         context.goal = self.goal.clone();
