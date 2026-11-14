@@ -874,12 +874,15 @@ fn read_mtime(execution: &ToolExecution) -> Option<u64> {
 /// Truncation rather than removal: a result the model cannot see is a tool call that appears to have returned nothing,
 /// which is a different claim from one whose output was cut. The marker says which happened.
 fn trim_to(blocks: Vec<ContentBlock>, limit: usize) -> Vec<ContentBlock> {
-    let mut spent = 0;
+    let mut spent: usize = 0;
     let mut out = Vec::with_capacity(blocks.len());
     for block in blocks {
         let ContentBlock::Text { text } = block else {
-            // A non-text block carries a reference rather than a payload, so it does not consume the budget and is not
-            // trimmed: cutting an image reference would make the attachment unreachable rather than smaller.
+            // A non-text block is not free, and treating it as free is how a turn fills up with attachments and then
+            // overflows: an image is tokens at the provider even when this layer sees only a reference. It costs a fixed
+            // estimate -- the real size lives in the attachment service and never reaches here -- and it is kept whole,
+            // because half a reference is an unreachable attachment rather than a smaller one.
+            spent = spent.saturating_add(crate::tool_output_view::block_cost(&block));
             out.push(block);
             continue;
         };
