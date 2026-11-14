@@ -279,6 +279,10 @@ impl Buffer {
     ///
     /// Only bytes are examined to find newlines, which is safe for multi-byte characters: a UTF-8
     /// continuation byte never equals `b'\n'`, so a newline found this way is always a real one.
+    ///
+    /// A line that fits contributes no constraint: its start is already at or after `start`, so keeping it
+    /// whole says nothing about where the window begins. Only an over-long line pushes the start forward, to
+    /// the earliest position that still holds its last `capacity` bytes.
     fn cap_lines(&self, start: u64) -> u64 {
         let capacity = width_of(self.capacity_bytes);
         let mut cut = start;
@@ -288,15 +292,22 @@ impl Buffer {
                 if *byte != b'\n' {
                     continue;
                 }
-                let line_end = base
-                    .saturating_add(width_of(index))
-                    .saturating_add(1);
-                cut = cut.max(line_fit(line_start, line_end, capacity));
-                line_start = line_end;
+                let end = base.saturating_add(width_of(index)).saturating_add(1);
+                if let Some(raised) = overlong_cut(line_start, end, capacity) {
+                    cut = cut.max(raised);
+                }
+                line_start = end;
             }
         }
-        // The final line, which no newline ends.
-        cut.max(line_fit(line_start, self.total, capacity))
+        // The final line, which no newline ends. Skipped when the text ends with a newline: that newline
+        // terminates the last line rather than opening an empty one, and counting it as a line would make
+        // the floor protect an empty line and so push the cut to the end of the stream.
+        if line_start < self.total
+            && let Some(raised) = overlong_cut(line_start, self.total, capacity)
+        {
+            cut = cut.max(raised);
+        }
+        cut
     }
 
     /// Drops every retained byte before `offset`, which must be a character boundary.
@@ -319,10 +330,7 @@ impl Buffer {
                 }
             }
         }
-        self.first = self
-            .entries
-            .front()
-            .map_or(self.total, |front| front.start);
+        self.first = self.entries.front().map_or(self.total, |front| front.start);
     }
 
     /// The first offset at or after `offset` that begins a character.
@@ -371,15 +379,16 @@ impl Buffer {
     }
 }
 
-/// Where a protected line has to start for its bytes to fit inside `capacity`.
+/// Where a protected line that is too long has to start, or `None` when it fits.
 ///
-/// A line that already fits is left alone, so `line_start` is returned and nothing is raised. A longer line
-/// can only keep its tail, because keeping all of it would let one line defeat the ceiling.
-const fn line_fit(line_start: u64, line_end: u64, capacity: u64) -> u64 {
-    if line_end.saturating_sub(line_start) <= capacity {
-        line_start
+/// A line that fits is left alone: `line_start` is the answer, and returning it would let a normal line
+/// raise the cut even though nothing about it is in danger. A longer line can only keep its tail, because
+/// keeping all of it would let one line defeat the ceiling.
+const fn overlong_cut(line_start: u64, line_end: u64, capacity: u64) -> Option<u64> {
+    if line_end.saturating_sub(line_start) > capacity {
+        Some(line_end.saturating_sub(capacity))
     } else {
-        line_end.saturating_sub(capacity)
+        None
     }
 }
 

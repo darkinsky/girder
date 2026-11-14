@@ -83,6 +83,7 @@ mod code_language;
 mod commands;
 mod compaction;
 mod compaction_hook;
+mod compaction_summary;
 mod config;
 mod config_edit;
 mod context_budget;
@@ -119,6 +120,7 @@ mod llm_stats;
 mod lsp;
 mod lsp_tool;
 mod mcp;
+mod mcp_client;
 mod mcp_tools;
 mod message;
 mod model_catalog_extra;
@@ -155,6 +157,7 @@ mod schedule_rpc;
 mod schedule_runner;
 mod scope;
 mod search_index;
+mod search_persist;
 mod search_tools;
 mod service;
 mod session;
@@ -298,6 +301,10 @@ pub use compaction::{
     summary_request, transcript_for_summary,
 };
 pub use compaction_hook::{CompactionPolicy, Plan as CompactionPlan, history_cost, message_cost};
+pub use compaction_summary::{
+    Segment as CompactionSegment, render as render_compaction,
+    summarize as summarize_for_compaction,
+};
 pub use config::{
     ConfigError, ConfigSchema, ConfigValue, Entry, EntryList, Environment, FieldError, FieldRule,
     FieldSchema, Owner, Patch, PatchWarning, Template, When, parse_entries, parse_patches,
@@ -404,6 +411,12 @@ pub use mcp::{
     Status as McpStatus, Tool as McpTool, Transport as McpTransport,
 };
 pub use mcp::{Resource as McpResource, ResourceContent as McpResourceContent};
+pub use mcp_client::{
+    IdAllocator, McpError as McpProtocolError, McpResponse, McpTool as McpProtocolTool,
+    NAMESPACE_SEPARATOR, PROTOCOL_VERSION, RpcError, ServerConfig, call_tool_request,
+    initialize_request, list_tools_request, parse_response, parse_tools, qualified_name,
+    split_qualified_name, validate_server_name,
+};
 pub use mcp_tools::{MAX_BRIDGED_TOOLS, register_mcp_tools};
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
@@ -510,6 +523,11 @@ pub use schedule_runner::{
 };
 pub use scope::{BoxDisposer, BoxFut, Scope};
 pub use search_index::{Entry as SearchIndexEntry, Index as SearchIndex};
+pub use search_persist::{
+    PersistError, Record as SearchRecord, Snapshot as SearchSnapshot,
+    VERSION as SEARCH_INDEX_VERSION, load as load_search_index, path_in as search_index_path,
+    save as save_search_index,
+};
 pub use search_tools::{DEFAULT_LIMIT as SEARCH_DEFAULT_LIMIT, glob_tool, grep_tool};
 pub use service::ServiceKey;
 pub use session::{

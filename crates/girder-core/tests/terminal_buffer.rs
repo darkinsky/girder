@@ -146,7 +146,10 @@ fn total_bytes_keeps_growing_after_content_is_dropped() {
         assert_eq!(buffer.total_bytes(), appended);
     }
 
-    assert!(buffer.first_readable() > 0, "the head must have been dropped");
+    assert!(
+        buffer.first_readable() > 0,
+        "the head must have been dropped"
+    );
     assert_eq!(buffer.total_bytes(), appended);
     assert!(buffer.held_bytes() < usize::try_from(appended).expect("small"));
 }
@@ -205,12 +208,18 @@ fn truncation_never_cuts_a_multi_byte_character() {
     buffer.append("a\u{e9}\u{65e5}");
 
     assert_eq!(buffer.total_bytes(), 6);
-    assert!(buffer.first_readable() >= 3, "the cut landed inside a character");
+    assert!(
+        buffer.first_readable() >= 3,
+        "the cut landed inside a character"
+    );
 
     let chunk = buffer.read(0);
     assert!(chunk.truncated);
     assert_eq!(chunk.text, "\u{65e5}");
-    assert!(!chunk.text.contains('\u{fffd}'), "a lossy decode was returned");
+    assert!(
+        !chunk.text.contains('\u{fffd}'),
+        "a lossy decode was returned"
+    );
 }
 
 #[test]
@@ -218,7 +227,13 @@ fn truncation_keeps_whole_characters_across_many_appends() {
     // Each append is its own entry, so a cut can land inside the first entry and later ones must still line
     // up: the retained text is every character still inside the window, in order.
     let mut buffer = Buffer::new(7, 0);
-    for character in ["\u{4f60}", "\u{597d}", "\u{4e16}\u{754c}", "\n", "\u{1f600}"] {
+    for character in [
+        "\u{4f60}",
+        "\u{597d}",
+        "\u{4e16}\u{754c}",
+        "\n",
+        "\u{1f600}",
+    ] {
         buffer.append(character);
     }
 
@@ -233,4 +248,44 @@ fn truncation_keeps_whole_characters_across_many_appends() {
     let lost = buffer.read(0);
     assert!(lost.truncated);
     assert_eq!(lost.text, retained);
+}
+
+#[test]
+fn the_line_floor_counts_a_trailing_newline_as_a_terminator() {
+    // `a\nb\n` is two lines, not three: the final newline ends `b` rather than opening an empty line. If it
+    // were counted, protecting two lines would protect the whole buffer and the ceiling would never apply to
+    // output that ends in a newline — which is nearly all output.
+    let mut buffer = Buffer::new(3, 2);
+    buffer.append("a\nb\nc\nd\n");
+
+    assert_eq!(buffer.total_bytes(), 8);
+    assert_eq!(buffer.first_readable(), 4);
+    let chunk = buffer.read(0);
+    assert!(chunk.truncated);
+    assert_eq!(chunk.text, "c\nd\n");
+}
+
+#[test]
+fn a_floor_of_zero_leaves_only_the_ceiling() {
+    // The default for a caller that has no line requirement: a pure byte window, which may begin mid-line.
+    let mut buffer = Buffer::new(6, 0);
+    buffer.append("alpha beta gamma");
+
+    assert!(buffer.held_bytes() <= 6, "held {}", buffer.held_bytes());
+    assert_eq!(buffer.first_readable(), 10);
+    assert_eq!(read_to_end(&buffer, 0), " gamma");
+}
+
+#[test]
+fn appending_nothing_changes_nothing() {
+    // A shell that printed nothing must not advance the offset: a client comparing `total_bytes` would
+    // otherwise see new output that is not there.
+    let mut buffer = Buffer::new(8, 2);
+    buffer.append("kept");
+
+    buffer.append("");
+
+    assert_eq!(buffer.total_bytes(), 4);
+    assert_eq!(buffer.first_readable(), 0);
+    assert_eq!(read_to_end(&buffer, 0), "kept");
 }
