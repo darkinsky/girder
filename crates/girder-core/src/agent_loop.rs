@@ -197,6 +197,13 @@ pub struct LoopContext {
     /// The counts `tool_limits` needs, shared because the dispatch path does not own the context.
     pub tool_tracker: Option<std::sync::Mutex<crate::tool_limits::Tracker>>,
 
+    /// Remembers a read between calls, when the deployment enables it.
+    ///
+    /// `None` by default: a cache changes which syscall happens, and a deployment that did not ask for that should not
+    /// get it. The whitelist inside `tool_cache` is what keeps a write out of it, but the decision to have one at all
+    /// belongs here.
+    pub tool_cache: Option<std::sync::Mutex<crate::tool_cache::Cache>>,
+
     /// How the history is compacted when it outgrows the context.
     ///
     /// `None` keeps everything: a deployment that has not decided what to drop should not have a default decide for
@@ -280,10 +287,20 @@ impl LoopContext {
             round_output_spent: std::sync::atomic::AtomicUsize::new(0),
             tool_limits: None,
             tool_tracker: None,
+            tool_cache: None,
             compaction: None,
             context_window: None,
             max_output_tokens: None,
         }
+    }
+
+    /// Enables remembering a read between calls.
+    #[must_use]
+    pub fn with_tool_cache(mut self, capacity: usize) -> Self {
+        self.tool_cache = Some(std::sync::Mutex::new(crate::tool_cache::Cache::new(
+            capacity,
+        )));
+        self
     }
 
     /// Bounds how many times one tool may be called in a turn.
@@ -766,6 +783,23 @@ async fn run_steps(
 /// Yields steps and appends to `messages` so the caller can decide whether to continue. Split out
 /// of [`run`] because the streaming and tool dispatch are two concerns and joining them made one
 /// function unreadable.
+/// The modification time of the file a `read` call names, when it names one.
+///
+/// Read from the arguments rather than from the tool's own report: the result carries no version, so the cache would
+/// otherwise have no way to notice an edit between two reads. An absent or unparseable path yields `None`, which the
+/// cache treats as "cannot verify" and therefore as a miss.
+fn read_mtime(execution: &ToolExecution) -> Option<u64> {
+    let arguments: serde_json::Value = serde_json::from_str(&execution.arguments).ok()?;
+    let path = arguments.get("path")?.as_str()?;
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+}
+
 /// Keeps at most `limit` bytes of a result, on a character boundary.
 ///
 /// Truncation rather than removal: a result the model cannot see is a tool call that appears to have returned nothing,
@@ -1084,6 +1118,27 @@ pub async fn dispatch(
         )));
     };
 
+    // Checked before the waterfall, because a cached answer means the tool does not run at all -- and a permission hook
+    // that never sees the call cannot deny it. The whitelist inside `tool_cache` admits only tools whose output depends
+    // on a file's contents alone, which is what makes answering from memory the same answer.
+    let cache_key = crate::tool_cache::is_cacheable(&execution.name)
+        .then(|| crate::tool_cache::Key::of(&execution.name, &execution.arguments));
+    if let (Some(cache), Some(key)) = (&context.tool_cache, &cache_key) {
+        let mtime = read_mtime(&execution);
+        let hit = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key, mtime)
+            .map(|entry| (entry.text.clone(), entry.is_error));
+        if let Some((text, is_error)) = hit {
+            return Ok(if is_error {
+                ToolResult::error(text)
+            } else {
+                ToolResult::text(text)
+            });
+        }
+    }
+
     let decision = context
         .bus
         .waterfall::<ToolPreExecute, _>(execution.clone(), |_args| {
@@ -1125,6 +1180,28 @@ pub async fn dispatch(
         .bus
         .waterfall::<ToolPostExecute, _>(args, accept_terminal)
         .await;
+
+    // Stored after the post-execute waterfall rather than before it, so what the model will actually see is what gets
+    // remembered: a hook that rewrote the result would otherwise be undone by a later hit.
+    if let (Some(cache), Some(key)) = (&context.tool_cache, cache_key.clone()) {
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let entry = crate::tool_cache::Entry {
+            text,
+            is_error: result.is_error,
+            source_mtime_ms: read_mtime(&execution),
+        };
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .put(key, entry);
+    }
 
     Ok(match decision {
         PostToolDecision::Accept => result,
