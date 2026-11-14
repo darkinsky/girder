@@ -148,6 +148,11 @@ pub struct SessionStateValue {
     pub attribution: girder_core::ContentAttribution,
     /// What each turn did, one line each.
     pub timeline: Vec<girder_core::TimelineSegment>,
+    /// Per-tool counts, heaviest first.
+    ///
+    /// Heaviest by calls rather than by bytes: a tool called once that returned a megabyte is an interesting outlier, but
+    /// a list sorted by a rare tool's result size would put it above the tool the model reaches for every turn.
+    pub tool_usage: Vec<girder_core::ToolStats>,
     /// The turn still running, when the log ends inside one.
     ///
     /// Separate from the segments rather than inferred from the last one: a turn can be unfinished and still have a
@@ -297,6 +302,9 @@ async fn state(
         // report is not derivable from it. Reporting one as zero would say the model was instant rather than that
         // nothing measured it.
         counts: girder_core::SessionStats::of(&record.events),
+        // Per tool, because the totals say how much work happened and this says which tools did it. A deployment asking
+        // "is the shell slow or the build" needs the second, and `SessionStats` keeps only the first.
+        tool_usage: girder_core::tool_usage(&record.events),
         // How much of the conversation each producer wrote, in characters. The message count says how many turns
         // happened; this says who filled the context, and they are different questions -- one long model answer and one
         // short question is a conversation where the model wrote almost all of it.
