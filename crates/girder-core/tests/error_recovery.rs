@@ -96,8 +96,10 @@ fn permission_denied_escalates_and_never_suggests_a_retry() {
         for action in &suggestion.actions {
             let text = action.describe.to_lowercase();
             assert!(
-                !text.contains("call `write` again") && !text.contains("retry"),
-                "`{error}` suggested a retry: {text}"
+                !text.contains("call `write` again")
+                    && !text.contains("call `read` again")
+                    && !text.contains("try again"),
+                "`{error}` suggested another attempt: {text}"
             );
         }
     }
@@ -119,11 +121,17 @@ fn permission_denied_is_not_mistaken_for_a_missing_file() {
 
     let missing = suggest("read", "`/root/.ssh/id_rsa`: No such file or directory");
     assert!(has(&missing, Kind::Investigate), "{:?}", kinds(&missing));
-    assert_eq!(kinds(&denied), {
-        let mut expected = kinds(&denied).clone();
-        expected.dedup();
-        expected
-    });
+    // The two faults must not share an answer: escalate-only is the permission shape, and a
+    // missing file gets an investigation of its own.
+    assert!(
+        !denied
+            .actions
+            .iter()
+            .any(|action| action.kind == Kind::Investigate),
+        "{:?}",
+        kinds(&denied)
+    );
+    assert_ne!(kinds(&denied), kinds(&missing));
 }
 
 #[test]

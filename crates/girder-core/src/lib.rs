@@ -94,6 +94,7 @@ mod config_edit;
 mod context_budget;
 mod credentials;
 mod deliverable;
+mod error_recovery;
 mod event_index;
 mod events;
 mod exec;
@@ -231,6 +232,7 @@ mod terminal_attach;
 mod terminal_attach_rpc;
 mod terminal_buffer;
 mod terminal_local;
+mod terminal_meta;
 mod terminal_rpc;
 mod terminal_rpc_extra;
 mod terminal_tool;
@@ -367,6 +369,10 @@ pub use credentials::{
     Store as CredentialStore, valid_environment,
 };
 pub use deliverable::{Deliverable, Kind as DeliverableKind, Set as DeliverableSet};
+pub use error_recovery::{
+    Action as RecoveryAction, Kind as RecoveryKind, Suggestion as RecoverySuggestion,
+    suggest as suggest_recovery,
+};
 pub use event_index::{Index as EventIndex, TurnSpan};
 pub use events::{
     Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, ListenerScope, Next,
@@ -768,6 +774,10 @@ pub use terminal_attach::{Attachment as TerminalAttachment, Fanout as TerminalFa
 pub use terminal_attach_rpc::{AttachResponse, TerminalFrame};
 pub use terminal_buffer::{Buffer as TerminalBuffer, Chunk as TerminalChunk};
 pub use terminal_local::{LocalLauncher, ProcessShell};
+pub use terminal_meta::{
+    Meta as TerminalMeta, MetaError as TerminalMetaError, Retention as TerminalRetention,
+    Store as TerminalMetaStore,
+};
 pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
     register_terminal_methods as register_terminal_rpc_methods,

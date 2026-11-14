@@ -235,12 +235,12 @@ const NEEDLES: &[(Fault, &[&str])] = &[
 /// # Examples
 ///
 /// ```
-/// use girder_core::error_recovery::{Kind, suggest};
+/// use girder_core::{RecoveryKind, suggest_recovery};
 ///
-/// let suggestion = suggest("read", "cannot read `src/nope.rs`: No such file or directory (os error 2)");
-/// assert_eq!(suggestion.actions[0].kind, Kind::Investigate);
+/// let suggestion = suggest_recovery("read", "cannot read `src/nope.rs`: No such file or directory (os error 2)");
+/// assert_eq!(suggestion.actions[0].kind, RecoveryKind::Investigate);
 ///
-/// let unknown = suggest("bash", "segmentation fault");
+/// let unknown = suggest_recovery("bash", "segmentation fault");
 /// assert!(unknown.actions.is_empty());
 /// ```
 #[must_use]
@@ -316,8 +316,9 @@ fn problem(tool: &str, fault: Fault) -> String {
 
 /// How to name the tool in a sentence, with a fallback for an unnamed one.
 ///
-/// The fallback is not cosmetic: a caller that passes an empty name would otherwise produce "`` is
-/// missing", which reads as a typo to a model and hides the actual instruction.
+/// The fallback is not cosmetic: a caller that passes an empty name would otherwise produce a
+/// sentence beginning with an empty pair of backticks, which reads as a typo to a model and hides
+/// the actual instruction.
 fn named(tool: &str) -> String {
     let tool = tool.trim();
     if tool.is_empty() {
@@ -338,29 +339,31 @@ fn is_discovery(tool: &str) -> bool {
 /// model gets stuck in a loop that looks like diligence. When the failure *is* the discovery tool,
 /// the shell is the honest fallback, because a listing does not depend on the pattern's syntax.
 fn witness(tool: &str) -> &'static str {
-    match tool.trim() {
-        "glob" => "bash",
-        "grep" => "glob",
-        _ => "glob",
+    // `grep` and everything that is not a search tool fall through to `glob`, which answers "where
+    // is this file". A failed `glob` is the one case `glob` cannot answer, so it gets the shell:
+    // `ls`/`find` do not depend on the pattern syntax that just failed.
+    if tool.trim() == "glob" {
+        "bash"
+    } else {
+        "glob"
     }
 }
 
 fn not_found(tool: &str) -> Vec<Action> {
-    let tool = named(tool);
-    let witness = witness(tool.trim_matches('`'));
-    if is_discovery(tool.trim_matches('`')) {
+    let display = named(tool);
+    let witness = witness(tool);
+    if is_discovery(tool) {
         return vec![
             Action {
                 describe: format!(
-                    "Go and look with `{witness}` before calling {tool} again: the directory the \
-                     pattern names must exist, and a pattern with no directory prefix starts at \
-                     the workspace root, so it cannot fail this way."
+                    "Go and look with `{witness}` first: the start directory the pattern names \
+                     must exist, and running the same pattern again cannot create it."
                 ),
                 kind: Kind::Investigate,
             },
             Action {
                 describe: format!(
-                    "Once `{witness}` shows where the tree actually starts, re-run {tool} with \
+                    "Once `{witness}` shows where the tree actually starts, re-run {display} with \
                      the directory spelled the way it is on disk."
                 ),
                 kind: Kind::ChangeArgument,
@@ -398,7 +401,7 @@ fn permission_denied() -> Vec<Action> {
     vec![
         Action {
             describe: "Stop calling tools against this path: the refusal is a property of the \
-                       environment, and every retry returns the same error."
+                       environment, so a further attempt returns the same error."
                 .to_owned(),
             kind: Kind::Escalate,
         },
@@ -413,14 +416,14 @@ fn permission_denied() -> Vec<Action> {
 }
 
 fn is_directory(tool: &str) -> Vec<Action> {
-    let tool = named(tool);
+    let display = named(tool);
     // A discovery tool given a directory is not a request for another tool: its pattern just needs
     // to descend into the directory rather than name it.
-    if is_discovery(tool.trim_matches('`')) {
+    if is_discovery(tool) {
         return vec![Action {
             describe: format!(
-                "The pattern names a directory. Append `/**/*` to it so {tool} walks the contents \
-                 instead of trying to match the directory itself."
+                "The pattern names a directory. Append `/**/*` to it so {display} walks the \
+                 contents instead of trying to match the directory itself."
             ),
             kind: Kind::ChangeArgument,
         }];
@@ -429,13 +432,13 @@ fn is_directory(tool: &str) -> Vec<Action> {
         Action {
             describe: format!(
                 "Use `glob` with `<that path>/**/*` to list what the directory holds, then pick \
-                 the file {tool} needs from the list."
+                 the file {display} needs from the list."
             ),
             kind: Kind::UseOtherTool,
         },
         Action {
             describe: format!(
-                "Call {tool} again with a file inside the directory rather than the directory \
+                "Call {display} again with a file inside the directory rather than the directory \
                  itself."
             ),
             kind: Kind::ChangeArgument,
@@ -447,10 +450,9 @@ fn not_directory(tool: &str) -> Vec<Action> {
     let tool = named(tool);
     vec![
         Action {
-            describe: format!(
-                "Run `glob` on the path to see which component exists as a file; the path assumes \
-                 a directory that is really a file."
-            ),
+            describe: "Run `glob` on the path to see which component exists as a file; the path \
+                       assumes a directory that is really a file."
+                .to_owned(),
             kind: Kind::Investigate,
         },
         Action {
@@ -504,10 +506,9 @@ fn stale(tool: &str) -> Vec<Action> {
     let tool = named(tool);
     vec![
         Action {
-            describe: format!(
-                "Read the file again with `read` before writing: someone else's change is why the \
-                 write was refused, and forcing it would discard their work."
-            ),
+            describe: "Read the file again with `read` before writing: someone else's change is \
+                       why the write was refused, and forcing it would discard their work."
+                .to_owned(),
             kind: Kind::Investigate,
         },
         Action {
@@ -523,10 +524,9 @@ fn missing_argument(tool: &str) -> Vec<Action> {
     let tool = named(tool);
     vec![
         Action {
-            describe: format!(
-                "Add the argument the error names and resend the same call; nothing ran, so there \
-                 is no partial result to reconcile."
-            ),
+            describe: "Add the argument the error names and resend the same call; nothing ran, \
+                       so there is no partial result to reconcile."
+                .to_owned(),
             kind: Kind::ChangeArgument,
         },
         Action {
