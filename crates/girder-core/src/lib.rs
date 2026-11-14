@@ -98,6 +98,7 @@ mod error_recovery;
 mod event_index;
 mod events;
 mod exec;
+mod export_bundle;
 mod extension_run_rpc;
 mod extension_runtime;
 mod extensions;
@@ -131,11 +132,13 @@ mod lsp;
 mod lsp_tool;
 mod mcp;
 mod mcp_client;
+mod mcp_stdio;
 mod mcp_tools;
 mod message;
 mod model_catalog_extra;
 mod model_fallback;
 mod model_memory;
+mod name_suggest;
 mod observation;
 mod office_document;
 mod openapi;
@@ -386,6 +389,10 @@ pub use exec::{
     AdvisorySandbox, Enforcement, ExecError, ExecOptions, ExecOutput, PathPolicy, Sandbox,
     bash_tool, has_program, landlock_abi, read_file, run_bash, run_shell,
 };
+pub use export_bundle::{
+    Bundle as ExportBundle, BundleError as ExportBundleError, Entry as ExportBundleEntry,
+    manifest as export_manifest, validate as validate_export_bundle,
+};
 pub use extension_run_rpc::{
     register_extension_run_methods, register_extension_run_methods_with_services,
 };
@@ -485,6 +492,7 @@ pub use mcp_client::{
     initialize_request, list_tools_request, parse_response, parse_tools, qualified_name,
     split_qualified_name, validate_server_name,
 };
+pub use mcp_stdio::{FrameBuffer, StdioConfig, decode_frames, encode_frame};
 pub use mcp_tools::{MAX_BRIDGED_TOOLS, register_mcp_tools};
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
@@ -499,6 +507,10 @@ pub use model_fallback::{
     candidates_from_routes, choose as choose_model,
 };
 pub use model_memory::{Memory as ModelMemory, Selection as ModelSelectionRecord};
+pub use name_suggest::{
+    Candidate as NameCandidate, closest as closest_names, distance as name_distance,
+    suggest_tool as suggest_tool_name,
+};
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
     Version as FileVersion, replace_exactly_once, replace_lines, version_of,

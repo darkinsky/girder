@@ -100,6 +100,13 @@ pub enum LoopError {
     #[error(transparent)]
     Llm(#[from] crate::llm::LlmError),
 
+    /// The response stopped arriving.
+    ///
+    /// Distinct from a provider error: the request was accepted and output began, so retrying the same call is a
+    /// reasonable next step, and a client should see a stall rather than a timeout it cannot interpret.
+    #[error("the response stopped arriving")]
+    Stalled,
+
     /// The conversation has grown past what this model accepts.
     ///
     /// Reported before the request is sent, and with the number of tokens that have to go: a provider's own
@@ -136,6 +143,37 @@ pub enum LoopError {
     #[error(transparent)]
     Tool(#[from] crate::tools::ToolError),
 }
+
+/// How long to wait for the next chunk before calling the stream stalled.
+///
+/// A free function because `turn_stream` was at the length the linter enforces, and because the arithmetic is the
+/// interesting part: before the first chunk the budget is the queue budget minus what has already elapsed, and after it
+/// the budget is the idle budget reset by every chunk.
+fn next_wait(
+    policy: &crate::stream_stall::Policy,
+    stall: &crate::stream_stall::Detector,
+) -> std::time::Duration {
+    let ms = match policy.check(stall, girder_core::now_millis()) {
+        crate::stream_stall::Health::Flowing => policy.idle_ms,
+        crate::stream_stall::Health::WaitingForFirst { elapsed_ms } => {
+            policy.first_chunk_ms.saturating_sub(elapsed_ms)
+        }
+        crate::stream_stall::Health::Stalled { .. } => 0,
+    };
+    std::time::Duration::from_millis(ms.max(1))
+}
+
+/// How long a response may take to produce its first chunk.
+///
+/// Generous, because a queue is not a fault: a large request can sit behind other work for a while and the model has not
+/// started failing, it has not started.
+const FIRST_CHUNK_MS: u64 = 120_000;
+
+/// How long a response may go silent once it has started.
+///
+/// Tighter, because after the first chunk the connection is established and the model is producing: silence here means
+/// something broke, and waiting two minutes to say so wastes the turn.
+const IDLE_MS: u64 = 30_000;
 
 /// What the loop needs to run.
 ///
@@ -999,6 +1037,10 @@ fn over_budget(
     }
 }
 
+// Seven lines over the limit, and the part that pushed it over cannot be moved: the stall check yields into the
+// `async_stream` body, and a `yield` cannot cross a function boundary. Splitting the surrounding code further would move
+// the model call away from the chunk loop it belongs to.
+#[allow(clippy::too_many_lines)]
 fn turn_stream<'a>(
     context: &'a Arc<LoopContext>,
     messages: &'a mut Vec<Message>,
@@ -1037,7 +1079,31 @@ fn turn_stream<'a>(
         {
             use futures::StreamExt as _;
             let mut stream = stream;
-            while let Some(chunk) = stream.next().await {
+            // The await had no bound: a response that stops arriving mid-stream hung the turn until the transport's own
+            // 120-second timeout, and that timeout cannot tell "still queueing" from "the connection died after two
+            // chunks". The stall policy knows both budgets, so it is asked rather than the socket.
+            // The await below had no bound: a response that stops arriving mid-stream hung the turn until the transport's
+            // own 120-second timeout, and that timeout cannot tell "still queueing" from "the connection died after two
+            // chunks". The stall policy knows both budgets, so it is asked rather than the socket.
+            let policy = crate::stream_stall::Policy {
+                first_chunk_ms: FIRST_CHUNK_MS,
+                idle_ms: IDLE_MS,
+            };
+            let mut stall = crate::stream_stall::Detector::new(policy.idle_ms);
+            // The origin has to be recorded: without it the detector measures from zero and reports every stream as
+            // having waited since the epoch, which is a stall on the first check.
+            stall.start(girder_core::now_millis());
+            loop {
+                let waited = next_wait(&policy, &stall);
+                let next = tokio::time::timeout(waited, stream.next()).await;
+                let Ok(next) = next else {
+                    yield Err(LoopError::Stalled);
+                    return;
+                };
+                let Some(chunk) = next else {
+                    break;
+                };
+                stall.note_chunk(girder_core::now_millis());
                 if cancel.is_cancelled() {
                     yield Err(LoopError::Cancelled);
                     return;
@@ -1325,15 +1391,34 @@ async fn run_with_deadline(
     tokio::time::timeout(budget, body).await.ok()
 }
 
+/// What to tell a model that named a tool this build does not have.
+///
+/// The name is echoed and a near miss is suggested. Nothing is suggested when no candidate is close: a plausible guess
+/// teaches a model to follow it when it is wrong, and `name_suggest` bounds the distance so a name that is really a
+/// parameter value does not make the search expensive.
+fn unknown_tool_message(context: &LoopContext, name: &str) -> String {
+    let available: Vec<String> = context
+        .tools
+        .schemas()
+        .into_iter()
+        .map(|schema| schema.name)
+        .collect();
+    girder_core::suggest_tool_name(name, &available)
+        .unwrap_or_else(|| format!("no tool named `{name}`"))
+}
+
 pub async fn dispatch(
     context: &LoopContext,
     execution: ToolExecution,
     cancel: CancellationToken,
 ) -> Result<ToolResult, LoopError> {
     let Some(tool) = context.tools.get(&execution.name) else {
-        return Ok(ToolResult::error(format!(
-            "no tool named `{}`",
-            execution.name
+        // The name is echoed today and nothing else: no candidate, no direction. A model that typed a plausible variant
+        // of a real tool gets told only that it was wrong, which is how the same mistake repeats with a different
+        // spelling.
+        return Ok(ToolResult::error(unknown_tool_message(
+            context,
+            &execution.name,
         )));
     };
 
