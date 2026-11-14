@@ -162,6 +162,11 @@ pub struct SessionStateValue {
     ///
     /// Children by id, which is what a client drawing a tree needs and what no field in this session's own log holds.
     pub forks: Vec<String>,
+    /// Sessions this one references, was continued from, or discusses the same work as.
+    ///
+    /// Separate from `forks` because a fork is lineage and these are not: `session_branch` enforces one parent and no
+    /// cycles, which is right for ancestry and wrong for a graph of "this one came up before".
+    pub related: Vec<RelatedSession>,
     /// The turn still running, when the log ends inside one.
     ///
     /// Separate from the segments rather than inferred from the last one: a turn can be unfinished and still have a
@@ -246,7 +251,7 @@ pub fn register_session_state_method_with(
         let catalog = Arc::clone(&catalog);
         let projections = Arc::clone(&projections);
         let turns = Arc::clone(&turns);
-        Box::pin(async move { state(&call.args, &catalog, &projections, &turns).await })
+        Box::pin(async move { state(&call.args, &catalog, &projections, &turns, None).await })
     });
 }
 
@@ -256,6 +261,7 @@ async fn state(
     catalog: &Arc<dyn SessionCatalog>,
     projections: &Arc<ProjectionRegistry>,
     turns: &Arc<dyn LiveTurns>,
+    links: Option<&girder_core::SessionLinkGraph>,
 ) -> Result<Value, RemoteError> {
     let request: StateRequest =
         serde_json::from_value(args.clone()).map_err(|error| invalid(error.to_string()))?;
@@ -280,6 +286,15 @@ async fn state(
     // inconsistency than the one this method exists to remove (several round trips, several moments),
     // and a title sidecar is not part of the log so there is no single read that covers both.
     let title = catalog.title(session_id).await;
+    // The links touching this session, read from the graph the registry holds. A registry with no graph answers empty
+    // rather than failing: a deployment that never recorded a link has none, which is not an error.
+    let links = links.map(|graph| {
+        graph
+            .related(session_id)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    });
     // The ids alone, not the records: `list` returns events and a session's own children need nothing but their names.
     let directory_ids: Vec<String> = catalog
         .list()
@@ -328,6 +343,7 @@ async fn state(
         // the alternative is a second source of truth that could disagree with the fork's own naming. A deployment with
         // thousands of sessions should record the edge instead -- `session_branch::Forest` is what that would store.
         forks: children_of(&record.id, &directory_ids),
+        related: related_of(&record.id, links.as_deref()),
         // How much of the conversation each producer wrote, in characters. The message count says how many turns
         // happened; this says who filled the context, and they are different questions -- one long model answer and one
         // short question is a conversation where the model wrote almost all of it.
@@ -424,4 +440,93 @@ fn children_of(id: &str, ids: &[String]) -> Vec<String> {
         .into_iter()
         .map(|link| link.child.clone())
         .collect()
+}
+
+/// One session this one is linked to, from the viewer's side.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedSession {
+    /// The other session.
+    pub session: String,
+    /// Whether this session is the source or the target of the link.
+    pub direction: String,
+    /// What the link says.
+    pub kind: String,
+    /// An optional note.
+    pub note: Option<String>,
+}
+
+/// The links touching `session`, rendered from that session's point of view.
+///
+/// The direction is resolved here rather than in the client: a link stores one `from` and one `to`, and a client that had
+/// to work out which end it was holding would get it wrong for exactly one of the two.
+fn related_of(
+    session: &str,
+    links: Option<&[girder_core::CrossSessionLink]>,
+) -> Vec<RelatedSession> {
+    let Some(links) = links else {
+        return Vec::new();
+    };
+    links
+        .iter()
+        .filter_map(|link| {
+            let (other, direction) = if link.from == session {
+                (&link.to, "outgoing")
+            } else if link.to == session {
+                (&link.from, "incoming")
+            } else {
+                return None;
+            };
+            Some(RelatedSession {
+                session: other.clone(),
+                direction: direction.to_owned(),
+                kind: format!("{:?}", link.kind).to_lowercase(),
+                note: link.note.clone(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod related_tests {
+    use super::*;
+
+    fn link(from: &str, to: &str) -> girder_core::CrossSessionLink {
+        girder_core::CrossSessionLink {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            kind: girder_core::SessionLinkKind::References,
+            at_ms: 1,
+            note: Some("note".to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_link_is_outgoing_from_its_source_and_incoming_at_its_target() {
+        // The client should not have to work out which end it is holding: it gets one wrong of the two.
+        let links = vec![link("a", "b")];
+
+        let from_a = related_of("a", Some(&links));
+        let from_b = related_of("b", Some(&links));
+
+        assert_eq!(from_a[0].session, "b");
+        assert_eq!(from_a[0].direction, "outgoing");
+        assert_eq!(from_b[0].session, "a");
+        assert_eq!(from_b[0].direction, "incoming");
+    }
+
+    #[test]
+    fn a_session_not_in_the_link_gets_nothing() {
+        let links = vec![link("a", "b")];
+
+        assert!(related_of("c", Some(&links)).is_empty());
+        assert!(related_of("a", None).is_empty());
+    }
+
+    #[test]
+    fn the_kind_is_rendered_lowercase_for_a_client() {
+        let links = vec![link("a", "b")];
+
+        assert_eq!(related_of("a", Some(&links))[0].kind, "references");
+    }
 }
