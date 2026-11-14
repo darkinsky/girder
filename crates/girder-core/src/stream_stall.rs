@@ -62,13 +62,20 @@ pub enum Health {
         /// Milliseconds since the request started, not since the last event.
         elapsed_ms: u64,
     },
-    /// The stream produced at least one chunk and then went silent for `idle_ms`.
+    /// The stream has gone longer than its budget without producing anything.
+    ///
+    /// Reached two ways, which the accompanying [`Detector`] separates by its chunk count: an
+    /// established stream that fell silent ([`Detector::chunks`] is positive), or a stream that
+    /// never started at all ([`Detector::chunks`] is zero, and the reported silence is the whole
+    /// wait). The distinction matters because the first says the connection broke and the second
+    /// says the provider never accepted the work — different incidents, different retry decisions,
+    /// but both have exhausted the time the caller was willing to spend.
     ///
     /// The field is the *observed* silence, not the threshold that tripped. A caller already knows
     /// its own threshold; what it cannot reconstruct later is how long the stream was actually
     /// quiet, which is the number worth putting in a log or an error message.
     Stalled {
-        /// Milliseconds since the last chunk arrived.
+        /// Milliseconds since the last chunk arrived, or the whole wait when no chunk has.
         idle_ms: u64,
     },
 }
@@ -261,29 +268,26 @@ impl Policy {
     /// much later than the one at which an established stream is declared dead.
     #[must_use]
     pub fn check(&self, detector: &Detector, now_ms: u64) -> Health {
-        match detector.first_chunk_ms {
-            None => {
-                let elapsed_ms = now_ms.saturating_sub(detector.origin_ms());
-                if elapsed_ms >= self.first_chunk_ms {
-                    // Reported as a stall, not a wait: the budget that allows for queueing is
-                    // spent, so this is no longer explainable as a slow start.
-                    Health::Stalled {
-                        idle_ms: elapsed_ms,
-                    }
-                } else {
-                    Health::WaitingForFirst { elapsed_ms }
-                }
+        if let Some(last_chunk_ms) = detector.last_chunk_ms {
+            // The idle bound is measured from the last chunk. Using the first chunk's timestamp
+            // here would call a stream stalled one idle period after it started, even while it was
+            // streaming steadily.
+            let idle_ms = now_ms.saturating_sub(last_chunk_ms);
+            if idle_ms >= self.idle_ms {
+                Health::Stalled { idle_ms }
+            } else {
+                Health::Flowing
             }
-            Some(_) => {
-                // The idle bound is measured from the last chunk. Using the first chunk's timestamp
-                // here would call a stream stalled one idle period after it started, even while it
-                // was streaming steadily.
-                let idle_ms = now_ms.saturating_sub(detector.last_chunk_ms.unwrap_or(now_ms));
-                if idle_ms >= self.idle_ms {
-                    Health::Stalled { idle_ms }
-                } else {
-                    Health::Flowing
+        } else {
+            let elapsed_ms = now_ms.saturating_sub(detector.origin_ms());
+            if elapsed_ms >= self.first_chunk_ms {
+                // Reported as a stall, not a wait: the budget that allows for queueing is spent,
+                // so this is no longer explainable as a slow start.
+                Health::Stalled {
+                    idle_ms: elapsed_ms,
                 }
+            } else {
+                Health::WaitingForFirst { elapsed_ms }
             }
         }
     }

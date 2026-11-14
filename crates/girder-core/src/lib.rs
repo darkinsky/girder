@@ -218,6 +218,7 @@ mod str_replace_editor;
 mod stream_blocks;
 mod stream_flow;
 mod stream_method;
+mod stream_stall;
 mod stream_validate;
 mod subagent;
 mod subagent_depth;
@@ -234,6 +235,7 @@ mod terminal_buffer;
 mod terminal_env;
 mod terminal_local;
 mod terminal_meta;
+mod terminal_persist;
 mod terminal_rpc;
 mod terminal_rpc_extra;
 mod terminal_tool;
@@ -252,6 +254,7 @@ mod tool_result_pruning;
 mod tool_retry;
 mod tool_schedule;
 mod tool_schema_export;
+mod tool_trace;
 mod tool_usage;
 mod tool_watchdog;
 mod tools;
@@ -735,6 +738,7 @@ pub use str_replace_editor::{
 pub use stream_blocks::{StreamObserver, assemble_message};
 pub use stream_flow::{Flow, SendResult, SlowDetector};
 pub use stream_method::{StreamError, StreamHandle, StreamMethod, Streams};
+pub use stream_stall::{Detector as StallDetector, Health as StreamHealth, Policy as StallPolicy};
 pub use stream_validate::{
     Ending as StreamEnding, Problem as StreamProblem, ProblemKind as StreamProblemKind,
     is_fatal as stream_is_fatal, validate as validate_stream,
@@ -783,6 +787,7 @@ pub use terminal_meta::{
     Meta as TerminalMeta, MetaError as TerminalMetaError, Retention as TerminalRetention,
     Store as TerminalMetaStore,
 };
+pub use terminal_persist::{PersistError as TerminalPersistError, Store as TerminalPersistStore};
 pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
     register_terminal_methods as register_terminal_rpc_methods,
@@ -830,6 +835,10 @@ pub use tool_schedule::{
     Call as ScheduleCall, Plan as SchedulePlan, is_read_only, plan as plan_schedule,
 };
 pub use tool_schema_export::{same_tool_set, to_mcp, to_openai};
+pub use tool_trace::{
+    Phase as ToolPhase, Summary as ToolTraceSummary, Trace as ToolTrace,
+    summarize as summarize_tool_traces,
+};
 pub use tool_usage::{ToolStats, usage as tool_usage};
 pub use tool_watchdog::{Policy as WatchdogPolicy, Verdict as WatchdogVerdict, Watch};
 pub use tools::{
