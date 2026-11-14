@@ -65,6 +65,7 @@ mod api_key;
 pub mod api_session;
 mod approval;
 mod approval_rules;
+mod argument_limits;
 mod assistant_output;
 mod atomic_write;
 mod attachment;
@@ -155,6 +156,7 @@ mod questions;
 mod registry;
 mod remote;
 mod response_cache;
+mod resume_point;
 mod retention;
 mod retry;
 mod retrying_provider;
@@ -181,6 +183,7 @@ mod session_link;
 mod session_metrics;
 mod session_migration;
 mod session_portable;
+mod session_preview;
 mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
@@ -233,6 +236,7 @@ mod tool_batching;
 mod tool_cache;
 mod tool_contracts;
 mod tool_extract;
+mod tool_idempotency;
 mod tool_limits;
 mod tool_output_view;
 mod tool_result_pruning;
@@ -279,6 +283,10 @@ pub use approval::{
 pub use approval_rules::{
     Action as ApprovalAction, Decision as ApprovalDecision, Rule as ApprovalRule,
     Rules as ApprovalRules,
+};
+pub use argument_limits::{
+    Kind as ArgumentLimitKind, Limits as ArgumentLimits, Violation as ArgumentViolation,
+    check as check_arguments, defaults as default_argument_limits,
 };
 pub use assistant_output::{FinalOutput, final_output, final_text};
 pub use atomic_write::{
@@ -545,6 +553,9 @@ pub use response_cache::{
     Cache as ResponseCache, CachedResponse, CachingProvider, DEFAULT_CAPACITY as CACHE_CAPACITY,
     Fingerprint, Stats as CacheStats, is_cacheable,
 };
+pub use resume_point::{
+    Point as ResumePoint, Reason as ResumeReason, find as find_resume, is_safe as resume_is_safe,
+};
 pub use retention::{
     ItemRetainer, ItemStrategy, Omitted, RetainedItems, RetainedText, TextRetainer, TextStrategy,
 };
@@ -618,6 +629,10 @@ pub use session_migration::{
 pub use session_portable::{
     Bundle as SessionBundle, BundleError, VERSION as BUNDLE_VERSION, export as export_bundle,
     import as import_bundle,
+};
+pub use session_preview::{
+    Preview as SessionPreview, preview as preview_session,
+    preview_from_tail as preview_session_tail,
 };
 pub use session_query::{
     Candidate, Catalogue as SearchCatalogue, FileCatalogue, Hit, Kind as SearchKind,
@@ -769,6 +784,10 @@ pub use tool_cache::{
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
 pub use tool_extract::{
     Extracted as ExtractedOutput, extract as extract_output, glob_paths, grep_paths,
+};
+pub use tool_idempotency::{
+    Decision as IdempotencyDecision, Executed, Idempotency, decide as decide_idempotent,
+    executed as executed_calls, idempotency as tool_idempotency,
 };
 pub use tool_limits::{Limit as ToolLimit, Tracker as ToolTracker, Verdict as ToolVerdict};
 pub use tool_output_view::{Outcome as OutputOutcome, View as ToolOutputView, block_cost};

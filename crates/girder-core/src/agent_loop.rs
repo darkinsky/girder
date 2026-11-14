@@ -1421,6 +1421,15 @@ async fn run_body(
         return ToolResult::error("cancelled before the tool started");
     }
 
+    // Checked before parsing, not after: a hundred-megabyte argument string is the attack, and parsing it to discover
+    // that is doing the work the check exists to avoid. The total is bounded first because it is the only check that
+    // can be made without allocating, and every check after it then runs on bounded input.
+    if let Some(violation) =
+        crate::argument_limits::check(&crate::argument_limits::defaults(), &execution.arguments)
+    {
+        return ToolResult::error(violation.explain());
+    }
+
     let arguments: serde_json::Value = match serde_json::from_str(&execution.arguments) {
         Ok(value) => value,
         Err(error) => {
