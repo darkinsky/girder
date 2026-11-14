@@ -171,7 +171,11 @@ impl TagSet {
     ///
     /// [`TagError::Empty`], [`TagError::TooLong`], or [`TagError::Duplicate`]. The set is unchanged
     /// in every case.
-    pub fn add(&mut self, tag: Tag) -> Result<(), TagError> {
+    ///
+    /// The tag is taken by reference and its name is re-derived rather than reused: this keeps one
+    /// spelling of the name in the whole module — [`normalize`] — instead of letting a caller hand in
+    /// a value whose `name` was normalized by something else and have it stored verbatim.
+    pub fn add(&mut self, tag: &Tag) -> Result<(), TagError> {
         let name = normalize(&tag.name);
         if name.is_empty() {
             return Err(TagError::Empty);
@@ -196,8 +200,10 @@ impl TagSet {
             },
             Source::Manual => Source::Manual,
         };
-        // Cloned so the value owns its name rather than borrowing the key; a tag read out of `all`
-        // must stay valid without reaching back into the map.
+        // Cloned because both the key and the value need the name: the key is what lookup and
+        // ordering use, and the value's `name` is what a caller renders. Sharing one `String` would
+        // need a self-referential map, and a tag handed out by `all` must own its name so it stays
+        // valid without borrowing back into the map.
         self.tags.insert(name.clone(), Tag { name, source });
         Ok(())
     }
@@ -266,7 +272,7 @@ impl TagSet {
 ///
 /// Other punctuation is kept, because it can carry meaning: `#rust` and `rust` are different tags to
 /// whoever typed the `#`, and folding them would lose information the person supplied. Underscores
-/// and runs, by contrast, are spelling — "snake_case" and "kebab-case" are the same word.
+/// and runs, by contrast, are spelling — `snake_case` and `kebab-case` are the same word.
 ///
 /// Unicode case folding is used rather than ASCII-only lowercasing, so a tag in a non-Latin script is
 /// matched the way its reader would match it. Returns an empty string when nothing survives, which

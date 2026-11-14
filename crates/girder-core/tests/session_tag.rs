@@ -91,9 +91,9 @@ fn normalization_does_not_emit_a_trailing_hyphen() {
 fn two_spellings_of_one_name_are_one_tag() {
     let mut set = TagSet::new();
 
-    assert_eq!(set.add(manual("Bug Fix")), Ok(()));
+    assert_eq!(set.add(&manual("Bug Fix")), Ok(()));
     assert_eq!(
-        set.add(manual("bug-fix")),
+        set.add(&manual("bug-fix")),
         Err(TagError::Duplicate {
             name: "bug-fix".to_owned()
         })
@@ -106,9 +106,9 @@ fn a_duplicate_is_reported_rather_than_ignored() {
     // A silent no-op is indistinguishable from a successful add at the call site; the error is what
     // lets a caller say "already tagged".
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("first add succeeds");
+    set.add(&manual("bug-fix")).expect("first add succeeds");
 
-    let second = set.add(manual("BUG_FIX"));
+    let second = set.add(&manual("BUG_FIX"));
     assert!(matches!(second, Err(TagError::Duplicate { .. })));
     // The message names the normalized spelling, which is the one `remove` and `promote` accept.
     assert_eq!(
@@ -120,9 +120,9 @@ fn a_duplicate_is_reported_rather_than_ignored() {
 #[test]
 fn a_duplicate_leaves_the_original_untouched() {
     let mut set = TagSet::new();
-    set.add(inferred("flaky", 40)).expect("first add succeeds");
+    set.add(&inferred("flaky", 40)).expect("first add succeeds");
 
-    let _ = set.add(inferred("Flaky", 90));
+    let _ = set.add(&inferred("Flaky", 90));
 
     let tags = set.all();
     assert_eq!(tags.len(), 1);
@@ -137,7 +137,7 @@ fn a_duplicate_leaves_the_original_untouched() {
 fn an_empty_name_is_rejected() {
     let mut set = TagSet::new();
 
-    assert_eq!(set.add(manual("")), Err(TagError::Empty));
+    assert_eq!(set.add(&manual("")), Err(TagError::Empty));
     assert!(set.is_empty());
 }
 
@@ -145,8 +145,8 @@ fn an_empty_name_is_rejected() {
 fn a_name_of_only_separators_is_rejected() {
     let mut set = TagSet::new();
 
-    assert_eq!(set.add(manual("   ")), Err(TagError::Empty));
-    assert_eq!(set.add(manual(" - _ ")), Err(TagError::Empty));
+    assert_eq!(set.add(&manual("   ")), Err(TagError::Empty));
+    assert_eq!(set.add(&manual(" - _ ")), Err(TagError::Empty));
     assert!(set.is_empty());
 }
 
@@ -156,7 +156,7 @@ fn an_over_long_name_is_rejected() {
     let long = "a".repeat(MAX_NAME_CHARS + 1);
 
     assert_eq!(
-        set.add(manual(&long)),
+        set.add(&manual(&long)),
         Err(TagError::TooLong {
             length: MAX_NAME_CHARS + 1,
             max: MAX_NAME_CHARS,
@@ -171,7 +171,7 @@ fn a_name_exactly_at_the_limit_is_accepted() {
     let mut set = TagSet::new();
     let at_limit = "a".repeat(MAX_NAME_CHARS);
 
-    assert_eq!(set.add(manual(&at_limit)), Ok(()));
+    assert_eq!(set.add(&manual(&at_limit)), Ok(()));
     assert!(set.has(&at_limit));
 }
 
@@ -181,7 +181,7 @@ fn the_length_limit_counts_characters_not_bytes() {
     let mut set = TagSet::new();
     let cjk = "标".repeat(MAX_NAME_CHARS);
 
-    assert_eq!(set.add(manual(&cjk)), Ok(()));
+    assert_eq!(set.add(&manual(&cjk)), Ok(()));
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn length_is_measured_after_normalization() {
     let mut set = TagSet::new();
     let padded = format!("  {}  ", "a".repeat(MAX_NAME_CHARS));
 
-    assert_eq!(set.add(manual(&padded)), Ok(()));
+    assert_eq!(set.add(&manual(&padded)), Ok(()));
 }
 
 // ---- removal ------------------------------------------------------------------------------------
@@ -198,7 +198,7 @@ fn length_is_measured_after_normalization() {
 #[test]
 fn remove_takes_the_tag_out() {
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("add succeeds");
+    set.add(&manual("bug-fix")).expect("add succeeds");
 
     assert!(set.remove("bug-fix"));
     assert!(!set.has("bug-fix"));
@@ -208,7 +208,7 @@ fn remove_takes_the_tag_out() {
 #[test]
 fn remove_normalizes_its_argument() {
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("add succeeds");
+    set.add(&manual("bug-fix")).expect("add succeeds");
 
     assert!(set.remove("  Bug Fix  "));
 }
@@ -216,7 +216,7 @@ fn remove_normalizes_its_argument() {
 #[test]
 fn removing_something_absent_reports_no_change() {
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("add succeeds");
+    set.add(&manual("bug-fix")).expect("add succeeds");
 
     assert!(!set.remove("feature"));
     assert_eq!(set.len(), 1);
@@ -226,10 +226,10 @@ fn removing_something_absent_reports_no_change() {
 fn a_removed_tag_can_be_added_again() {
     // `remove` is a real delete rather than a tombstone, so re-tagging is an ordinary add.
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("add succeeds");
+    set.add(&manual("bug-fix")).expect("add succeeds");
     assert!(set.remove("bug-fix"));
 
-    assert_eq!(set.add(inferred("bug fix", 70)), Ok(()));
+    assert_eq!(set.add(&inferred("bug fix", 70)), Ok(()));
     assert_eq!(set.len(), 1);
 }
 
@@ -239,7 +239,7 @@ fn a_removed_tag_can_be_added_again() {
 fn all_is_sorted_by_name() {
     let mut set = TagSet::new();
     for name in ["zeta", "Alpha", "mid fix", "beta"] {
-        set.add(manual(name)).expect("add succeeds");
+        set.add(&manual(name)).expect("add succeeds");
     }
 
     let names: Vec<&str> = set.all().iter().map(|tag| tag.name.as_str()).collect();
@@ -251,10 +251,10 @@ fn two_sets_built_in_different_orders_are_equal() {
     let mut first = TagSet::new();
     let mut second = TagSet::new();
     for name in ["one", "two", "three"] {
-        first.add(manual(name)).expect("add succeeds");
+        first.add(&manual(name)).expect("add succeeds");
     }
     for name in ["three", "one", "two"] {
-        second.add(manual(name)).expect("add succeeds");
+        second.add(&manual(name)).expect("add succeeds");
     }
 
     assert_eq!(first.all(), second.all());
@@ -268,9 +268,9 @@ fn an_inferred_tag_does_not_replace_a_manual_one() {
     // A rule runs over every session; if it could overwrite the tag a person typed, the person's
     // assertion would last only until the next rule pass.
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("add succeeds");
+    set.add(&manual("bug-fix")).expect("add succeeds");
 
-    let result = set.add(inferred("bug fix", 95));
+    let result = set.add(&inferred("bug fix", 95));
 
     assert_eq!(
         result,
@@ -286,9 +286,9 @@ fn a_manual_tag_does_not_replace_an_inferred_one_either() {
     // Also a duplicate, because `add` must not rewrite an existing tag's source behind a caller's
     // back. The sanctioned upgrade is `promote`.
     let mut set = TagSet::new();
-    set.add(inferred("bug-fix", 60)).expect("add succeeds");
+    set.add(&inferred("bug-fix", 60)).expect("add succeeds");
 
-    let result = set.add(manual("Bug Fix"));
+    let result = set.add(&manual("Bug Fix"));
 
     assert!(matches!(result, Err(TagError::Duplicate { .. })));
     assert_eq!(set.all()[0].source, Source::Inferred { confidence: 60 });
@@ -297,7 +297,7 @@ fn a_manual_tag_does_not_replace_an_inferred_one_either() {
 #[test]
 fn promote_turns_an_inferred_tag_into_a_manual_one() {
     let mut set = TagSet::new();
-    set.add(inferred("bug-fix", 60)).expect("add succeeds");
+    set.add(&inferred("bug-fix", 60)).expect("add succeeds");
 
     assert!(set.promote("Bug Fix"));
 
@@ -309,7 +309,7 @@ fn promote_turns_an_inferred_tag_into_a_manual_one() {
 #[test]
 fn promoting_a_manual_tag_changes_nothing() {
     let mut set = TagSet::new();
-    set.add(manual("bug-fix")).expect("add succeeds");
+    set.add(&manual("bug-fix")).expect("add succeeds");
 
     assert!(set.promote("bug-fix"));
     assert_eq!(set.all()[0].source, Source::Manual);
@@ -328,9 +328,11 @@ fn a_manual_tag_and_an_inferred_tag_differ_in_source() {
     // Two sets with the same name but a different source are different sets, so a caller comparing
     // them sees the promotion rather than "no change".
     let mut manual_set = TagSet::new();
-    manual_set.add(manual("bug-fix")).expect("add succeeds");
+    manual_set.add(&manual("bug-fix")).expect("add succeeds");
     let mut inferred_set = TagSet::new();
-    inferred_set.add(inferred("bug-fix", 60)).expect("add succeeds");
+    inferred_set
+        .add(&inferred("bug-fix", 60))
+        .expect("add succeeds");
 
     assert_ne!(manual_set, inferred_set);
 }
@@ -340,7 +342,7 @@ fn a_manual_tag_and_an_inferred_tag_differ_in_source() {
 #[test]
 fn confidence_is_clamped_to_the_maximum() {
     let mut set = TagSet::new();
-    set.add(inferred("bug-fix", 250)).expect("add succeeds");
+    set.add(&inferred("bug-fix", 250)).expect("add succeeds");
 
     assert_eq!(
         set.all()[0].source,
@@ -355,7 +357,7 @@ fn a_zero_confidence_tag_is_still_a_tag() {
     // Zero means "a wild guess", not "do not store": the caller asked for it, and dropping it would
     // make the set's contents depend on a number rather than on an instruction.
     let mut set = TagSet::new();
-    set.add(inferred("speculative", 0)).expect("add succeeds");
+    set.add(&inferred("speculative", 0)).expect("add succeeds");
 
     assert!(set.has("speculative"));
     assert_eq!(set.all()[0].source, Source::Inferred { confidence: 0 });
@@ -366,7 +368,8 @@ fn a_zero_confidence_tag_is_still_a_tag() {
 #[test]
 fn has_normalizes_its_argument() {
     let mut set = TagSet::new();
-    set.add(manual("needs reproduction")).expect("add succeeds");
+    set.add(&manual("needs reproduction"))
+        .expect("add succeeds");
 
     assert!(set.has("needs-reproduction"));
     assert!(set.has("  Needs   Reproduction "));
@@ -387,7 +390,7 @@ fn an_empty_set_contains_nothing() {
 #[test]
 fn the_stored_name_is_the_normalized_one() {
     let mut set = TagSet::new();
-    set.add(manual("  Bug   Fix ")).expect("add succeeds");
+    set.add(&manual("  Bug   Fix ")).expect("add succeeds");
 
     assert_eq!(set.all()[0].name, "bug-fix");
 }
@@ -395,7 +398,7 @@ fn the_stored_name_is_the_normalized_one() {
 #[test]
 fn all_returns_deeply_ordered_tags_not_map_keys() {
     let mut set = TagSet::new();
-    set.add(manual("second-name")).expect("add succeeds");
+    set.add(&manual("second-name")).expect("add succeeds");
 
     let tag: &Tag = set.all()[0];
     assert_eq!(tag.name, "second-name");

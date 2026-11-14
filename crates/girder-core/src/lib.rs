@@ -182,6 +182,7 @@ mod session_rewind;
 mod session_search_tool;
 mod session_state_rpc;
 mod session_stats;
+mod session_tag;
 mod session_timeline;
 mod session_title;
 mod settings_rpc;
@@ -197,6 +198,7 @@ mod storage;
 mod str_replace_editor;
 mod stream_blocks;
 mod stream_method;
+mod stream_validate;
 mod subagent;
 mod subagent_depth;
 mod subagent_interrupt;
@@ -222,6 +224,7 @@ mod tool_result_pruning;
 mod tool_retry;
 mod tool_schema_export;
 mod tool_usage;
+mod tool_watchdog;
 mod tools;
 mod trace_span;
 mod typert;
@@ -605,6 +608,7 @@ pub use session_state_rpc::{
     LiveTurns, NoLiveTurns, register_session_state_method, register_session_state_method_with,
 };
 pub use session_stats::Stats as SessionStats;
+pub use session_tag::{Source as TagSource, Tag, TagError, TagSet, normalize as normalize_tag};
 pub use session_timeline::{Segment as TimelineSegment, open_turn, outline as session_outline};
 pub use session_title::{Source as TitleSource, derive as derive_title};
 pub use settings_rpc::{
@@ -646,6 +650,10 @@ pub use str_replace_editor::{
 };
 pub use stream_blocks::{StreamObserver, assemble_message};
 pub use stream_method::{StreamError, StreamHandle, StreamMethod, Streams};
+pub use stream_validate::{
+    Problem as StreamProblem, ProblemKind as StreamProblemKind, is_fatal as stream_is_fatal,
+    validate as validate_stream,
+};
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
     subagent_tool,
@@ -712,6 +720,7 @@ pub use tool_retry::{
 };
 pub use tool_schema_export::{same_tool_set, to_mcp, to_openai};
 pub use tool_usage::{ToolStats, usage as tool_usage};
+pub use tool_watchdog::{Policy as WatchdogPolicy, Verdict as WatchdogVerdict, Watch};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
