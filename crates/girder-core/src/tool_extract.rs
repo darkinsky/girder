@@ -238,10 +238,15 @@ fn content(output: &str) -> Extracted {
         return Extracted::Unknown;
     }
 
-    // Every content line carries `number\t`, so a first line without a tab can only be the
-    // language hint the reader prepends to a known extension.
+    // Every content line carries `number\t`, so a first line that is not numbered is the language
+    // hint the reader prepends when the extension is known.
     let mut start = 0;
     if split_numbered(lines.first().copied().unwrap_or_default()).is_none() {
+        // Only a hint-shaped line is consumed. Anything else means this is not a numbered block at
+        // all, and skipping its first line would silently drop content.
+        if !looks_like_language_hint(lines.first().copied().unwrap_or_default()) {
+            return Extracted::Unknown;
+        }
         start = 1;
     }
 
@@ -315,6 +320,21 @@ fn split_numbered(line: &str) -> Option<(u32, &str)> {
         return None;
     }
     Some((number.parse::<u32>().ok()?, text))
+}
+
+/// Whether a line has the shape of the language hint the reader prepends.
+///
+/// The hint is one of the short identifiers in `code_language` — lowercase ASCII letters and
+/// digits, no spaces — so a line of prose is rejected rather than being silently dropped as if it
+/// were a hint. This is a shape test, not a lookup: the module does not carry the language table,
+/// and it does not need to, because any line that matches this shape and precedes numbered lines
+/// can only be the hint.
+fn looks_like_language_hint(line: &str) -> bool {
+    !line.is_empty()
+        && line.len() <= 32
+        && line
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
 }
 
 /// Whether a line is a marker rather than content.

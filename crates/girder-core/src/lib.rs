@@ -80,6 +80,7 @@ mod bounded_queue;
 mod brand;
 mod builtin_commands;
 mod call_config;
+mod cancel_scope;
 mod checkpoint_store;
 mod chunked_list;
 mod code_language;
@@ -190,6 +191,7 @@ mod session_stats;
 mod session_tag;
 mod session_timeline;
 mod session_title;
+mod session_workspace;
 mod settings_rpc;
 mod share_link;
 mod shell;
@@ -225,6 +227,7 @@ mod token_meter;
 mod tool_batching;
 mod tool_cache;
 mod tool_contracts;
+mod tool_extract;
 mod tool_limits;
 mod tool_output_view;
 mod tool_result_pruning;
@@ -307,6 +310,7 @@ pub use brand::{
 };
 pub use builtin_commands::register_builtin_commands;
 pub use call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
+pub use cancel_scope::{CancelReason, Scope as CancelScope, run_cleanups};
 pub use checkpoint_store::{
     Checkpoint as StoredCheckpoint, Kind as CheckpointKind, Store as CheckpointStore,
     StoreError as CheckpointError,
@@ -637,6 +641,10 @@ pub use session_stats::Stats as SessionStats;
 pub use session_tag::{Source as TagSource, Tag, TagError, TagSet, normalize as normalize_tag};
 pub use session_timeline::{Segment as TimelineSegment, open_turn, outline as session_outline};
 pub use session_title::{Source as TitleSource, derive as derive_title};
+pub use session_workspace::{
+    Association as WorkspaceAssociation, Index as WorkspaceIndex,
+    WorkspaceError as WorkspacePathError, WorkspaceId as WorkspaceRoot,
+};
 pub use settings_rpc::{
     MemorySettingsStore, SettingsStore, UnavailableSettingsStore, register_settings_methods,
 };
@@ -743,6 +751,9 @@ pub use tool_cache::{
     is_cacheable as is_tool_cacheable,
 };
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
+pub use tool_extract::{
+    Extracted as ExtractedOutput, extract as extract_output, glob_paths, grep_paths,
+};
 pub use tool_limits::{Limit as ToolLimit, Tracker as ToolTracker, Verdict as ToolVerdict};
 pub use tool_output_view::{Outcome as OutputOutcome, View as ToolOutputView, block_cost};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
