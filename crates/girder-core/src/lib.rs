@@ -141,6 +141,7 @@ mod ptc_policy;
 mod questions;
 mod registry;
 mod remote;
+mod response_cache;
 mod retention;
 mod retry;
 mod retrying_provider;
@@ -466,6 +467,10 @@ pub use remote::{
     register_job_methods, register_model_catalog, register_projection_methods,
     register_select_model, register_session_methods, register_workspace_methods,
     registered_method_names, registry_with_routes, registry_with_runtime,
+};
+pub use response_cache::{
+    Cache as ResponseCache, CachedResponse, CachingProvider, DEFAULT_CAPACITY as CACHE_CAPACITY,
+    Fingerprint, Stats as CacheStats, is_cacheable,
 };
 pub use retention::{
     ItemRetainer, ItemStrategy, Omitted, RetainedItems, RetainedText, TextRetainer, TextStrategy,

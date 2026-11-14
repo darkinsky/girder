@@ -27,11 +27,11 @@
 //!
 //! [`CallConfig`]: crate::CallConfig
 
-#![allow(dead_code)]
 // The crate root is wired up separately, so until then nothing in the library references these
 // items. The allow is scoped to this module and disappears in effect once it is exported.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use girder_core::{ContentBlock, LlmRequest, Message, Role, StreamChunk, ToolSchema};
 
@@ -230,7 +230,7 @@ pub fn is_cacheable(temperature: Option<f32>) -> bool {
 
 /// One cached response, stored as the chunks the provider streamed.
 ///
-/// Chunks rather than an assembled [`crate::AssistantMessage`] because a hit has to be
+/// Chunks rather than an assembled [`girder_core::AssistantMessage`] because a hit has to be
 /// indistinguishable from a miss to the caller above: the loop consumes a chunk stream, so replaying
 /// the recorded chunks produces the same blocks, the same usage accounting, and the same timing
 /// hooks without the cache knowing how to assemble anything.
@@ -451,5 +451,111 @@ impl std::fmt::Debug for Cache {
             .field("hits", &self.hits)
             .field("misses", &self.misses)
             .finish()
+    }
+}
+
+/// A provider that answers a repeated request from memory.
+///
+/// The seam `LlmProvider` was written for: the loop calls `stream` and cannot tell whether the answer came from the
+/// network, which is what makes caching a wrapper rather than a branch in the loop.
+pub struct CachingProvider {
+    inner: Arc<dyn girder_core::LlmProvider>,
+    cache: Arc<std::sync::Mutex<Cache>>,
+    /// The temperature the deployment configured, which is what decides whether a request may be cached at all.
+    temperature: Option<f32>,
+}
+
+impl std::fmt::Debug for CachingProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachingProvider")
+            .field("temperature", &self.temperature)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CachingProvider {
+    /// Wraps a provider, caching only when `temperature` permits it.
+    ///
+    /// The temperature is taken here rather than from the request because `LlmRequest` does not carry one: it lives in
+    /// the deployment's call configuration, and a cache that guessed would either cache a sampled answer or refuse a
+    /// deterministic one.
+    #[must_use]
+    pub fn new(inner: Arc<dyn girder_core::LlmProvider>, temperature: Option<f32>) -> Self {
+        Self {
+            inner,
+            cache: Arc::new(std::sync::Mutex::new(Cache::new(DEFAULT_CAPACITY))),
+            temperature,
+        }
+    }
+
+    /// How many answers are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether nothing is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().len() == 0
+    }
+
+    /// The hit and miss counts.
+    #[must_use]
+    pub fn stats(&self) -> Stats {
+        self.lock().stats()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl girder_core::LlmProvider for CachingProvider {
+    fn stream(
+        &self,
+        request: girder_core::LlmRequest,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> girder_core::BoxFut<Result<girder_core::ChunkStream, girder_core::LlmError>> {
+        let key = Fingerprint::of(&request);
+        // A non-deterministic request is passed through uncached, not cached under a key that would make the second
+        // answer look like the first. `is_cacheable` also refuses an unstated temperature, because the provider's
+        // default is invisible here.
+        if !is_cacheable(self.temperature) {
+            return self.inner.stream(request, cancel);
+        }
+        if let Some(hit) = self.lock().get(&key) {
+            let chunks = hit.chunks.clone();
+            return Box::pin(async move {
+                Ok(Box::pin(futures::stream::iter(chunks)) as girder_core::ChunkStream)
+            });
+        }
+        let inner = Arc::clone(&self.inner);
+        let cache = Arc::clone(&self.cache);
+        let temperature = self.temperature;
+        Box::pin(async move {
+            let _ = temperature;
+            let stream = inner.stream(request, cancel).await?;
+            // Collected so the answer can be recorded. A cached stream has to be replayable, and a provider stream is
+            // consumed once: buffering here is the cost of making the second call free.
+            let chunks: Vec<girder_core::StreamChunk> = {
+                use futures::StreamExt as _;
+                let mut stream = stream;
+                let mut collected = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    collected.push(chunk);
+                }
+                collected
+            };
+            {
+                let mut guard = cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.put(key, CachedResponse::new(chunks.clone()));
+            }
+            Ok(Box::pin(futures::stream::iter(chunks)) as girder_core::ChunkStream)
+        })
     }
 }

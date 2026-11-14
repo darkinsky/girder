@@ -693,6 +693,16 @@ fn print_metrics() {
 /// Read from a table rather than assumed because a reasoning model and a fast one do not fail alike: the fast one
 /// recovers from a transient 429 in a second, and the reasoning one is better retried fewer times with a longer wait
 /// than five times with a short one.
+/// The temperature the deployment configured, if it stated one.
+///
+/// Read from the environment rather than from `LlmRequest` because the request does not carry it: temperature lives in
+/// the call configuration and is applied by the provider, so a cache that read it from the request would read nothing.
+fn temperature_from_env() -> Option<f32> {
+    std::env::var("GIRDER_TEMPERATURE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+}
+
 fn call_retry_policy(model: &str) -> girder_core::RetryPolicy {
     let calls = call_config_table();
     let limits = calls.resolve(model);
@@ -901,8 +911,15 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
         if let Ok(provider) = girder_core::provider_from_env() {
             // Wrapped so a transient failure is retried: a 429 or a dropped connection would otherwise end a turn that
             // the next attempt would have completed. A cancellation is never retried.
-            let provider: Arc<dyn girder_core::LlmProvider> = Arc::new(
+            let retrying: Arc<dyn girder_core::LlmProvider> = Arc::new(
                 girder_core::RetryingProvider::new(provider, call_retry_policy(&cli.model)),
+            );
+            // Cached outside the retry, not inside it: a retry that failed should be retried again, and a hit should
+            // never reach the transport at all. `None` for the temperature means the deployment did not state one, and
+            // an unstated temperature is not cached -- the provider's default is invisible here, and caching a sampled
+            // answer would make the second call return the first call's dice roll.
+            let provider: Arc<dyn girder_core::LlmProvider> = Arc::new(
+                girder_core::CachingProvider::new(retrying, temperature_from_env()),
             );
             eprintln!("[provider] live: {}", cli.model);
             provider

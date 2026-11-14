@@ -21,11 +21,10 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/response_cache.rs"]
-mod response_cache;
-
-use girder_core::{ContentBlock, FinishReason, LlmRequest, Message, Role, StreamChunk, ToolSchema};
-use response_cache::{Cache, CachedResponse, Fingerprint, Stats, is_cacheable};
+use girder_core::{
+    CacheStats as Stats, CachedResponse, ContentBlock, Fingerprint, FinishReason, LlmRequest,
+    Message, ResponseCache as Cache, Role, StreamChunk, ToolSchema, is_cacheable,
+};
 
 // ---- fixtures ----------------------------------------------------------------------------------
 
