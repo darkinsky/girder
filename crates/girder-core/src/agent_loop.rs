@@ -413,6 +413,10 @@ impl LoopContext {
 /// went with a hint about how to read it. Replacing without saving would lose the output; saving without replacing
 /// would put the output in the context window anyway.
 async fn spill_if_needed(context: &LoopContext, blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    // Sanitised before anything else looks at the text, because everything downstream treats it as text: the budget
+    // counts it, the spill store writes it, and the model reads it. An ANSI sequence is a terminal instruction rather
+    // than content, and a bidi override is a disguise, so both are removed or marked before either can take effect.
+    let blocks = sanitize_blocks(blocks);
     // The round is checked before the result, because the two answer different questions: `spill_limit` asks whether
     // one result is too large to keep, and this asks whether the turn has room for it. A turn that has already spent
     // its budget trims what follows even when each result is small, which no per-result limit can see.
@@ -867,6 +871,22 @@ fn read_mtime(execution: &ToolExecution) -> Option<u64> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Removes or marks the characters in a result that are instructions rather than text.
+///
+/// Only text blocks: an image or file block carries an attachment id, which is a name this layer chose and not content a
+/// tool produced.
+fn sanitize_blocks(blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    blocks
+        .into_iter()
+        .map(|block| match block {
+            ContentBlock::Text { text } => ContentBlock::Text {
+                text: crate::text_safety::sanitize(&text),
+            },
+            other => other,
+        })
+        .collect()
 }
 
 /// Keeps at most `limit` bytes of a result, on a character boundary.

@@ -132,6 +132,7 @@ mod mcp_tools;
 mod message;
 mod model_catalog_extra;
 mod model_fallback;
+mod model_memory;
 mod observation;
 mod office_document;
 mod openapi;
@@ -470,6 +471,7 @@ pub use model_fallback::{
     Candidate as FallbackCandidate, Needs as ModelNeeds, Shortfall as ModelShortfall,
     candidates_from_routes, choose as choose_model,
 };
+pub use model_memory::{Memory as ModelMemory, Selection as ModelSelectionRecord};
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
     Version as FileVersion, replace_exactly_once, replace_lines, version_of,
