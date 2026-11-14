@@ -702,7 +702,7 @@ pub use subagent_depth::{
 };
 pub use subagent_interrupt::{
     Armed as InterruptArmed, Cancellers, InterruptOutcome, Interrupter, default_interrupter,
-    register_subagent_interrupt, subagent_interrupt_tool,
+    subagent_interrupt_tool,
 };
 pub use subagent_pool::{Pool as SubagentPool, Slot as SubagentSlot};
 pub use subagent_providers::{

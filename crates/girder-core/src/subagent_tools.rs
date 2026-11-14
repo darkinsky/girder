@@ -230,6 +230,7 @@ pub const DEFAULT_CONCURRENCY: usize = 8;
 pub struct SubagentRegistry {
     slots: std::sync::Mutex<BTreeMap<String, Slot>>,
     next_seq: AtomicU64,
+
     /// How many may run at once.
     ///
     /// A registry with no bound answers "how many are running" truthfully while letting the caller start a hundred
@@ -237,6 +238,13 @@ pub struct SubagentRegistry {
     /// here because this is where a delegation is recorded, and a limit enforced somewhere else would be a second
     /// place for the count to disagree.
     limit: usize,
+
+    /// The tokens that stop each running child.
+    ///
+    /// Held here rather than by the caller because the id is minted here: an interrupter that had to be told about a
+    /// child separately from the registry that tracks it would be told about it by every caller, or by none. Before this
+    /// field existed, `Cancellers::arm` had no production caller and the interrupt tool always answered `Unknown`.
+    cancellers: Arc<girder_core::Cancellers>,
 }
 
 impl std::fmt::Debug for SubagentRegistry {
@@ -296,6 +304,7 @@ impl SubagentRegistry {
             slots: std::sync::Mutex::new(BTreeMap::new()),
             next_seq: AtomicU64::new(0),
             limit: limit.max(1),
+            cancellers: Arc::new(girder_core::Cancellers::new()),
         }
     }
 
@@ -371,6 +380,9 @@ impl SubagentRegistry {
         let id = entry.id.clone();
         let (tx, _rx) = watch::channel(entry.clone());
         slots.insert(id.clone(), Slot { entry, tx });
+        // Armed under the same lock the slot was inserted under, so an interrupt that arrives right after this returns
+        // finds a token rather than racing the arming and reporting `Unknown` for a child that exists.
+        let _ = self.cancellers.arm(id.clone());
         Ok(id)
     }
 

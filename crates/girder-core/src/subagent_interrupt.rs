@@ -174,18 +174,6 @@ fn string_arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
-/// Registers the interrupt tool with the default cancellers.
-///
-/// A separate function from `register_subagent_tools` because it takes a second collaborator: the registry says which
-/// children exist and the cancellers say how to stop them, and a deployment that provides its own calls
-/// [`subagent_interrupt_tool`] directly rather than this.
-pub fn register_subagent_interrupt(
-    tools: &girder_core::ToolRegistry,
-    registry: Arc<SubagentRegistry>,
-) {
-    tools.register(subagent_interrupt_tool(registry, default_interrupter()));
-}
-
 /// The default interrupter, for a deployment that has no cancellation mechanism of its own.
 ///
 /// Returns the shared set so a caller can arm a child before starting it. A tool built without one cannot interrupt

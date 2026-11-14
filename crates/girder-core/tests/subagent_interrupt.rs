@@ -8,19 +8,16 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the tool as written even before the crate root wires it in. It resolves `girder_core::…`
 // through the alias the library declares for itself, which is why the same source builds here.
-#[path = "../src/subagent_interrupt.rs"]
-mod subagent_interrupt;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use girder_core::{
-    AgentId, ContentBlock, DelegationResult, Depth, Interrupter as _, SubagentRegistry, ToolCallId,
-    ToolDefinition, ToolExecution, ToolResult, ToolRunContext,
+    AgentId, ContentBlock, DelegationResult, Depth, InterruptOutcome, Interrupter,
+    SubagentRegistry, ToolCallId, ToolDefinition, ToolExecution, ToolResult, ToolRunContext,
 };
 use tokio_util::sync::CancellationToken;
 
-use subagent_interrupt::{InterruptOutcome, Interrupter, subagent_interrupt_tool};
+use girder_core::subagent_interrupt_tool;
 
 /// An interrupter that answers a fixed outcome and counts how often it was asked.
 ///
