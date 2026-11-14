@@ -73,6 +73,8 @@ enum Format {
     Markdown,
     /// The events themselves, one JSON array.
     Json,
+    /// A self-contained page, for opening a shared session.
+    Html,
 }
 
 impl Format {
@@ -81,6 +83,7 @@ impl Format {
         match name {
             DEFAULT_FORMAT => Some(Self::Markdown),
             "json" => Some(Self::Json),
+            "html" => Some(Self::Html),
             _ => None,
         }
     }
@@ -90,6 +93,7 @@ impl Format {
         match self {
             Self::Markdown => DEFAULT_FORMAT,
             Self::Json => "json",
+            Self::Html => "html",
         }
     }
 }
@@ -144,7 +148,7 @@ async fn export(args: &Value, catalog: &dyn SessionCatalog) -> Result<Value, Rem
     let requested = request.format.as_deref().unwrap_or(DEFAULT_FORMAT).trim();
     let format = Format::from_wire(requested).ok_or_else(|| {
         invalid(format!(
-            "`format` must be `{DEFAULT_FORMAT}` or `json`; got `{requested}`"
+            "`format` must be `{DEFAULT_FORMAT}`, `json`, or `html`; got `{requested}`"
         ))
     })?;
 
@@ -160,6 +164,10 @@ async fn export(args: &Value, catalog: &dyn SessionCatalog) -> Result<Value, Rem
     let body = match format {
         Format::Markdown => render_markdown(&record.id, &record.events),
         Format::Json => render_json(&record.events)?,
+        // A page rather than a transcript: Markdown is what a person pastes, and a shared link has to open. The renderer
+        // escapes every character of session content and references nothing external, so the page works offline and a
+        // message containing a tag is a message, not markup.
+        Format::Html => girder_core::render_static_export(&record.events, &record.id).html,
     };
 
     Ok(capped_response(format, body))

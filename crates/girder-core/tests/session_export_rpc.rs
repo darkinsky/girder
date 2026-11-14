@@ -332,13 +332,15 @@ async fn an_unknown_format_is_an_error() {
     let dir = scratch("format");
     seed_conversation(&dir, "s1");
 
-    let error = export(&dir, json!({"sessionId": "s1", "format": "html"}))
+    // `html` was the unknown format until it became one; a name that is genuinely not a format is the case now, and it
+    // still has to be refused rather than defaulted.
+    let error = export(&dir, json!({"sessionId": "s1", "format": "pdf"}))
         .await
         .expect_err("an unknown format is refused, not defaulted");
     assert_eq!(error.code(), "INVALID_ARGUMENTS");
     let message = error.to_string();
     assert!(
-        message.contains("html") && message.contains("markdown"),
+        message.contains("pdf") && message.contains("markdown"),
         "the message names the offending value and the accepted ones: {message}"
     );
 }
