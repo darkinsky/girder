@@ -70,6 +70,8 @@ const METHOD_SEND: &str = "send";
 /// The method name of the output reader.
 const METHOD_READ: &str = "read";
 const METHOD_ATTACH: &str = "attach";
+const METHOD_SHELLS: &str = "shells";
+const METHOD_ENVIRONMENT: &str = "environment";
 
 /// The method name of the closer.
 const METHOD_CLOSE: &str = "close";
@@ -111,7 +113,11 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Every name here must stay absent. `environment` and `shells` need a session's working directory
 /// and a shell-discovery provider; `rename` needs a title the session does not hold; `attach` and
 /// `retain` need the stream mode this registry does not have.
-const UNIMPLEMENTED: &[&str] = &["environment", "shells", "rename", "retain"];
+/// Methods still needing storage this build does not have.
+///
+/// `rename` needs a label store and `retain` needs output that outlives the process. Both are declared rather than
+/// omitted so a client is told "this build cannot" instead of "no such method", which reads as its own typo.
+const UNIMPLEMENTED: &[&str] = &["rename", "retain"];
 
 /// The arguments of `terminal.create`.
 ///
@@ -219,6 +225,14 @@ pub fn register_terminal_methods(
     // `attach` is a begin-poll pair rather than a push, because the transport has no stream mode: a begin returns a
     // viewer id and `read` from that viewer's offset returns what arrived since. That is the honest shape -- a method
     // that claimed to push and returned one array would be a different wire contract with the same name.
+    registry.register(NAMESPACE, METHOD_SHELLS, move |_call: RemoteCall| {
+        Box::pin(async move { Ok(json!({ "shells": shells() })) })
+    });
+
+    registry.register(NAMESPACE, METHOD_ENVIRONMENT, move |_call: RemoteCall| {
+        Box::pin(async move { Ok(environment()) })
+    });
+
     let attached = Arc::clone(&fans);
     registry.register(NAMESPACE, METHOD_ATTACH, move |call: RemoteCall| {
         let fans = Arc::clone(&attached);
@@ -228,6 +242,86 @@ pub fn register_terminal_methods(
     // Declared, not omitted: a client is told "this build cannot" rather than "no such method", and
     // the two call for different handling on its side.
     registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
+}
+
+/// The shells this host offers, discovered from `/etc/shells` and the usual paths.
+///
+/// Presence and the executable bit only: launching each candidate to see whether it works would hang on a shell that
+/// waits for input in a non-interactive mode, and the question a client is asking is "what may I offer in a picker".
+fn shells() -> Vec<Value> {
+    let candidates = [
+        ("/bin/bash", "Bash"),
+        ("/bin/zsh", "Zsh"),
+        ("/bin/sh", "sh"),
+        ("/usr/bin/fish", "Fish"),
+        ("/usr/bin/pwsh", "PowerShell"),
+    ];
+    // `/etc/shells` is the host's own answer and takes precedence: a shell installed somewhere unusual shows up there
+    // and nowhere else.
+    let listed = std::fs::read_to_string("/etc/shells").unwrap_or_default();
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for line in listed.lines() {
+        let path = line.trim();
+        if path.is_empty() || path.starts_with('#') || seen.iter().any(|s| s == path) {
+            continue;
+        }
+        if !is_executable(path) {
+            continue;
+        }
+        // `/bin` is usually a symlink to `/usr/bin`, so the same shell is listed twice under two paths. Deduplicating by
+        // the resolved target is what makes the picker show four shells instead of eight.
+        let key = std::fs::canonicalize(path)
+            .map_or_else(|_| path.to_owned(), |real| real.display().to_string());
+        if seen.iter().any(|s| s == &key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(json!({"path": path, "name": path.rsplit('/').next().unwrap_or(path)}));
+    }
+    for (path, name) in candidates {
+        if !is_executable(path) {
+            continue;
+        }
+        let key = std::fs::canonicalize(path)
+            .map_or_else(|_| path.to_owned(), |real| real.display().to_string());
+        if seen.iter().any(|s| s == &key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(json!({"path": path, "name": name}));
+    }
+    out
+}
+
+/// Whether `path` exists and carries an executable bit.
+fn is_executable(path: &str) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
+}
+
+/// What a client needs to render a terminal.
+fn environment() -> Value {
+    let available = shells();
+    json!({
+        "platform": std::env::consts::OS,
+        // `dumb` and an empty value both mean "do not send escape sequences": tmux and a plain pipe set one of them, and
+        // a client that assumed colour would fill a log with control characters.
+        "supportsColor": std::env::var("TERM")
+            .is_ok_and(|term| !term.is_empty() && term != "dumb"),
+        "defaultShell": std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()),
+        "shells": available,
+    })
 }
 
 /// Starts a viewer on a terminal, answering with its id and starting offset.
