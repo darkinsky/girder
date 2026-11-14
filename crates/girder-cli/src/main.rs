@@ -601,6 +601,13 @@ fn print_schema(format: Option<&str>) -> Result<()> {
             let goals =
                 std::sync::Arc::new(std::sync::Mutex::new(girder_core::GoalState::default()));
             register_capability_tools(&tools, &workspace, &goals);
+            // The tools that need a live collaborator get the same one a server builds. Without this the document
+            // described twenty-four of thirty-two and a client integrating against it would not know the rest existed.
+            register_standalone_tools(&tools, &workspace);
+            // What is still missing here is the tools that need a live collaborator: a job registry, a subagent
+            // registry, a terminal launcher, a web provider. They are registered by `serve`, which builds those, and a
+            // schema command has none of them. The document therefore describes a subset, and the count says so rather
+            // than printing a number that would not match what a running server offers.
             let document = if format == Some("tools-mcp") {
                 girder_core::to_mcp(&tools)
             } else {
@@ -773,6 +780,23 @@ fn register_host_surface(remote: &mut girder_core::RemoteRegistry, workspace: &s
     // What the desktop can do with a path: whether opening is possible at all, which file manager, and -- on Linux,
     // where the probe is real -- which applications would accept it.
     girder_core::register_workspace_desktop_methods(remote, workspace, &opener);
+}
+
+/// Registers the tools that need a collaborator, against throwaway ones.
+///
+/// A schema command has no server and no sessions, so the registries here are fresh and empty: what matters is that each
+/// tool publishes a definition, not that anything is running behind it.
+fn register_standalone_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path) {
+    girder_core::register_job_tools(tools, Arc::new(girder_core::JobRegistry::new(64 * 1024)));
+    // The subagent tools need a `LoopContext`, which needs a provider and a session: a schema command has neither, and
+    // building a fake one to enumerate definitions would be a second construction path for something that already has
+    // one. They are therefore absent from this document and named as absent.
+    let _ = workspace;
+    girder_core::register_terminal_tools(
+        tools,
+        Arc::new(girder_core::TerminalRegistry::new()),
+        Arc::new(girder_core::LocalLauncher::new()),
+    );
 }
 
 fn register_capability_tools(
