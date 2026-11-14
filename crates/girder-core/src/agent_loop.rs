@@ -204,6 +204,11 @@ pub struct LoopContext {
     /// belongs here.
     pub tool_cache: Option<std::sync::Mutex<crate::tool_cache::Cache>>,
 
+    /// The rules that turn a call into allow, deny or ask.
+    ///
+    /// `None` allows everything: the absence of a policy is not a policy.
+    pub approval_rules: Option<Arc<crate::approval_rules::Rules>>,
+
     /// The approver a hook's `Ask` is resolved through.
     ///
     /// `None` refuses an `Ask` rather than running it: a call that was supposed to be checked and was not is worse than
@@ -295,10 +300,28 @@ impl LoopContext {
             tool_tracker: None,
             tool_cache: None,
             approver: None,
+            approval_rules: None,
             compaction: None,
             context_window: None,
             max_output_tokens: None,
         }
+    }
+
+    /// Applies a policy to every call before it runs.
+    ///
+    /// Takes the rules rather than building them: which calls need a person is the deployment's decision, and this layer
+    /// only knows how to carry it out.
+    #[must_use]
+    pub fn with_approval_rules(mut self, rules: crate::approval_rules::Rules) -> Self {
+        self.approval_rules = Some(Arc::new(rules));
+        self
+    }
+
+    /// Sets the approver an `Ask` is resolved through.
+    #[must_use]
+    pub fn with_approver(mut self, approver: Arc<dyn crate::approval::Approver>) -> Self {
+        self.approver = Some(approver);
+        self
     }
 
     /// Enables remembering a read between calls.
@@ -1137,6 +1160,31 @@ fn tool_calls<'a>(
 /// Order matters and is upstream's: pre-execute decides, execute calls, post-execute normalizes.
 /// A `Deny` from the first stops before the body runs, which is why it returns a `ToolResult`
 /// carrying the reason rather than an error — the model should see the denial and adapt.
+/// Applies the deployment's approval rules to one call.
+///
+/// A `None` rule set allows: the absence of a policy is not a policy, and refusing every call in a deployment that never
+/// configured one would make the feature mandatory rather than available.
+fn decide_by_rules(
+    rules: Option<&crate::approval_rules::Rules>,
+    execution: &ToolExecution,
+) -> PreToolDecision {
+    let Some(rules) = rules else {
+        return PreToolDecision::Allow;
+    };
+    let decision = rules.decide(&execution.name, &execution.arguments);
+    // The reason names the rule that matched, because a person asked "why is this stopping" needs to know which of their
+    // rules fired -- and `matched: None` says the default did, which is itself the answer when no rule was written.
+    let question = match decision.matched {
+        Some(index) => format!("{} (rule {index}): {}", decision.reason, execution.name),
+        None => format!("{}: {}", decision.reason, execution.name),
+    };
+    match decision.action {
+        crate::approval_rules::Action::Allow => PreToolDecision::Allow,
+        crate::approval_rules::Action::Deny => PreToolDecision::Deny { reason: question },
+        crate::approval_rules::Action::Ask => PreToolDecision::Ask { question },
+    }
+}
+
 /// Resolves a hook's `Ask` through the deployment's approver.
 ///
 /// A free function because `dispatch` was at the length the linter enforces and because the three ways this can refuse --
@@ -1206,10 +1254,17 @@ pub async fn dispatch(
         }
     }
 
+    // The rules are the terminal, not a hook, because the terminal is what runs when no plugin has an opinion -- and a
+    // deployment that configured "ask before rm" has one even when nothing else does. A hook registered later still
+    // overrides, which is the point of the waterfall.
+    let call = execution.clone();
+    let rules = context.approval_rules.clone();
     let decision = context
         .bus
-        .waterfall::<ToolPreExecute, _>(execution.clone(), |_args| {
-            Box::pin(async { PreToolDecision::Allow })
+        .waterfall::<ToolPreExecute, _>(execution.clone(), move |_args| {
+            let call = call.clone();
+            let rules = rules.clone();
+            Box::pin(async move { decide_by_rules(rules.as_deref(), &call) })
         })
         .await;
 
