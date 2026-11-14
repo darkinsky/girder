@@ -231,6 +231,7 @@ mod terminal;
 mod terminal_attach;
 mod terminal_attach_rpc;
 mod terminal_buffer;
+mod terminal_env;
 mod terminal_local;
 mod terminal_meta;
 mod terminal_rpc;
@@ -773,6 +774,10 @@ pub use terminal::{
 pub use terminal_attach::{Attachment as TerminalAttachment, Fanout as TerminalFanout};
 pub use terminal_attach_rpc::{AttachResponse, TerminalFrame};
 pub use terminal_buffer::{Buffer as TerminalBuffer, Chunk as TerminalChunk};
+pub use terminal_env::{
+    Environment as TerminalEnvironment, Shell as AvailableShell, detect as detect_terminal_env,
+    detect_shells,
+};
 pub use terminal_local::{LocalLauncher, ProcessShell};
 pub use terminal_meta::{
     Meta as TerminalMeta, MetaError as TerminalMetaError, Retention as TerminalRetention,

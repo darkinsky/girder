@@ -244,83 +244,29 @@ pub fn register_terminal_methods(
     registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
 }
 
-/// The shells this host offers, discovered from `/etc/shells` and the usual paths.
+/// The shells this host offers.
 ///
-/// Presence and the executable bit only: launching each candidate to see whether it works would hang on a shell that
-/// waits for input in a non-interactive mode, and the question a client is asking is "what may I offer in a picker".
+/// Delegated rather than reimplemented: `terminal_env` is the owner of the question, and two answers from one host is the
+/// failure mode a shared module exists to prevent. Only the wire shape lives here.
 fn shells() -> Vec<Value> {
-    let candidates = [
-        ("/bin/bash", "Bash"),
-        ("/bin/zsh", "Zsh"),
-        ("/bin/sh", "sh"),
-        ("/usr/bin/fish", "Fish"),
-        ("/usr/bin/pwsh", "PowerShell"),
-    ];
-    // `/etc/shells` is the host's own answer and takes precedence: a shell installed somewhere unusual shows up there
-    // and nowhere else.
-    let listed = std::fs::read_to_string("/etc/shells").unwrap_or_default();
-    let mut out: Vec<Value> = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
-    for line in listed.lines() {
-        let path = line.trim();
-        if path.is_empty() || path.starts_with('#') || seen.iter().any(|s| s == path) {
-            continue;
-        }
-        if !is_executable(path) {
-            continue;
-        }
-        // `/bin` is usually a symlink to `/usr/bin`, so the same shell is listed twice under two paths. Deduplicating by
-        // the resolved target is what makes the picker show four shells instead of eight.
-        let key = std::fs::canonicalize(path)
-            .map_or_else(|_| path.to_owned(), |real| real.display().to_string());
-        if seen.iter().any(|s| s == &key) {
-            continue;
-        }
-        seen.push(key);
-        out.push(json!({"path": path, "name": path.rsplit('/').next().unwrap_or(path)}));
-    }
-    for (path, name) in candidates {
-        if !is_executable(path) {
-            continue;
-        }
-        let key = std::fs::canonicalize(path)
-            .map_or_else(|_| path.to_owned(), |real| real.display().to_string());
-        if seen.iter().any(|s| s == &key) {
-            continue;
-        }
-        seen.push(key);
-        out.push(json!({"path": path, "name": name}));
-    }
-    out
-}
-
-/// Whether `path` exists and carries an executable bit.
-fn is_executable(path: &str) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        metadata.is_file()
-    }
+    girder_core::detect_shells()
+        .into_iter()
+        .map(|shell| json!({"path": shell.path, "name": shell.name}))
+        .collect()
 }
 
 /// What a client needs to render a terminal.
 fn environment() -> Value {
-    let available = shells();
+    let detected = girder_core::detect_terminal_env();
     json!({
-        "platform": std::env::consts::OS,
-        // `dumb` and an empty value both mean "do not send escape sequences": tmux and a plain pipe set one of them, and
-        // a client that assumed colour would fill a log with control characters.
-        "supportsColor": std::env::var("TERM")
-            .is_ok_and(|term| !term.is_empty() && term != "dumb"),
-        "defaultShell": std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()),
-        "shells": available,
+        "platform": detected.platform,
+        "supportsColor": detected.supports_color,
+        "defaultShell": detected.default_shell,
+        "shells": detected
+            .shells
+            .into_iter()
+            .map(|shell| json!({"path": shell.path, "name": shell.name}))
+            .collect::<Vec<_>>(),
     })
 }
 
