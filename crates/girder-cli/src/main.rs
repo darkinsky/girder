@@ -1098,9 +1098,14 @@ impl girder_core::LlmProvider for OfflineProvider {
                 message.content.iter().any(|block| match block {
                     girder_core::ContentBlock::Text { text } => {
                         let lowered = text.to_lowercase();
+                        // The verbs a person uses when they want the tool output rather than an answer: without them a
+                        // prompt like "read a.txt" was treated as a question and answered with a sentence, so the tool
+                        // path was never exercised by the offline provider at all.
                         lowered.contains("file")
                             || lowered.contains("目录")
                             || lowered.contains("list")
+                            || lowered.contains("read")
+                            || lowered.contains("读")
                     }
                     _ => false,
                 })
