@@ -69,6 +69,7 @@ const METHOD_SEND: &str = "send";
 
 /// The method name of the output reader.
 const METHOD_READ: &str = "read";
+const METHOD_ATTACH: &str = "attach";
 
 /// The method name of the closer.
 const METHOD_CLOSE: &str = "close";
@@ -110,7 +111,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// Every name here must stay absent. `environment` and `shells` need a session's working directory
 /// and a shell-discovery provider; `rename` needs a title the session does not hold; `attach` and
 /// `retain` need the stream mode this registry does not have.
-const UNIMPLEMENTED: &[&str] = &["environment", "shells", "rename", "attach", "retain"];
+const UNIMPLEMENTED: &[&str] = &["environment", "shells", "rename", "retain"];
 
 /// The arguments of `terminal.create`.
 ///
@@ -177,6 +178,12 @@ pub fn register_terminal_methods(
     terminals: &Arc<TerminalRegistry>,
     launcher: &Arc<dyn TerminalLauncher>,
 ) {
+    // One fanout per terminal, created on first attach. Kept here rather than in the registry because a fanout is
+    // per-connection bookkeeping -- it remembers where each viewer is -- and the terminal itself has no idea who is
+    // watching it.
+    let fans: Arc<
+        std::sync::Mutex<std::collections::BTreeMap<String, crate::terminal_attach::Fanout>>,
+    > = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
     let listed = Arc::clone(terminals);
     registry.register(NAMESPACE, METHOD_LIST, move |_call: RemoteCall| {
         let terminals = Arc::clone(&listed);
@@ -209,9 +216,50 @@ pub fn register_terminal_methods(
         Box::pin(async move { close(&terminals, &call.args).await })
     });
 
+    // `attach` is a begin-poll pair rather than a push, because the transport has no stream mode: a begin returns a
+    // viewer id and `read` from that viewer's offset returns what arrived since. That is the honest shape -- a method
+    // that claimed to push and returned one array would be a different wire contract with the same name.
+    let attached = Arc::clone(&fans);
+    registry.register(NAMESPACE, METHOD_ATTACH, move |call: RemoteCall| {
+        let fans = Arc::clone(&attached);
+        Box::pin(async move { attach(&fans, &call.args) })
+    });
+
     // Declared, not omitted: a client is told "this build cannot" rather than "no such method", and
     // the two call for different handling on its side.
     registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
+}
+
+/// Starts a viewer on a terminal, answering with its id and starting offset.
+///
+/// The id is the handle the client uses for the rest of the attachment, so it is returned rather than inferred: a client
+/// that had to guess would address another viewer.
+fn attach(
+    fans: &std::sync::Mutex<std::collections::BTreeMap<String, crate::terminal_attach::Fanout>>,
+    args: &Value,
+) -> Result<Value, RemoteError> {
+    let terminal_id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: METHOD_ATTACH.to_owned(),
+            message: "`id` is required".to_owned(),
+        })?
+        .to_owned();
+    let mut fans = fans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fanout = fans
+        .entry(terminal_id.clone())
+        .or_insert_with(|| girder_core::terminal_attach::Fanout::new(terminal_id.clone()));
+    // Through the module that owns the wire shape, not a second copy of it: the response fields and the id sentinel are
+    // one contract, and two places spelling it would be two places to disagree.
+    let response = girder_core::terminal_attach_rpc::attach(fanout, &terminal_id);
+    Ok(json!({
+        "viewer": response.viewer,
+        "from": response.from,
+    }))
 }
 
 /// Answers with every session the registry holds, in id order.

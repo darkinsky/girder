@@ -567,11 +567,15 @@ fn the_streaming_methods_are_declared_as_gaps() {
         .map(|(namespace, method)| format!("{namespace}.{method}"))
         .collect();
 
-    // `attach` and `retain` need a stream mode this registry does not have. Declaring them means a
-    // client gets "not implemented" rather than "unknown method", which reads as its own typo.
+    // `retain` needs storage this build does not have. Declaring it means a client gets "not implemented" rather than
+    // "unknown method", which reads as its own typo.
+    //
+    // `attach` was on this list until it was implemented as a begin-poll pair: the registry has no stream mode, so a
+    // begin returns a viewer id and reads from that viewer's offset. Asserting it stays a gap would pin the gap rather
+    // than the distinction this test is for.
     assert!(
-        declared.contains(&"terminal.attach".to_owned()),
-        "{declared:?}"
+        !declared.contains(&"terminal.attach".to_owned()),
+        "attach answers now: {declared:?}"
     );
     assert!(
         declared.contains(&"terminal.retain".to_owned()),
@@ -581,7 +585,7 @@ fn the_streaming_methods_are_declared_as_gaps() {
         declared.contains(&"terminal.rename".to_owned()),
         "{declared:?}"
     );
-    for name in ["list", "create", "send", "read", "close"] {
+    for name in ["list", "create", "send", "read", "close", "attach"] {
         assert!(
             harness.registry.get("terminal", name).is_some(),
             "`terminal.{name}` should be registered"

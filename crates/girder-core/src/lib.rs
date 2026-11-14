@@ -101,6 +101,7 @@ mod extension_run_rpc;
 mod extension_runtime;
 mod extensions;
 mod fiber;
+mod file_lock;
 mod file_tools;
 mod file_watch;
 mod fs;
@@ -138,6 +139,7 @@ mod observation;
 mod office_document;
 mod openapi;
 mod output_budget;
+mod output_digest;
 mod patch;
 mod paths;
 mod permissions;
@@ -226,6 +228,7 @@ mod subprocess;
 mod system_prompt;
 mod terminal;
 mod terminal_attach;
+mod terminal_attach_rpc;
 mod terminal_buffer;
 mod terminal_local;
 mod terminal_rpc;
@@ -384,6 +387,7 @@ pub use extensions::{
     Run as ExtensionRun, Runtime as ExtensionRuntime, Status as ExtensionStatus,
 };
 pub use fiber::{Disposer, Fiber, FiberError, FiberState, PluginBody, PluginSpec};
+pub use file_lock::{Contention, Lock as FileLock, Locks as FileLocks};
 pub use file_tools::{MAX_READ_BYTES, ask_tool, edit_tool, patch_tool, read_tool, write_tool};
 pub use file_watch::{
     Change as FileChange, ChangeKind as FileChangeKind, PollingWatcher, snapshot as watch_snapshot,
@@ -496,6 +500,10 @@ pub use office_document::{
 pub use openapi::{Info as OpenApiInfo, document as openapi_document};
 pub use output_budget::{
     Allocation as OutputAllocation, Budget as OutputBudget, allocate as allocate_output,
+};
+pub use output_digest::{
+    Importance as DigestImportance, Line as DigestLine, classify as classify_output,
+    digest as digest_output, has_errors as output_has_errors,
 };
 pub use patch::{
     Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
@@ -757,6 +765,7 @@ pub use terminal::{
     Status as TerminalStatus, TerminalError, Transcript,
 };
 pub use terminal_attach::{Attachment as TerminalAttachment, Fanout as TerminalFanout};
+pub use terminal_attach_rpc::{AttachResponse, TerminalFrame};
 pub use terminal_buffer::{Buffer as TerminalBuffer, Chunk as TerminalChunk};
 pub use terminal_local::{LocalLauncher, ProcessShell};
 pub use terminal_rpc::{
