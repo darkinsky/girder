@@ -249,6 +249,12 @@ pub struct LoopContext {
     /// call itself.
     pub tool_timeout: Option<Arc<crate::tool_watchdog::Policy>>,
 
+    /// Where a tool call's time is recorded, when a deployment collects traces.
+    ///
+    /// `None` costs one branch per phase: an observe-only instrument should not be on by default, and a deployment that
+    /// wants it knows it does.
+    pub tool_trace: Option<std::sync::Mutex<crate::tool_trace::Trace>>,
+
     /// The rules that turn a call into allow, deny or ask.
     ///
     /// `None` allows everything: the absence of a policy is not a policy.
@@ -346,11 +352,19 @@ impl LoopContext {
             tool_cache: None,
             approver: None,
             approval_rules: None,
+            tool_trace: None,
             tool_timeout: None,
             compaction: None,
             context_window: None,
             max_output_tokens: None,
         }
+    }
+
+    /// Collects where each tool call's time went.
+    #[must_use]
+    pub fn with_tool_trace(mut self, trace: crate::tool_trace::Trace) -> Self {
+        self.tool_trace = Some(std::sync::Mutex::new(trace));
+        self
     }
 
     /// Bounds how long one tool call may run.
@@ -1391,6 +1405,21 @@ async fn run_with_deadline(
     tokio::time::timeout(budget, body).await.ok()
 }
 
+/// Records one phase's duration, when a trace collector is present.
+///
+/// A function rather than inline code because the three call sites would otherwise each spell the "is there a collector"
+/// check, and because the elapsed time is computed from a monotonic clock rather than the wall clock -- a phase duration
+/// should not change because the system time did.
+fn note_phase(context: &LoopContext, phase: crate::tool_trace::Phase, started_ms: u64) {
+    let Some(trace) = &context.tool_trace else {
+        return;
+    };
+    let elapsed = girder_core::now_millis().saturating_sub(started_ms);
+    if let Ok(mut trace) = trace.lock() {
+        trace.record(phase, elapsed);
+    }
+}
+
 /// What to tell a model that named a tool this build does not have.
 ///
 /// The name is echoed and a near miss is suggested. Nothing is suggested when no candidate is close: a plausible guess
@@ -1405,6 +1434,27 @@ fn unknown_tool_message(context: &LoopContext, name: &str) -> String {
         .collect();
     girder_core::suggest_tool_name(name, &available)
         .unwrap_or_else(|| format!("no tool named `{name}`"))
+}
+
+/// A cached answer for this call, when one is fresh.
+///
+/// A function rather than a block, because `dispatch` is at the length the linter enforces and because the ordering reason
+/// -- the lookup runs before the waterfall, so a hit never reaches a permission hook -- deserves its own comment.
+fn cached_result(context: &LoopContext, execution: &ToolExecution) -> Option<ToolResult> {
+    let key = crate::tool_cache::is_cacheable(&execution.name)
+        .then(|| crate::tool_cache::Key::of(&execution.name, &execution.arguments))?;
+    let cache = context.tool_cache.as_ref()?;
+    let mtime = read_mtime(execution);
+    let hit = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key, mtime)
+        .map(|entry| (entry.text.clone(), entry.is_error))?;
+    Some(if hit.1 {
+        ToolResult::error(hit.0)
+    } else {
+        ToolResult::text(hit.0)
+    })
 }
 
 pub async fn dispatch(
@@ -1422,30 +1472,15 @@ pub async fn dispatch(
         )));
     };
 
-    // Checked before the waterfall, because a cached answer means the tool does not run at all -- and a permission hook
-    // that never sees the call cannot deny it. The whitelist inside `tool_cache` admits only tools whose output depends
-    // on a file's contents alone, which is what makes answering from memory the same answer.
-    let cache_key = crate::tool_cache::is_cacheable(&execution.name)
-        .then(|| crate::tool_cache::Key::of(&execution.name, &execution.arguments));
-    if let (Some(cache), Some(key)) = (&context.tool_cache, &cache_key) {
-        let mtime = read_mtime(&execution);
-        let hit = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key, mtime)
-            .map(|entry| (entry.text.clone(), entry.is_error));
-        if let Some((text, is_error)) = hit {
-            return Ok(if is_error {
-                ToolResult::error(text)
-            } else {
-                ToolResult::text(text)
-            });
-        }
+    if let Some(hit) = cached_result(context, &execution) {
+        return Ok(hit);
     }
 
-    // The rules are the terminal, not a hook, because the terminal is what runs when no plugin has an opinion -- and a
-    // deployment that configured "ask before rm" has one even when nothing else does. A hook registered later still
-    // overrides, which is the point of the waterfall.
+    // Timed around the waterfall, because a five-second approval and a five-second tool are the same number in a total and
+    // opposite conclusions about what to change. Recorded on the context so a caller that collects traces can see where
+    // the time went; nothing here decides anything based on it.
+    let deciding_started = girder_core::now_millis();
+    // The rules are the terminal, not a hook, because the terminal is what runs when no plugin has an opinion.
     let call = execution.clone();
     let rules = context.approval_rules.clone();
     let decision = context
@@ -1475,6 +1510,12 @@ pub async fn dispatch(
         }
     }
 
+    note_phase(
+        context,
+        crate::tool_trace::Phase::Deciding,
+        deciding_started,
+    );
+    let executing_started = girder_core::now_millis();
     // The execute waterfall wraps the body, and the deadline wraps that.
     let Some(result) =
         run_with_deadline(context, &execution, Arc::clone(&tool), cancel.clone()).await
@@ -1485,6 +1526,11 @@ pub async fn dispatch(
         )));
     };
 
+    note_phase(
+        context,
+        crate::tool_trace::Phase::Executing,
+        executing_started,
+    );
     let args = PostExecuteArgs {
         execution: execution.clone(),
         result: result.clone(),
@@ -1496,6 +1542,10 @@ pub async fn dispatch(
 
     // Stored after the post-execute waterfall rather than before it, so what the model will actually see is what gets
     // remembered: a hook that rewrote the result would otherwise be undone by a later hit.
+    // Recomputed rather than carried from the lookup above: this runs after the body, and holding a key across the await
+    // would mean borrowing the call for the whole duration of the tool.
+    let cache_key = crate::tool_cache::is_cacheable(&execution.name)
+        .then(|| crate::tool_cache::Key::of(&execution.name, &execution.arguments));
     if let (Some(cache), Some(key)) = (&context.tool_cache, cache_key.clone()) {
         let text: String = result
             .content

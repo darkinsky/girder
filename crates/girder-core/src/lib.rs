@@ -94,6 +94,7 @@ mod config_edit;
 mod context_budget;
 mod credentials;
 mod deliverable;
+mod diff_patch;
 mod error_recovery;
 mod event_index;
 mod events;
@@ -132,6 +133,7 @@ mod lsp;
 mod lsp_tool;
 mod mcp;
 mod mcp_client;
+mod mcp_process;
 mod mcp_stdio;
 mod mcp_tools;
 mod message;
@@ -376,6 +378,10 @@ pub use credentials::{
     Store as CredentialStore, valid_environment,
 };
 pub use deliverable::{Deliverable, Kind as DeliverableKind, Set as DeliverableSet};
+pub use diff_patch::{
+    Hunk as DiffHunk, Patch as DiffPatch, PatchError as PatchErrorKind, apply as apply_diff_patch,
+    parse as parse_diff_patch,
+};
 pub use error_recovery::{
     Action as RecoveryAction, Kind as RecoveryKind, Suggestion as RecoverySuggestion,
     suggest as suggest_recovery,
@@ -491,6 +497,9 @@ pub use mcp_client::{
     NAMESPACE_SEPARATOR, PROTOCOL_VERSION, RpcError, ServerConfig, call_tool_request,
     initialize_request, list_tools_request, parse_response, parse_tools, qualified_name,
     split_qualified_name, validate_server_name,
+};
+pub use mcp_process::{
+    ExitReason, Fleet as McpFleet, FleetError as McpFleetError, Lifecycle, State as McpState,
 };
 pub use mcp_stdio::{FrameBuffer, StdioConfig, decode_frames, encode_frame};
 pub use mcp_tools::{MAX_BRIDGED_TOOLS, register_mcp_tools};
