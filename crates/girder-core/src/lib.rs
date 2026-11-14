@@ -204,6 +204,7 @@ mod tool_contracts;
 mod tool_result_pruning;
 mod tool_retry;
 mod tool_schema_export;
+mod tool_usage;
 mod tools;
 mod typert;
 mod typert_json;
@@ -212,6 +213,7 @@ mod web_tools;
 mod workflow;
 mod workflow_tool;
 mod workspace_desktop_rpc;
+mod workspace_diff;
 mod workspace_files_extra;
 mod workspace_files_rpc;
 mod workspace_open_rpc;
@@ -636,6 +638,7 @@ pub use tool_retry::{
     corrective_message,
 };
 pub use tool_schema_export::{same_tool_set, to_mcp, to_openai};
+pub use tool_usage::{ToolStats, usage as tool_usage};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
@@ -659,6 +662,9 @@ pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_sta
 pub use workspace_desktop_rpc::{
     DesktopEnvironment, FileApplication, FileApplicationProber, FileManager, HostPlatform,
     register_workspace_desktop_methods, register_workspace_desktop_methods_with,
+};
+pub use workspace_diff::{
+    DEFAULT_CONTEXT, FileChange as FileDiffChange, LineDiff, TextDiff, diff_text,
 };
 pub use workspace_files_extra::{
     DEFAULT_READ_BYTES as WORKSPACE_READ_BYTES, DEFAULT_SEARCH_HITS as WORKSPACE_SEARCH_HITS,
