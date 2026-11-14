@@ -177,6 +177,16 @@ pub struct LoopContext {
     /// How many bytes a tool result may carry before it is spilled.
     pub spill_limit: usize,
 
+    /// How many bytes of tool output one turn may add before the rest is trimmed.
+    ///
+    /// `spill_limit` bounds one result; this bounds the round. A model calling five tools that each return 100 KB
+    /// produces 500 KB, which no per-result limit sees. `None` leaves the round unbounded, which is the behaviour
+    /// before this field existed.
+    pub round_output_limit: Option<usize>,
+
+    /// Bytes of tool output this turn has added so far. Reset at the start of each turn.
+    pub round_output_spent: std::sync::atomic::AtomicUsize,
+
     /// How the history is compacted when it outgrows the context.
     ///
     /// `None` keeps everything: a deployment that has not decided what to drop should not have a default decide for
@@ -256,6 +266,8 @@ impl LoopContext {
             spent: std::sync::atomic::AtomicU64::new(0),
             spill: None,
             spill_limit: crate::spill::DEFAULT_SPILL_LIMIT,
+            round_output_limit: None,
+            round_output_spent: std::sync::atomic::AtomicUsize::new(0),
             compaction: None,
             context_window: None,
             max_output_tokens: None,
@@ -314,6 +326,33 @@ impl LoopContext {
 /// went with a hint about how to read it. Replacing without saving would lose the output; saving without replacing
 /// would put the output in the context window anyway.
 async fn spill_if_needed(context: &LoopContext, blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    // The round is checked before the result, because the two answer different questions: `spill_limit` asks whether
+    // one result is too large to keep, and this asks whether the turn has room for it. A turn that has already spent
+    // its budget trims what follows even when each result is small, which no per-result limit can see.
+    let blocks = match context.round_output_limit {
+        Some(limit) => {
+            let text: String = blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let remaining = limit.saturating_sub(
+                context
+                    .round_output_spent
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            );
+            // Counted whether or not it is kept: the point of a round budget is that a result which was trimmed still
+            // consumed the room it was trimmed for, and forgetting it would let a loop of trimmed results run forever.
+            let _ = context
+                .round_output_spent
+                .fetch_add(text.len(), std::sync::atomic::Ordering::Relaxed);
+            trim_to(blocks, remaining)
+        }
+        None => blocks,
+    };
+
     let Some(store) = &context.spill else {
         return blocks;
     };
@@ -702,6 +741,42 @@ async fn run_steps(
 /// Yields steps and appends to `messages` so the caller can decide whether to continue. Split out
 /// of [`run`] because the streaming and tool dispatch are two concerns and joining them made one
 /// function unreadable.
+/// Keeps at most `limit` bytes of a result, on a character boundary.
+///
+/// Truncation rather than removal: a result the model cannot see is a tool call that appears to have returned nothing,
+/// which is a different claim from one whose output was cut. The marker says which happened.
+fn trim_to(blocks: Vec<ContentBlock>, limit: usize) -> Vec<ContentBlock> {
+    let mut spent = 0;
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let ContentBlock::Text { text } = block else {
+            // A non-text block carries a reference rather than a payload, so it does not consume the budget and is not
+            // trimmed: cutting an image reference would make the attachment unreachable rather than smaller.
+            out.push(block);
+            continue;
+        };
+        let room = limit.saturating_sub(spent);
+        if text.len() <= room {
+            spent += text.len();
+            out.push(ContentBlock::Text { text });
+            continue;
+        }
+        // A boundary, so a multi-byte character is never split into a replacement character.
+        let mut cut = room;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.push(ContentBlock::Text {
+            text: format!(
+                "{}\n\n[output trimmed: this turn had {limit} bytes of tool output left]",
+                &text[..cut]
+            ),
+        });
+        spent = limit;
+    }
+    out
+}
+
 /// How far past the model's input allowance a request is, if it is past at all.
 ///
 /// A free function rather than a block inside `turn_stream`, which was already at the length the linter enforces and

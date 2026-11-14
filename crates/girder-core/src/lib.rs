@@ -164,6 +164,7 @@ mod session_portable;
 mod session_query;
 mod session_query_rpc;
 mod session_queue_rpc;
+mod session_recovery;
 mod session_resume_rpc;
 mod session_rewind;
 mod session_search_tool;
@@ -201,11 +202,13 @@ mod todo_tool;
 mod token_meter;
 mod tool_batching;
 mod tool_contracts;
+mod tool_limits;
 mod tool_result_pruning;
 mod tool_retry;
 mod tool_schema_export;
 mod tool_usage;
 mod tools;
+mod trace_span;
 mod typert;
 mod typert_json;
 mod web;
@@ -532,6 +535,9 @@ pub use session_queue_rpc::{
     AgentQueueMap, DECLARED_ACCESS as SESSION_QUEUE_ACCESS, QueueAgentSource, QueueError,
     register_session_queue_methods,
 };
+pub use session_recovery::{
+    Diagnosis, Recovery, diagnose as diagnose_session, repair as repair_session,
+};
 pub use session_resume_rpc::register_session_resume_method;
 pub use session_rewind::{Checkpoint as RewindPoint, checkpoint_for_turn, checkpoints, rewind_to};
 pub use session_search_tool::{DEFAULT_HITS as SESSION_SEARCH_DEFAULT_HITS, session_search_tool};
@@ -632,6 +638,7 @@ pub use token_meter::{
 };
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
+pub use tool_limits::{Limit as ToolLimit, Tracker as ToolTracker, Verdict as ToolVerdict};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};
 pub use tool_retry::{
     Failure as ToolFailure, FailureReason as ToolFailureReason, Policy as ToolRetryPolicy,
@@ -644,6 +651,7 @@ pub use tools::{
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
     ToolResult, ToolRunContext, ToolValue, ToolsKey,
 };
+pub use trace_span::{Span as TraceSpan, Tracer};
 pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
 };
