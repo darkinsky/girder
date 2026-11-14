@@ -518,7 +518,9 @@ pub use session::{
 pub use session_archive::{
     ArchiveOutcome, ArchivePolicy, LogStats, analyze as analyze_log, archive as archive_session,
 };
-pub use session_branch::{BranchError, Forest as SessionForest, Link as SessionLink};
+pub use session_branch::{
+    BranchError, Forest as SessionForest, Link as SessionLink, forest_from_ids, links_from_ids,
+};
 pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
     Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,

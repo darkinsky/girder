@@ -153,6 +153,15 @@ pub struct SessionStateValue {
     /// Heaviest by calls rather than by bytes: a tool called once that returned a megabyte is an interesting outlier, but
     /// a list sorted by a rare tool's result size would put it above the tool the model reaches for every turn.
     pub tool_usage: Vec<girder_core::ToolStats>,
+    /// Where this session forked from, when its id records it.
+    ///
+    /// Reconstructed from the id rather than read from the log, because a fork writes no edge: it copies a prefix and
+    /// nothing else. `None` means this session was not forked, or was created by a build that named it differently.
+    pub forked_from: Option<ForkOrigin>,
+    /// The sessions that forked from this one.
+    ///
+    /// Children by id, which is what a client drawing a tree needs and what no field in this session's own log holds.
+    pub forks: Vec<String>,
     /// The turn still running, when the log ends inside one.
     ///
     /// Separate from the segments rather than inferred from the last one: a turn can be unfinished and still have a
@@ -271,6 +280,13 @@ async fn state(
     // inconsistency than the one this method exists to remove (several round trips, several moments),
     // and a title sidecar is not part of the log so there is no single read that covers both.
     let title = catalog.title(session_id).await;
+    // The ids alone, not the records: `list` returns events and a session's own children need nothing but their names.
+    let directory_ids: Vec<String> = catalog
+        .list()
+        .await
+        .into_iter()
+        .map(|record| record.id)
+        .collect();
 
     // One count, used for both fields, so they cannot disagree. `try_from` rather than a cast: a log
     // longer than `u64::MAX` events cannot exist, and saturating is still the honest answer if the
@@ -305,6 +321,13 @@ async fn state(
         // Per tool, because the totals say how much work happened and this says which tools did it. A deployment asking
         // "is the shell slow or the build" needs the second, and `SessionStats` keeps only the first.
         tool_usage: girder_core::tool_usage(&record.events),
+        // The directory's own ids are the only record of the relationship, so it is read here rather than asked of the
+        // log. A missing parent directory leaves both fields empty rather than failing the call.
+        forked_from: origin_of(&record.id),
+        // Every id in the directory, listed on each call: the relationship is not stored, so it has to be derived, and
+        // the alternative is a second source of truth that could disagree with the fork's own naming. A deployment with
+        // thousands of sessions should record the edge instead -- `session_branch::Forest` is what that would store.
+        forks: children_of(&record.id, &directory_ids),
         // How much of the conversation each producer wrote, in characters. The message count says how many turns
         // happened; this says who filled the context, and they are different questions -- one long model answer and one
         // short question is a conversation where the model wrote almost all of it.
@@ -365,4 +388,40 @@ fn ends_mid_turn(events: &[SessionEvent]) -> bool {
         }
     }
     open
+}
+
+/// Where a session forked from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkOrigin {
+    /// The session it was forked from.
+    pub parent: String,
+    /// When, from the id's stamp.
+    pub at_ms: u64,
+}
+
+/// The parent recorded in an id, when the id is the shape a fork produces.
+///
+/// Delegates to `session_branch`, which owns the parsing: two implementations of "what a fork id looks like" would drift,
+/// and the one in this file would be the one nobody tested.
+fn origin_of(id: &str) -> Option<ForkOrigin> {
+    let link = girder_core::links_from_ids(std::slice::from_ref(&id.to_owned()))
+        .into_iter()
+        .next()?;
+    Some(ForkOrigin {
+        parent: link.parent,
+        at_ms: link.at_ms,
+    })
+}
+
+/// The sessions whose id names `id` as their parent.
+///
+/// Through the forest rather than by filtering links here: the forest is what drops a link whose parent is absent and
+/// what refuses one that would close a loop, and a caller doing its own filtering would reintroduce both problems.
+fn children_of(id: &str, ids: &[String]) -> Vec<String> {
+    girder_core::forest_from_ids(ids)
+        .children(id)
+        .into_iter()
+        .map(|link| link.child.clone())
+        .collect()
 }

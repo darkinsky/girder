@@ -370,3 +370,53 @@ impl Forest {
         }
     }
 }
+
+/// The branch links a session directory records.
+///
+/// A fork copies a prefix and writes nothing that names its parent, so the relationship has to be reconstructed from
+/// something. The id is what a fork already produces -- `{parent}-fork-{stamp}` -- and parsing it is enough for the one
+/// fact a tree needs. It is not as strong as a stored edge: a session renamed to look like a fork would produce a
+/// phantom link, and a deployment that needs certainty records the edge itself through [`Forest::add`].
+#[must_use]
+pub fn links_from_ids(ids: &[String]) -> Vec<Link> {
+    let mut out = Vec::new();
+    for id in ids {
+        let Some((parent, stamp)) = id.rsplit_once("-fork-") else {
+            continue;
+        };
+        // The stamp is the fork's clock, which is the closest thing the id carries to when it happened. An id whose
+        // suffix is not a number is not one this code produced, so it is not a link.
+        let Ok(at_ms) = stamp.parse::<u64>() else {
+            continue;
+        };
+        out.push(Link {
+            child: id.clone(),
+            parent: parent.to_owned(),
+            // The prefix is the whole history up to the fork point, and the id does not record where that was. Zero is
+            // the honest value: `Forest` treats it as "the start", which is wrong for a middle fork but not a lie about
+            // a number nobody wrote down.
+            from_seq: 0,
+            at_ms,
+        });
+    }
+    out
+}
+
+/// Builds a forest from the ids in a directory, dropping links whose parent is absent.
+///
+/// A parent that is not in the list was deleted, and a tree rooted at something missing would render a branch that
+/// cannot be navigated to. Dropping the link keeps the forest navigable; the child remains a root.
+#[must_use]
+pub fn forest_from_ids(ids: &[String]) -> Forest {
+    let mut forest = Forest::new();
+    let present: std::collections::BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    for link in links_from_ids(ids) {
+        if !present.contains(link.parent.as_str()) {
+            continue;
+        }
+        // A malformed set is possible -- two ids can name the same parent and a cycle cannot be produced by a suffix
+        // pattern alone, but a rejected link must not stop the rest from loading.
+        let _ = forest.add(link);
+    }
+    forest
+}

@@ -9,10 +9,9 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/session_branch.rs"]
-mod session_branch;
-
-use session_branch::{BranchError, Forest, Link};
+use girder_core::{
+    BranchError, SessionForest as Forest, SessionLink as Link, forest_from_ids, links_from_ids,
+};
 
 /// A link with a negligible timestamp.
 fn link(child: &str, parent: &str, from_seq: u64) -> Link {
@@ -421,4 +420,61 @@ fn render_does_not_show_other_roots() {
 
     assert!(!forest.render("root").contains("x @"));
     assert!(!forest.render("other").contains("a @"));
+}
+
+// ---- reconstructing the tree from ids -----------------------------------------------------------
+
+#[test]
+fn a_fork_id_names_its_parent() {
+    // The only record a fork leaves: it copies a prefix and writes nothing that says where from.
+    let ids = vec!["base".to_owned(), "base-fork-1700000000000".to_owned()];
+
+    let links = links_from_ids(&ids);
+
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].child, "base-fork-1700000000000");
+    assert_eq!(links[0].parent, "base");
+    assert_eq!(links[0].at_ms, 1_700_000_000_000);
+}
+
+#[test]
+fn a_plain_id_is_not_a_link() {
+    let links = links_from_ids(&["plain".to_owned(), "has-no-stamp".to_owned()]);
+
+    assert!(links.is_empty());
+}
+
+#[test]
+fn an_id_whose_suffix_is_not_a_number_is_not_a_link() {
+    // A session a person named `x-fork-hello` must not become a child of `x`.
+    let links = links_from_ids(&["x-fork-hello".to_owned()]);
+
+    assert!(links.is_empty());
+}
+
+#[test]
+fn a_nested_fork_names_its_immediate_parent() {
+    // `a-fork-1` forked again produces `a-fork-1-fork-2`, and `rsplit_once` takes the last separator, so the parent is
+    // the intermediate session rather than the root.
+    let ids = vec![
+        "a".to_owned(),
+        "a-fork-1".to_owned(),
+        "a-fork-1-fork-2".to_owned(),
+    ];
+
+    let forest = forest_from_ids(&ids);
+
+    let children = forest.children("a-fork-1");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].child, "a-fork-1-fork-2");
+}
+
+#[test]
+fn a_link_to_a_deleted_parent_is_dropped() {
+    // A tree rooted at something missing renders a branch nobody can navigate to, so the child becomes a root instead.
+    let ids = vec!["gone-fork-5".to_owned()];
+
+    let forest = forest_from_ids(&ids);
+
+    assert!(forest.children("gone").is_empty());
 }
