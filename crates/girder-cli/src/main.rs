@@ -570,6 +570,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
             );
         }
         Some("metrics") => print_metrics(),
+        Some("disk") => print_disk(),
         Some("catalog") => {
             // What the framework offers, as a machine-readable list. The service names come from the
             // registry's own key constants, so a name that is not published cannot appear here.
@@ -617,7 +618,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, tools-mcp, or tools-openai"
+                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, tools-mcp, or tools-openai"
             );
         }
     }
@@ -644,6 +645,32 @@ fn apply_model_limits(
         .max_tokens
         .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
     girder_core::AgentRuntime::set_model_limits(runtime, resolved.context_window, output);
+}
+
+/// Prints what the session directory occupies.
+///
+/// The question "how full is this disk" had no answer short of `du`, and `du` cannot say which sessions a deployment
+/// could evict. The order is oldest first, which is the order an eviction would take them.
+fn print_disk() {
+    let layout = girder_core::SessionLayout::new(sessions_root());
+    let footprints = layout.footprints();
+    let usage = girder_core::storage_usage(&footprints);
+    println!("sessions: {}", usage.sessions);
+    println!("bytes: {}", usage.total_bytes);
+    let mut oldest: Vec<&girder_core::Footprint> = footprints.iter().collect();
+    oldest.sort_by_key(|footprint| (footprint.modified_ms, footprint.session.as_str()));
+    for footprint in oldest.iter().take(20) {
+        println!(
+            "  {:<40} {:>12} bytes  (log {}, sidecars {})",
+            footprint.session,
+            footprint.total(),
+            footprint.log_bytes,
+            footprint.sidecar_bytes
+        );
+    }
+    if footprints.len() > 20 {
+        println!("  ... and {} more", footprints.len() - 20);
+    }
 }
 
 fn print_metrics() {

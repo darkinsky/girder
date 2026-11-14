@@ -159,6 +159,72 @@ impl Layout {
     /// Returns a [`LayoutError`] when `id` is not a safe file-name segment — it is empty, contains a
     /// path separator or a control character, is `.` or `..`, or is too long. See the module docs
     /// for why this is a security boundary rather than a convenience check.
+    /// The disk footprint of every session in this directory.
+    ///
+    /// One `read_dir` and one `stat` per file, because the alternative is asking each session's own reader how large it
+    /// is -- which decodes it. A deployment asking "how full is this disk" cannot afford to decompress every log to find
+    /// out, and a log's compressed size is what occupies the disk anyway.
+    ///
+    /// A session whose files cannot be read is reported with what could be measured rather than omitted: a summary that
+    /// silently skipped the unreadable ones would understate the disk, which is the direction that matters.
+    #[must_use]
+    pub fn footprints(&self) -> Vec<girder_core::Footprint> {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        let mut by_session: std::collections::BTreeMap<String, girder_core::Footprint> =
+            std::collections::BTreeMap::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            // Only the three files a session owns, so an unrelated file in the directory is not charged to whichever
+            // session name happens to sort first.
+            let Some((id, sidecar)) = [
+                (LOG_SUFFIX, false),
+                (TITLE_SUFFIX, true),
+                (ARCHIVED_SUFFIX, true),
+            ]
+            .iter()
+            .find_map(|(suffix, sidecar)| {
+                name.strip_suffix(suffix)
+                    .map(|id| (id.to_owned(), *sidecar))
+            }) else {
+                continue;
+            };
+            // One `stat` for both facts: a metadata call that fails leaves the size at zero, which understates the disk
+            // rather than overstating it.
+            let metadata = entry.metadata().ok();
+            let bytes = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+            let modified = metadata
+                .as_ref()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |elapsed| {
+                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                });
+            let footprint =
+                by_session
+                    .entry(id.clone())
+                    .or_insert_with(|| girder_core::Footprint {
+                        session: id,
+                        log_bytes: 0,
+                        sidecar_bytes: 0,
+                        modified_ms: 0,
+                    });
+            if sidecar {
+                footprint.sidecar_bytes = footprint.sidecar_bytes.saturating_add(bytes);
+            } else {
+                footprint.log_bytes = footprint.log_bytes.saturating_add(bytes);
+            }
+            // The newest file a session owns is when it last changed: a title edited yesterday with a log from last week
+            // is a session someone touched yesterday.
+            footprint.modified_ms = footprint.modified_ms.max(modified);
+        }
+        by_session.into_values().collect()
+    }
+
     pub fn files(&self, id: &str) -> Result<SessionFiles, LayoutError> {
         validate_id(id)?;
         let files = SessionFiles {
@@ -285,4 +351,70 @@ fn validate_id(id: &str) -> Result<(), LayoutError> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("girder-fp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("created");
+        dir
+    }
+
+    #[test]
+    fn the_log_and_its_sidecars_are_charged_to_one_session() {
+        // A footprint that counted a title file as its own session would report a directory twice as full of sessions as
+        // it is, and an eviction would try to delete `.title`.
+        let dir = scratch("one");
+        std::fs::write(dir.join("s1.jsonl.zst"), b"12345").expect("log");
+        std::fs::write(dir.join("s1.title"), b"abc").expect("title");
+        let layout = Layout::new(&dir);
+
+        let footprints = layout.footprints();
+
+        assert_eq!(footprints.len(), 1);
+        assert_eq!(footprints[0].session, "s1");
+        assert_eq!(footprints[0].log_bytes, 5);
+        assert_eq!(footprints[0].sidecar_bytes, 3);
+        assert_eq!(footprints[0].total(), 8);
+    }
+
+    #[test]
+    fn an_unrelated_file_is_not_charged_to_a_session() {
+        // Anything not ending in one of the three suffixes belongs to nobody, and charging it to whichever session sorted
+        // first would make an eviction's numbers wrong for a session that did nothing.
+        let dir = scratch("unrelated");
+        std::fs::write(dir.join("s1.jsonl.zst"), b"x").expect("log");
+        std::fs::write(dir.join("notes.txt"), b"ignore me").expect("stray");
+        let layout = Layout::new(&dir);
+
+        let footprints = layout.footprints();
+
+        assert_eq!(footprints.len(), 1);
+        assert_eq!(footprints[0].total(), 1);
+    }
+
+    #[test]
+    fn the_newest_file_a_session_owns_is_when_it_changed() {
+        // A title written today over a log from last week is a session someone touched today, and eviction by age has to
+        // see it that way or it deletes the one being used.
+        let dir = scratch("newest");
+        std::fs::write(dir.join("s1.jsonl.zst"), b"x").expect("log");
+        std::fs::write(dir.join("s1.title"), b"x").expect("title");
+        let layout = Layout::new(&dir);
+
+        let footprints = layout.footprints();
+
+        assert!(footprints[0].modified_ms > 0, "a real timestamp, not zero");
+    }
+
+    #[test]
+    fn an_empty_directory_has_no_footprints() {
+        let dir = scratch("empty");
+
+        assert!(Layout::new(&dir).footprints().is_empty());
+    }
 }

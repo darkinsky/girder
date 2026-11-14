@@ -93,6 +93,7 @@ mod config_edit;
 mod context_budget;
 mod credentials;
 mod deliverable;
+mod event_index;
 mod events;
 mod exec;
 mod extension_run_rpc;
@@ -221,6 +222,7 @@ mod terminal_local;
 mod terminal_rpc;
 mod terminal_rpc_extra;
 mod terminal_tool;
+mod text_safety;
 mod time;
 mod todo_tool;
 mod token_meter;
@@ -348,6 +350,7 @@ pub use credentials::{
     Store as CredentialStore, valid_environment,
 };
 pub use deliverable::{Deliverable, Kind as DeliverableKind, Set as DeliverableSet};
+pub use event_index::{Index as EventIndex, TurnSpan};
 pub use events::{
     Bail, Chain, DispatchError, Event, EventBus, Layer, ListenerId, ListenerScope, Next,
     ObservedEvent, Order, Parallel, ScopeKey, Serial, Terminal, Waterfall, child_scope,
@@ -734,6 +737,10 @@ pub use terminal_rpc_extra::{TerminalShell, discover_shells, register_terminal_e
 pub use terminal_tool::{
     TerminalLauncher, UnavailableLauncher, register_terminal_tools, terminal_read_tool,
     terminal_send_tool, terminal_start_tool,
+};
+pub use text_safety::{
+    Hazard as TextHazard, Kind as HazardKind, is_safe as is_text_safe, sanitize as sanitize_text,
+    scan as scan_text,
 };
 pub use time::{
     Instant as TimeInstant, MAX_FOUR_DIGIT_YEAR, MIN_FOUR_DIGIT_YEAR, MS_PER_DAY, MS_PER_HOUR,
