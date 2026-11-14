@@ -82,6 +82,7 @@ mod brand;
 mod builtin_commands;
 mod call_config;
 mod cancel_scope;
+mod canonical;
 mod checkpoint_store;
 mod chunked_list;
 mod code_language;
@@ -164,6 +165,7 @@ mod questions;
 mod registry;
 mod remote;
 mod response_cache;
+mod result_paging;
 mod resume_point;
 mod retention;
 mod retry;
@@ -217,6 +219,7 @@ mod skill_tool;
 mod spill;
 mod spill_policy;
 mod ssh;
+mod stats_csv;
 mod storage;
 mod storage_quota;
 mod str_replace_editor;
@@ -341,6 +344,7 @@ pub use brand::{
 pub use builtin_commands::register_builtin_commands;
 pub use call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
 pub use cancel_scope::{CancelReason, Scope as CancelScope, run_cleanups};
+pub use canonical::{Encoder, canonical_json, key_of};
 pub use checkpoint_store::{
     Checkpoint as StoredCheckpoint, Kind as CheckpointKind, Store as CheckpointStore,
     StoreError as CheckpointError,
@@ -595,6 +599,10 @@ pub use response_cache::{
     Cache as ResponseCache, CachedResponse, CachingProvider, DEFAULT_CAPACITY as CACHE_CAPACITY,
     Fingerprint, Stats as CacheStats, is_cacheable,
 };
+pub use result_paging::{
+    Cursor as PageCursor, CursorError, Page as ResultPage, Request as PageRequest,
+    page as page_result, page_from as page_result_from,
+};
 pub use resume_point::{
     Point as ResumePoint, Reason as ResumeReason, find as find_resume, is_safe as resume_is_safe,
 };
@@ -745,6 +753,7 @@ pub use ssh::{
     DEFAULT_TIMEOUT as SSH_DEFAULT_TIMEOUT, Host as SshHost, Outcome as SshOutcome, SshError,
     Transport as SshTransport, Unavailable as UnavailableSsh,
 };
+pub use stats_csv::{Table as CsvTable, escape_field, session_table, tool_table};
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,

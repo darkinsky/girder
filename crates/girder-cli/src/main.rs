@@ -571,6 +571,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some("metrics") => print_metrics(),
         Some("disk") => print_disk(),
+        Some("csv") => print_csv(),
         Some("catalog") => {
             // What the framework offers, as a machine-readable list. The service names come from the
             // registry's own key constants, so a name that is not published cannot appear here.
@@ -618,7 +619,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, tools-mcp, or tools-openai"
+                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, tools-mcp, or tools-openai"
             );
         }
     }
@@ -645,6 +646,49 @@ fn apply_model_limits(
         .max_tokens
         .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
     girder_core::AgentRuntime::set_model_limits(runtime, resolved.context_window, output);
+}
+
+/// Prints the tool usage table as CSV.
+///
+/// A table rather than the metrics format because the question is different: Prometheus answers "is the fleet healthy"
+/// and a spreadsheet answers "which tool is expensive, and by how much". The escaping and the formula neutralisation
+/// live in `stats_csv`, so a session title beginning with `=` cannot become a formula here.
+fn print_csv() {
+    let layout = girder_core::SessionLayout::new(sessions_root());
+    let mut all: Vec<girder_core::ToolStats> = Vec::new();
+    if let Ok(ids) = layout.ids() {
+        for id in ids {
+            let Ok(files) = layout.files(&id) else {
+                continue;
+            };
+            let Ok(events) = girder_core::read_session_file(&files.log) else {
+                continue;
+            };
+            all.extend(girder_core::tool_usage(&events));
+        }
+    }
+    // Merged across sessions, because the table answers a fleet question: a tool that is cheap once and called a
+    // thousand times is the expensive one, and a per-session table would hide that.
+    let mut merged: std::collections::BTreeMap<String, girder_core::ToolStats> =
+        std::collections::BTreeMap::new();
+    for stats in all {
+        let entry = merged
+            .entry(stats.name.clone())
+            .or_insert(girder_core::ToolStats {
+                name: stats.name.clone(),
+                calls: 0,
+                failures: 0,
+                argument_bytes: 0,
+                result_bytes: 0,
+            });
+        entry.calls = entry.calls.saturating_add(stats.calls);
+        entry.failures = entry.failures.saturating_add(stats.failures);
+        entry.argument_bytes = entry.argument_bytes.saturating_add(stats.argument_bytes);
+        entry.result_bytes = entry.result_bytes.saturating_add(stats.result_bytes);
+    }
+    let mut rows: Vec<girder_core::ToolStats> = merged.into_values().collect();
+    rows.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.name.cmp(&b.name)));
+    print!("{}", girder_core::tool_table(&rows).render());
 }
 
 /// Prints what the session directory occupies.
