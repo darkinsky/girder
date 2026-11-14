@@ -84,7 +84,6 @@ pub enum Ending {
     /// [`validate`] and [`is_fatal`], so nothing inside the library names this variant yet. It is
     /// kept rather than removed because [`validate_with`] is the only way to ask for it, and a
     /// cancelling caller is the case the whole [`Ending`] parameter exists for.
-    #[allow(dead_code)]
     Cancelled,
 }
 

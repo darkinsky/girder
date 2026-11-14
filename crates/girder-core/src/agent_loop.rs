@@ -204,6 +204,13 @@ pub struct LoopContext {
     /// belongs here.
     pub tool_cache: Option<std::sync::Mutex<crate::tool_cache::Cache>>,
 
+    /// How long one tool call may run before it is stopped.
+    ///
+    /// `None` leaves it unbounded, which is the behaviour before this field existed. A budget rather than a checked flag:
+    /// the process layer already has 120-second timeouts per command, and what was missing was the deadline around the
+    /// call itself.
+    pub tool_timeout: Option<Arc<crate::tool_watchdog::Policy>>,
+
     /// The rules that turn a call into allow, deny or ask.
     ///
     /// `None` allows everything: the absence of a policy is not a policy.
@@ -301,10 +308,18 @@ impl LoopContext {
             tool_cache: None,
             approver: None,
             approval_rules: None,
+            tool_timeout: None,
             compaction: None,
             context_window: None,
             max_output_tokens: None,
         }
+    }
+
+    /// Bounds how long one tool call may run.
+    #[must_use]
+    pub fn with_tool_timeout(mut self, policy: crate::tool_watchdog::Policy) -> Self {
+        self.tool_timeout = Some(Arc::new(policy));
+        self
     }
 
     /// Applies a policy to every call before it runs.
@@ -1221,6 +1236,38 @@ async fn ask_approver(
     }
 }
 
+/// Runs the call's body under the deployment's deadline.
+///
+/// `None` means the deadline expired. A free function because `dispatch` was at the length the linter enforces, and
+/// because the reason a deadline belongs here rather than at the process layer deserves to be written down where the
+/// decision is: the process layer's timeouts are per command, and a tool that never returns is not a command.
+async fn run_with_deadline(
+    context: &LoopContext,
+    execution: &ToolExecution,
+    tool: Arc<crate::tools::ToolDefinition>,
+    cancel: CancellationToken,
+) -> Option<ToolResult> {
+    let call = execution.clone();
+    let body = async {
+        context
+            .bus
+            .waterfall::<crate::tools::ToolExecute, _>(execution.clone(), move |_args| {
+                let call = call.clone();
+                let tool = Arc::clone(&tool);
+                let cancel = cancel.clone();
+                Box::pin(async move { run_body(tool, call, cancel).await })
+            })
+            .await
+    };
+    // Around the call rather than checked after it: a future that never completes never returns control, and the
+    // cancellation token is only read between steps -- which is exactly what a hung tool prevents.
+    let Some(policy) = context.tool_timeout.as_ref() else {
+        return Some(body.await);
+    };
+    let budget = std::time::Duration::from_millis(policy.timeout_for(&execution.name));
+    tokio::time::timeout(budget, body).await.ok()
+}
+
 pub async fn dispatch(
     context: &LoopContext,
     execution: ToolExecution,
@@ -1286,18 +1333,15 @@ pub async fn dispatch(
         }
     }
 
-    // The execute waterfall wraps the body. Its terminal is the actual call.
-    let call = execution.clone();
-    let body_cancel = cancel.clone();
-    let result = context
-        .bus
-        .waterfall::<crate::tools::ToolExecute, _>(execution.clone(), move |_args| {
-            let call = call.clone();
-            let tool = Arc::clone(&tool);
-            let cancel = body_cancel.clone();
-            Box::pin(async move { run_body(tool, call, cancel).await })
-        })
-        .await;
+    // The execute waterfall wraps the body, and the deadline wraps that.
+    let Some(result) =
+        run_with_deadline(context, &execution, Arc::clone(&tool), cancel.clone()).await
+    else {
+        return Ok(ToolResult::error(format!(
+            "`{}` did not finish within its budget and was stopped",
+            execution.name
+        )));
+    };
 
     let args = PostExecuteArgs {
         execution: execution.clone(),

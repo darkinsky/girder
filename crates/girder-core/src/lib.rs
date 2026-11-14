@@ -651,8 +651,9 @@ pub use str_replace_editor::{
 pub use stream_blocks::{StreamObserver, assemble_message};
 pub use stream_method::{StreamError, StreamHandle, StreamMethod, Streams};
 pub use stream_validate::{
-    Problem as StreamProblem, ProblemKind as StreamProblemKind, is_fatal as stream_is_fatal,
-    validate as validate_stream,
+    Ending as StreamEnding, Problem as StreamProblem, ProblemKind as StreamProblemKind,
+    is_fatal as stream_is_fatal, validate as validate_stream,
+    validate_with as validate_stream_ended,
 };
 pub use subagent::{
     DelegationResult, Depth, DepthLimitedTools, ScriptedDelegator, SubagentError, delegate,
