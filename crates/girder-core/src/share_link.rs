@@ -92,14 +92,17 @@ use std::collections::BTreeMap;
 /// token occupies, which leaves room for the collision counter that makes creation total.
 pub const TOKEN_ENTROPY_WORDS: usize = 3;
 
+/// The bytes at the end of a token that carry the collision counter.
+const COUNTER_BYTES: usize = 8;
+
 /// The number of bytes a token occupies before it is encoded.
-pub const TOKEN_BYTES: usize = 32;
+///
+/// Derived from the other two so the three cannot disagree -- a token slightly shorter than advertised is a weaker one,
+/// and nothing would notice.
+pub const TOKEN_BYTES: usize = TOKEN_ENTROPY_WORDS * 8 + COUNTER_BYTES;
 
 /// The number of characters in an encoded token: two hex digits per byte.
 pub const TOKEN_HEX_LEN: usize = TOKEN_BYTES * 2;
-
-/// The bytes at the end of a token that carry the collision counter.
-const COUNTER_BYTES: usize = 8;
 
 /// One share link: the token and what it points at.
 ///
@@ -320,7 +323,7 @@ impl Shares {
 /// written last so that two attempts can never produce the same token even when `entropy` returns one
 /// constant, which is the property [`Shares::create`] relies on to terminate.
 fn derive_token(entropy: &dyn Fn() -> u64, attempt: u64) -> String {
-    let mut bytes = [0_u8; TOKEN_BYTES];
+    let mut bytes = [0_u8; TOKEN_HEX_LEN / 2];
     let entropy_end = TOKEN_BYTES - COUNTER_BYTES;
 
     for (index, chunk) in bytes[..entropy_end].chunks_exact_mut(8).enumerate() {

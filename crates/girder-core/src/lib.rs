@@ -135,6 +135,7 @@ mod process_group;
 mod projection;
 mod projection_extra;
 mod projection_host;
+mod prompt_template;
 mod providers;
 mod ptc_policy;
 mod questions;
@@ -173,6 +174,7 @@ mod session_stats;
 mod session_timeline;
 mod session_title;
 mod settings_rpc;
+mod share_link;
 mod shell;
 mod skill;
 mod skill_catalog;
@@ -441,6 +443,7 @@ pub use projection_extra::{
     Versioned, VersionedProjection,
 };
 pub use projection_host::{HostError, ProjectionHost, Registry as ProjectionHosts};
+pub use prompt_template::{TemplateError, Variables, render as render_template};
 pub use providers::{
     Modality, ModelInfo, MountedProvider, ProviderRoute, Providers, Route, RouteError,
     RouteRegistry, deepseek_route, fits as model_fits, window_of,
@@ -550,6 +553,7 @@ pub use session_title::{Source as TitleSource, derive as derive_title};
 pub use settings_rpc::{
     MemorySettingsStore, SettingsStore, UnavailableSettingsStore, register_settings_methods,
 };
+pub use share_link::{Share, ShareError, Shares};
 pub use shell::{
     DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
     Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,
