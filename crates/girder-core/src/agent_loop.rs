@@ -873,6 +873,32 @@ fn read_mtime(execution: &ToolExecution) -> Option<u64> {
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// Appends what the error suggests trying, when the module recognises it.
+///
+/// Nothing is added for an unrecognised error: a guess that is usually right teaches a model to follow it when it is
+/// wrong, which is worse than the model reading the message itself.
+fn with_recovery_hint(tool: &str, blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let text: String = blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let suggestion = girder_core::suggest_recovery(tool, &text);
+    if suggestion.actions.is_empty() {
+        return blocks;
+    }
+    let mut hint = String::from("\n\nWhat to try:");
+    for action in &suggestion.actions {
+        hint.push_str("\n- ");
+        hint.push_str(&action.describe);
+    }
+    let mut out = blocks;
+    out.push(ContentBlock::Text { text: hint });
+    out
+}
+
 /// Removes or marks the characters in a result that are instructions rather than text.
 ///
 /// Only text blocks: an image or file block carries an attachment id, which is a name this layer chose and not content a
@@ -1170,6 +1196,14 @@ fn tool_calls<'a>(
             // each tool because every tool produces output and only this layer knows what the session can afford:
             // a tool that spilled on its own would do it at a threshold of its own choosing.
             let blocks = spill_if_needed(context, result.content.clone()).await;
+            // A failed tool is where a model most often repeats itself: the error names what went wrong and not what to
+            // do instead, so "change what the call depends on" was advice without a next move. Appended rather than
+            // substituted, because the tool's own words are the evidence and the suggestion is a reading of them.
+            let blocks = if is_error {
+                with_recovery_hint(name, blocks)
+            } else {
+                blocks
+            };
 
             let _ = context
                 .session
