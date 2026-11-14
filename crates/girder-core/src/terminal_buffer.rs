@@ -10,8 +10,8 @@
 //! A client that reconnects needs to continue where it stopped, not to receive a tail it has already seen.
 //! Every appended byte therefore gets a permanent position in a stream that only grows, and
 //! [`Buffer::read`] takes that position as its input. [`Buffer::total_bytes`] is the position of the next
-//! byte, and it never decreases — including after content is dropped, because a counter that fell back
-//! would look to a client like output had disappeared.
+//! byte and never decreases — including after content is dropped, because a counter that fell back would
+//! look to a client like output had disappeared.
 //!
 //! # Why a dropped offset is an error, not an empty answer
 //!
@@ -46,10 +46,27 @@ use std::collections::VecDeque;
 /// Clamping keeps the floor meaningful without letting it turn into unbounded retention.
 const MAX_KEEP_LINES: usize = 1024;
 
+/// What one read returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chunk {
+    /// The output from the requested offset onward, as valid UTF-8.
+    ///
+    /// Empty is a fact about the stream — nothing new — and never a way of reporting a loss: a loss sets
+    /// [`Chunk::truncated`] and returns the oldest text that still exists.
+    pub text: String,
+    /// The offset to pass to the next [`Buffer::read`].
+    ///
+    /// The end of the stream rather than the request plus `text.len()`: a read that started at a truncated
+    /// offset does not begin where it was asked to, so the caller cannot compute its next position itself.
+    pub next: u64,
+    /// Whether output before the requested offset was dropped.
+    pub truncated: bool,
+}
+
 /// One retained run of output and where it starts in the stream.
 ///
-/// Output is stored in the chunks it arrived in rather than as one buffer because trimming then pops whole
-/// entries: only the front entry is ever rewritten, and only when a cut lands inside it.
+/// Output is kept in the chunks it arrived in rather than as one buffer: trimming then pops whole entries,
+/// and only the front entry is ever rewritten, and only when a cut lands inside it.
 #[derive(Debug)]
 struct Entry {
     /// Whole characters only: every cut this module makes is on a character boundary.
@@ -67,7 +84,7 @@ struct Entry {
 pub struct Buffer {
     /// Retained output, oldest first.
     entries: VecDeque<Entry>,
-    /// The absolute offset of the next byte appended, which is also the count of bytes ever appended.
+    /// The absolute offset of the next byte appended, which is also the number of bytes ever appended.
     ///
     /// Monotonic even when content is dropped: a reader compares it against its own position to decide
     /// whether new output exists, and a value that fell back after a trim would look like output vanishing.
@@ -82,23 +99,6 @@ pub struct Buffer {
     held: usize,
 }
 
-/// What one read returned.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Chunk {
-    /// The output from the requested offset onward, as valid UTF-8.
-    ///
-    /// Empty is a fact about the stream ("nothing new"), never a way of reporting a loss: a loss sets
-    /// [`Chunk::truncated`] and returns the oldest text that still exists.
-    pub text: String,
-    /// The offset to pass to the next [`Buffer::read`].
-    ///
-    /// The end of the stream rather than `text.len()` added to the request: a read that started at a
-    /// truncated offset, or inside a character, does not begin where it was asked to.
-    pub next: u64,
-    /// Whether output before the requested offset was dropped.
-    pub truncated: bool,
-}
-
 impl Buffer {
     /// Creates a buffer holding at most `capacity_bytes` of output.
     ///
@@ -107,8 +107,8 @@ impl Buffer {
     /// protected only for its last `capacity_bytes` bytes (see the module docs).
     ///
     /// A zero capacity is treated as one byte rather than as "retain nothing": a buffer that keeps nothing
-    /// is indistinguishable from a buffer that is broken, and the last byte is what a client reads to see
-    /// that output is still arriving.
+    /// cannot answer any read truthfully, and the last byte is what shows a client that output still
+    /// arrives.
     #[must_use]
     pub fn new(capacity_bytes: usize, keep_lines: usize) -> Self {
         Self {
@@ -123,18 +123,18 @@ impl Buffer {
 
     /// Appends output.
     ///
-    /// Appending never fails and never returns an error for output that does not fit: the buffer's job is
-    /// to keep what it can, and what it could not keep is reported by the next [`Buffer::read`] as
-    /// truncation rather than by refusing the write. Refusing would push the decision onto every writer,
-    /// which knows less about the reader's position than the buffer does.
+    /// Appending never fails and never refuses output that does not fit: the buffer's job is to keep what
+    /// it can, and what it could not keep is reported by the next [`Buffer::read`] as truncation rather
+    /// than by refusing the write. Refusing would push the decision onto every writer, and a writer knows
+    /// less about the reader's position than the buffer does.
     pub fn append(&mut self, text: &str) {
         if text.is_empty() {
-            // An empty entry would be a chunk no read could start from, and one that a line-count scan
-            // would have to step over for no reason.
+            // An empty entry is a chunk no read could start from, and one a line-count scan would have to
+            // step over for no reason.
             return;
         }
         let start = self.total;
-        self.total = self.total.saturating_add(to_u64(text.len()));
+        self.total = self.total.saturating_add(width(text));
         self.held = self.held.saturating_add(text.len());
         self.entries.push_back(Entry {
             text: text.to_owned(),
@@ -146,7 +146,7 @@ impl Buffer {
     /// Reads the output from `from` onward.
     ///
     /// `from` is an offset previously returned as [`Chunk::next`] or taken from
-    /// [`Buffer::first_readable`]. When it is older than anything retained the result carries
+    /// [`Buffer::first_readable`]. When it is older than anything retained, the result carries
     /// `truncated: true` and the text starts at [`Buffer::first_readable`], because the alternative — an
     /// empty string — reads as "no output" and would make a client wait for bytes that were dropped.
     ///
@@ -165,22 +165,22 @@ impl Buffer {
         }
         if from < self.first {
             return Chunk {
-                text: self.text(),
+                text: self.text_from(self.first),
                 next: self.total,
                 truncated: true,
             };
         }
         Chunk {
-            text: self.from_offset(from),
+            text: self.text_from(from),
             next: self.total,
             truncated: false,
         }
     }
 
-    /// The total number of bytes ever appended.
+    /// The number of bytes ever appended.
     ///
-    /// Monotonic: it counts the stream, not the retained window, so a client can compare it with the
-    /// offset it last read to learn whether there is anything new even after a truncation.
+    /// Monotonic: it counts the stream, not the retained window, so a client can compare it with the offset
+    /// it last read to learn whether there is anything new even after a truncation.
     #[must_use]
     pub fn total_bytes(&self) -> u64 {
         self.total
@@ -197,28 +197,29 @@ impl Buffer {
 
     /// The offset of the oldest byte still readable.
     ///
-    /// Equal to [`Buffer::total_bytes`] when nothing is retained, which is the same offset
+    /// Equal to [`Buffer::total_bytes`] when nothing is retained, which is also the offset
     /// [`Buffer::read`] accepts to start over.
     #[must_use]
     pub fn first_readable(&self) -> u64 {
         self.first
     }
 
-    /// Drops the oldest output until either the ceiling or the line floor is satisfied.
+    /// Drops the oldest output until the byte ceiling or the line floor decides where the window starts.
     ///
-    /// The cut is taken at the earlier of two positions, not the later: the ceiling says how far the window
-    /// *may* move, the floor says how far it *must not* move, so the reachable cut is the smaller of the
-    /// two. Taking the larger would cut into the protected lines on every overflow.
+    /// The new start is the earlier of the two: the ceiling is how far the window *may* move, the floor is
+    /// where it *must not* move past, and the reachable position is the smaller of them. Taking the larger
+    /// would cut into the protected lines on every overflow, which is exactly what the floor is for.
     fn trim(&mut self) {
-        let capacity = to_u64(self.capacity_bytes);
-        if to_u64(self.held) <= capacity {
+        let capacity = width_of(self.capacity_bytes);
+        if width_of(self.held) <= capacity {
             return;
         }
         let ceiling = self.total.saturating_sub(capacity);
         let target = ceiling.min(self.protected_start());
         let target = self.boundary_from(target);
         if target <= self.first {
-            // The whole retained window is protected, or the cut would not remove a byte.
+            // The whole retained window is protected, or the cut would not remove a byte. Re-trimming on
+            // every append would then be pure work.
             return;
         }
         self.drop_before(target);
@@ -226,8 +227,8 @@ impl Buffer {
 
     /// The earliest offset the line floor allows the retained window to start at.
     ///
-    /// This is the start of the last `keep_lines` lines, raised past any line that is longer than the whole
-    /// capacity: such a line can only survive as its own tail, and saying so here is what stops one
+    /// This is the start of the last `keep_lines` lines, raised past any line longer than the whole
+    /// capacity: such a line can only survive as its own tail, and saying so here is what stops a single
     /// progress bar from pinning the buffer at an arbitrary size.
     fn protected_start(&self) -> u64 {
         if self.keep_lines == 0 || self.entries.is_empty() {
@@ -241,58 +242,67 @@ impl Buffer {
     /// Scanned backwards and stopped as soon as enough lines are counted, so the cost is the size of the
     /// protected tail rather than the size of the buffer.
     fn last_lines_start(&self) -> u64 {
-        // Line boundaries still to cross. A line is a run of bytes between newlines, and a newline at the
-        // very end of the text terminates the final line instead of starting an empty one — otherwise a
-        // trailing newline would spend one of the caller's protected lines on nothing.
+        // Line boundaries still to cross. A line is a run of bytes between newlines, and the newline that
+        // ends the text terminates the final line instead of starting an empty one — otherwise a trailing
+        // newline would spend one of the caller's protected lines on nothing.
         let mut remaining = self.keep_lines;
-        let mut skip_last = true;
+        let mut skip_terminator = self
+            .entries
+            .back()
+            .is_some_and(|entry| entry.text.ends_with('\n'));
+        // Walked backwards from the newest byte: the `remaining`-th newline met this way is exactly the one
+        // that opens the `remaining`-th line from the end, which is where the floor starts.
         for entry in self.entries.iter().rev() {
             for (index, byte) in entry.text.as_bytes().iter().enumerate().rev() {
-                if skip_last {
-                    skip_last = false;
-                    if *byte == b'\n' {
-                        continue;
-                    }
-                }
                 if *byte != b'\n' {
                     continue;
                 }
-                remaining -= 1;
+                if skip_terminator {
+                    skip_terminator = false;
+                    continue;
+                }
+                remaining = remaining.saturating_sub(1);
                 if remaining == 0 {
                     return entry
                         .start
-                        .saturating_add(to_u64(index))
+                        .saturating_add(width_of(index))
                         .saturating_add(1);
                 }
             }
         }
+        // Fewer lines than the floor asks for: the floor protects everything that is left, which is the only
+        // answer that never drops a line the caller said to keep.
         self.first
     }
 
     /// Raises `start` past any protected line that is longer than the whole capacity.
+    ///
+    /// Only bytes are examined to find newlines, which is safe for multi-byte characters: a UTF-8
+    /// continuation byte never equals `b'\n'`, so a newline found this way is always a real one.
     fn cap_lines(&self, start: u64) -> u64 {
-        let capacity = to_u64(self.capacity_bytes);
-        let mut position = start;
-        let mut line_start = start;
+        let capacity = width_of(self.capacity_bytes);
         let mut cut = start;
-        for slice in self.bytes_from(start) {
-            for byte in slice {
-                position = position.saturating_add(1);
+        let mut line_start = start;
+        for (base, slice) in self.slices_from(start) {
+            for (index, byte) in slice.as_bytes().iter().enumerate() {
                 if *byte != b'\n' {
                     continue;
                 }
-                cut = cut.max(shot_of(line_start, position, capacity));
-                line_start = position;
+                let line_end = base
+                    .saturating_add(width_of(index))
+                    .saturating_add(1);
+                cut = cut.max(line_fit(line_start, line_end, capacity));
+                line_start = line_end;
             }
         }
-        // The final line, which has no newline to end it.
-        cut.max(shot_of(line_start, position, capacity))
+        // The final line, which no newline ends.
+        cut.max(line_fit(line_start, self.total, capacity))
     }
 
     /// Drops every retained byte before `offset`, which must be a character boundary.
     fn drop_before(&mut self, offset: u64) {
         while let Some(front) = self.entries.front() {
-            let end = front.start.saturating_add(to_u64(front.text.len()));
+            let end = front.start.saturating_add(width(&front.text));
             if end > offset {
                 break;
             }
@@ -301,7 +311,7 @@ impl Buffer {
         }
         if let Some(front) = self.entries.front_mut() {
             if front.start < offset {
-                let cut = to_usize(offset.saturating_sub(front.start)).min(front.text.len());
+                let cut = narrow(offset.saturating_sub(front.start)).min(front.text.len());
                 if cut > 0 && front.text.is_char_boundary(cut) {
                     front.text.drain(..cut);
                     front.start = offset;
@@ -317,54 +327,55 @@ impl Buffer {
 
     /// The first offset at or after `offset` that begins a character.
     fn boundary_from(&self, offset: u64) -> u64 {
-        let mut position = offset;
-        for slice in self.bytes_from(offset) {
-            for byte in slice {
-                if !is_continuation(*byte) {
-                    return position;
-                }
-                position = position.saturating_add(1);
+        for entry in &self.entries {
+            let end = entry.start.saturating_add(width(&entry.text));
+            if end <= offset {
+                continue;
             }
+            let mut skip = narrow(offset.saturating_sub(entry.start)).min(entry.text.len());
+            while skip < entry.text.len() && !entry.text.is_char_boundary(skip) {
+                skip += 1;
+            }
+            return entry.start.saturating_add(width_of(skip));
         }
-        position
-    }
-
-    /// Everything still retained, in order.
-    fn text(&self) -> String {
-        self.from_offset(self.first)
+        offset.max(self.total)
     }
 
     /// The retained text from `offset` onward.
-    fn from_offset(&self, offset: u64) -> String {
+    fn text_from(&self, offset: u64) -> String {
         let mut text = String::new();
-        for (index, slice) in self.bytes_from(offset).enumerate() {
-            // A caller may hand back an offset that falls inside a character: a saved byte count can come
-            // from anywhere. Skipping the partial character keeps the answer equal to what was written,
-            // where lossy decoding would hand back replacement characters instead.
-            let slice = if index == 0 { from_boundary(slice) } else { slice };
-            text.push_str(&String::from_utf8_lossy(slice));
+        for (_, slice) in self.slices_from(offset) {
+            text.push_str(slice);
         }
         text
     }
 
-    /// The retained bytes from `offset` onward, chunk by chunk.
-    fn bytes_from(&self, offset: u64) -> impl Iterator<Item = &[u8]> + '_ {
+    /// The retained text from `offset` onward, chunk by chunk with the absolute offset of each chunk.
+    ///
+    /// A chunk that would start inside a character begins at the next one instead: a saved byte count can
+    /// come from anywhere, and skipping the partial character keeps the answer equal to what was written,
+    /// where lossy decoding would hand back replacement characters instead.
+    fn slices_from(&self, offset: u64) -> impl Iterator<Item = (u64, &str)> + '_ {
         self.entries.iter().filter_map(move |entry| {
-            let end = entry.start.saturating_add(to_u64(entry.text.len()));
+            let end = entry.start.saturating_add(width(&entry.text));
             if end <= offset {
                 return None;
             }
-            let skip = to_usize(offset.saturating_sub(entry.start)).min(entry.text.len());
-            entry.text.as_bytes().get(skip..)
+            let mut skip = narrow(offset.saturating_sub(entry.start)).min(entry.text.len());
+            while skip < entry.text.len() && !entry.text.is_char_boundary(skip) {
+                skip += 1;
+            }
+            let start = entry.start.saturating_add(width_of(skip));
+            entry.text.get(skip..).map(|slice| (start, slice))
         })
     }
 }
 
-/// Where a protected line has to start for it to fit inside `capacity`.
+/// Where a protected line has to start for its bytes to fit inside `capacity`.
 ///
-/// A line that already fits is left alone: `line_start` is returned, which raises nothing. A longer line
-/// can only keep its tail, because keeping the whole of it would let one line defeat the ceiling.
-const fn shot_of(line_start: u64, line_end: u64, capacity: u64) -> u64 {
+/// A line that already fits is left alone, so `line_start` is returned and nothing is raised. A longer line
+/// can only keep its tail, because keeping all of it would let one line defeat the ceiling.
+const fn line_fit(line_start: u64, line_end: u64, capacity: u64) -> u64 {
     if line_end.saturating_sub(line_start) <= capacity {
         line_start
     } else {
@@ -372,26 +383,17 @@ const fn shot_of(line_start: u64, line_end: u64, capacity: u64) -> u64 {
     }
 }
 
-/// Whether `byte` is a UTF-8 continuation byte, i.e. the tail of a character that began earlier.
-const fn is_continuation(byte: u8) -> bool {
-    byte & 0b1100_0000 == 0b1000_0000
-}
-
-/// `slice` without the continuation bytes at its start.
-fn from_boundary(slice: &[u8]) -> &[u8] {
-    let start = slice
-        .iter()
-        .position(|byte| !is_continuation(*byte))
-        .unwrap_or(slice.len());
-    slice.get(start..).unwrap_or_default()
+/// The length of `text` as an offset.
+fn width(text: &str) -> u64 {
+    width_of(text.len())
 }
 
 /// Widens a length for offset arithmetic.
-fn to_u64(value: usize) -> u64 {
+fn width_of(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-/// Narrows an offset for slicing, clamping rather than failing on a 32-bit target.
-fn to_usize(value: u64) -> usize {
+/// Narrows an offset for slicing, clamping rather than failing on a narrow target.
+fn narrow(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }

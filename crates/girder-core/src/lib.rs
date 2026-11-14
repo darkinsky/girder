@@ -200,6 +200,7 @@ mod subagent_tools;
 mod subprocess;
 mod system_prompt;
 mod terminal;
+mod terminal_buffer;
 mod terminal_local;
 mod terminal_rpc;
 mod terminal_rpc_extra;
@@ -643,6 +644,7 @@ pub use terminal::{
     Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,
     Status as TerminalStatus, TerminalError, Transcript,
 };
+pub use terminal_buffer::{Buffer as TerminalBuffer, Chunk as TerminalChunk};
 pub use terminal_local::{LocalLauncher, ProcessShell};
 pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
