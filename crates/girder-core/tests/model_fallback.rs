@@ -17,11 +17,11 @@
 //! against it as written before the crate root is wired to it. It resolves `crate::…` through the
 //! alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/model_fallback.rs"]
-mod model_fallback;
-
 use girder_core::ModelCapabilities;
-use model_fallback::{Candidate, Needs, Shortfall, choose};
+use girder_core::{
+    FallbackCandidate as Candidate, ModelNeeds as Needs, ModelShortfall as Shortfall,
+    candidates_from_routes, choose_model as choose,
+};
 
 // ---- fixtures ----------------------------------------------------------------------------------
 
@@ -320,4 +320,78 @@ fn a_preference_tie_is_broken_by_route_regardless_of_input_order() {
     assert_eq!(from_forwards.provider, "alpha");
     assert_eq!(from_forwards.model, "another");
     assert_eq!(from_backwards.model, from_forwards.model);
+}
+
+// ---- the route bridge ---------------------------------------------------------------------------
+
+#[test]
+fn a_route_table_becomes_candidates() {
+    // The selector is only useful if it can be asked about the models a deployment actually has. One route with one
+    // model is the shape this build ships, and a bridge that could not handle it would be decorative.
+    use girder_core::{Modality, ModelInfo, Route as ProviderRoute, RouteRegistry};
+
+    let mut routes = RouteRegistry::new();
+    let _ = routes.register(ProviderRoute {
+        name: "deepseek".to_owned(),
+        provider: "deepseek".to_owned(),
+        display_name: "DeepSeek".to_owned(),
+        default_model: Some("deepseek-chat".to_owned()),
+        models: vec![ModelInfo {
+            id: "deepseek-chat".to_owned(),
+            display_name: "DeepSeek Chat".to_owned(),
+            context_window: Some(64_000),
+            max_tokens: Some(8_192),
+            input_modalities: vec![Modality::Text],
+            supports_tools: true,
+            supports_reasoning: false,
+        }],
+    });
+
+    let candidates = candidates_from_routes(&routes);
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].model, "deepseek-chat");
+    assert_eq!(candidates[0].provider, "deepseek");
+    assert!(candidates[0].capabilities.tools, "the model declares tools");
+    assert!(!candidates[0].capabilities.vision, "text-only input");
+}
+
+#[test]
+fn a_model_without_tools_is_not_chosen_for_a_request_that_needs_them() {
+    // The gap this bridge closes: a request carrying tool definitions used to be sent to whatever model was configured,
+    // and the provider answered with a validation error that read like a harness bug.
+    use girder_core::{Modality, ModelInfo, ModelNeeds, Route as ProviderRoute, RouteRegistry};
+
+    fn model(id: &str, tools: bool, preference_route: &str) -> ProviderRoute {
+        ProviderRoute {
+            name: preference_route.to_owned(),
+            provider: "p".to_owned(),
+            display_name: "P".to_owned(),
+            default_model: Some(id.to_owned()),
+            models: vec![ModelInfo {
+                id: id.to_owned(),
+                display_name: id.to_owned(),
+                context_window: Some(128_000),
+                max_tokens: Some(4_096),
+                input_modalities: vec![Modality::Text],
+                supports_tools: tools,
+                supports_reasoning: false,
+            }],
+        }
+    }
+
+    let mut routes = RouteRegistry::new();
+    let _ = routes.register(model("no-tools", false, "a"));
+    let _ = routes.register(model("with-tools", true, "b"));
+
+    let candidates = candidates_from_routes(&routes);
+    let needs = ModelNeeds {
+        tools: true,
+        vision: false,
+        reasoning: false,
+        min_context: None,
+    };
+    let chosen = choose(&needs, &candidates).expect("one model can call tools");
+
+    assert_eq!(chosen.model, "with-tools");
 }

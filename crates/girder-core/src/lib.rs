@@ -159,6 +159,7 @@ mod search_tools;
 mod service;
 mod session;
 mod session_archive;
+mod session_branch;
 mod session_export_rpc;
 mod session_filter;
 mod session_layout;
@@ -207,6 +208,7 @@ mod time;
 mod todo_tool;
 mod token_meter;
 mod tool_batching;
+mod tool_cache;
 mod tool_contracts;
 mod tool_limits;
 mod tool_result_pruning;
@@ -412,7 +414,7 @@ pub use model_catalog_extra::{
 };
 pub use model_fallback::{
     Candidate as FallbackCandidate, Needs as ModelNeeds, Shortfall as ModelShortfall,
-    choose as choose_model,
+    candidates_from_routes, choose as choose_model,
 };
 pub use observation::{
     Conflict as ObservationConflict, EditError, Observation, Session as ObservationSession,
@@ -516,6 +518,7 @@ pub use session::{
 pub use session_archive::{
     ArchiveOutcome, ArchivePolicy, LogStats, analyze as analyze_log, archive as archive_session,
 };
+pub use session_branch::{BranchError, Forest as SessionForest, Link as SessionLink};
 pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
     Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,
@@ -659,6 +662,10 @@ pub use token_meter::{
     Price, cost as token_cost, estimate_blocks, estimate_message, estimate_text, price_for,
 };
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
+pub use tool_cache::{
+    Cache as ToolCache, Entry as ToolCacheEntry, Key as ToolCacheKey,
+    is_cacheable as is_tool_cacheable,
+};
 pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_tool_arguments};
 pub use tool_limits::{Limit as ToolLimit, Tracker as ToolTracker, Verdict as ToolVerdict};
 pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as decide_pruning};

@@ -300,3 +300,40 @@ fn summarize(total: usize, eliminated: &BTreeMap<String, usize>) -> String {
         ),
     }
 }
+
+/// Builds the candidates a route table offers, so a caller can ask [`choose`] about real models rather than hand-built
+/// ones.
+///
+/// Preference is the model's position within its route, later models scoring higher, which is only a starting point: a
+/// deployment with a real opinion sets `preference` itself, and this exists so the common case (one route, several
+/// models) does not require a caller to invent a number.
+#[must_use]
+pub fn candidates_from_routes(routes: &girder_core::RouteRegistry) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    for name in routes.names() {
+        let Ok(route) = routes.get(&name) else {
+            continue;
+        };
+        for (index, model) in route.models.iter().enumerate() {
+            out.push(Candidate {
+                provider: route.name.clone(),
+                model: model.id.clone(),
+                capabilities: girder_core::ModelCapabilities {
+                    tools: model.supports_tools,
+                    vision: model
+                        .input_modalities
+                        .iter()
+                        .any(|kind| matches!(kind, girder_core::Modality::Image)),
+                    reasoning: model.supports_reasoning,
+                    context_window: model.context_window,
+                    max_output: model.max_tokens,
+                },
+                context_window: model.context_window,
+                // A `u32` by construction: a route holds a handful of models, and a cast that saturated at four billion
+                // would be a different number than this loop can reach.
+                preference: u32::try_from(index).unwrap_or(u32::MAX),
+            });
+        }
+    }
+    out
+}
