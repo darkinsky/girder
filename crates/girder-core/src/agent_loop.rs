@@ -204,6 +204,12 @@ pub struct LoopContext {
     /// belongs here.
     pub tool_cache: Option<std::sync::Mutex<crate::tool_cache::Cache>>,
 
+    /// The approver a hook's `Ask` is resolved through.
+    ///
+    /// `None` refuses an `Ask` rather than running it: a call that was supposed to be checked and was not is worse than
+    /// a call that did not happen.
+    pub approver: Option<Arc<dyn crate::approval::Approver>>,
+
     /// How the history is compacted when it outgrows the context.
     ///
     /// `None` keeps everything: a deployment that has not decided what to drop should not have a default decide for
@@ -288,6 +294,7 @@ impl LoopContext {
             tool_limits: None,
             tool_tracker: None,
             tool_cache: None,
+            approver: None,
             compaction: None,
             context_window: None,
             max_output_tokens: None,
@@ -1130,6 +1137,42 @@ fn tool_calls<'a>(
 /// Order matters and is upstream's: pre-execute decides, execute calls, post-execute normalizes.
 /// A `Deny` from the first stops before the body runs, which is why it returns a `ToolResult`
 /// carrying the reason rather than an error — the model should see the denial and adapt.
+/// Resolves a hook's `Ask` through the deployment's approver.
+///
+/// A free function because `dispatch` was at the length the linter enforces and because the three ways this can refuse --
+/// no approver, a denial, an unanswered request -- are the interesting part and read better named.
+async fn ask_approver(
+    context: &LoopContext,
+    tool: &str,
+    question: &str,
+) -> Result<(), crate::tools::ToolResult> {
+    // A hook that wants a person decides the shape of the pause; without an approver there is nobody to ask, and the
+    // honest answer is to refuse rather than to run the call that was supposed to be checked.
+    let Some(approver) = &context.approver else {
+        return Err(crate::tools::ToolResult::error(format!(
+            "`{tool}` needs approval but no approver is configured: {question}"
+        )));
+    };
+    // A blank action or description cannot be put in front of a person; the constructor refuses it, and there is nothing
+    // to ask about.
+    let Some(request) = crate::approval::Request::new(tool, question) else {
+        return Err(crate::tools::ToolResult::error(format!(
+            "`{tool}` needs approval but the question was blank"
+        )));
+    };
+    match approver.ask(request).await {
+        Ok(crate::approval::Decision::Approved { .. }) => Ok(()),
+        Ok(crate::approval::Decision::Denied { .. }) => Err(crate::tools::ToolResult::error(
+            format!("`{tool}` was not approved: {question}"),
+        )),
+        // A timed-out or failed approval is not consent. Treating "nobody answered" as yes is the one reading that
+        // cannot be undone.
+        Err(error) => Err(crate::tools::ToolResult::error(format!(
+            "`{tool}` could not be approved: {error}"
+        ))),
+    }
+}
+
 pub async fn dispatch(
     context: &LoopContext,
     execution: ToolExecution,
@@ -1180,6 +1223,11 @@ pub async fn dispatch(
         }
         PreToolDecision::Cancel => {
             return Err(LoopError::Cancelled);
+        }
+        PreToolDecision::Ask { question } => {
+            if let Err(refusal) = ask_approver(context, &execution.name, &question).await {
+                return Ok(refusal);
+            }
         }
     }
 

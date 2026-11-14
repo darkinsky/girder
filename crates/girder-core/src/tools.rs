@@ -268,6 +268,14 @@ pub enum PreToolDecision {
     },
     /// Refuse it as a cancellation rather than a policy decision.
     Cancel,
+    /// Stop and ask a person before deciding.
+    ///
+    /// A distinct variant rather than a `Deny` with a different reason: a denial is final for this turn and a person's
+    /// answer is not, and the loop has to be able to tell them apart to know whether to wait.
+    Ask {
+        /// Shown to the person deciding.
+        question: String,
+    },
 }
 
 /// The post-dispatch decision.
