@@ -54,3 +54,43 @@ stats: Stats { hits: 2, misses: 1 }
 
 同一个教训在本会话出现过三次：`--tool read` 不调用 read 工具、`tools-mcp` 少报 8 个工具、
 以及这里的缓存。**单元测试证明单元正确；只有把东西跑起来才证明接缝正确。**
+
+---
+
+# 全部 26 个 session 方法已端到端验证
+
+对真实运行的服务逐个调用（空参数 + 真实参数两轮）：
+
+```
+list            ok          create          ok
+page            ok          events          ok
+projections     ok          prompt          ok（空参数下 INVALID_ARGUMENTS，正确）
+cancel          ok          rename          ok
+delete          ok          fork            ok
+search          ok          follow          ok
+resume          ok          export          ok
+archive         ok          duplicate       ok
+state           ok          updateQueue     ok
+attachment      ok          modelCatalog    ok
+selectModel     ok          openWorkspacePath ok
+canOpenWorkspacePath ok     workspaceDesktop  ok
+workspacePathApplications ok  stream        ok
+```
+
+**零个 `NOT_IMPLEMENTED`，零个 `UNKNOWN_METHOD`。**
+
+## 错误消息的质量
+
+空参数调 `session.page` 得到：
+
+```
+invalid arguments for `session.page`: missing field `address`
+```
+
+传 `address.session` 而不是 `address.sessionId` 得到：
+
+```
+invalid arguments for `session.page`: `address.sessionId` is required
+```
+
+**两个错误都指出了下一步该传什么**，而不是「参数错误」，这是端到端可用的实际标志。
