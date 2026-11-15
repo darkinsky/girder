@@ -92,6 +92,7 @@ mod code_language;
 mod commands;
 mod compaction;
 mod compaction_hook;
+mod compaction_pipeline;
 mod compaction_summary;
 mod config;
 mod config_edit;
@@ -400,6 +401,7 @@ pub use compaction::{
     summary_request, transcript_for_summary,
 };
 pub use compaction_hook::{CompactionPolicy, Plan as CompactionPlan, history_cost, message_cost};
+pub use compaction_pipeline::{Outcome as PipelineOutcome, run as run_compaction_pipeline};
 pub use compaction_summary::{
     Segment as CompactionSegment, render as render_compaction,
     summarize as summarize_for_compaction,
