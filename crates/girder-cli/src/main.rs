@@ -980,8 +980,12 @@ fn boot_check(cli: &Cli) -> Result<()> {
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {
+    // A file, not the in-memory store. `MemorySettingsStore` was the only shipped implementation, so every setting a
+    // deployment wrote was gone at the next restart -- `settings.set` changed a value until the process exited, which is
+    // not what any caller means by a setting. The store lives beside the sessions because both are this deployment's data.
+    let path = sessions_root().join("settings.json");
     let settings: Arc<dyn girder_core::SettingsStore> =
-        Arc::new(girder_core::MemorySettingsStore::new());
+        Arc::new(girder_core::FileSettingsStore::open(path));
     girder_core::register_settings_methods(remote, &settings);
 }
 

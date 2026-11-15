@@ -231,6 +231,7 @@ mod session_timeline;
 mod session_title;
 mod session_transcript;
 mod session_workspace;
+mod settings_file;
 mod settings_rpc;
 mod share_link;
 mod shell;
@@ -815,6 +816,7 @@ pub use session_workspace::{
     Association as WorkspaceAssociation, Index as WorkspaceIndex,
     WorkspaceError as WorkspacePathError, WorkspaceId as WorkspaceRoot,
 };
+pub use settings_file::FileSettingsStore;
 pub use settings_rpc::{
     MemorySettingsStore, SettingsStore, UnavailableSettingsStore, register_settings_methods,
 };
