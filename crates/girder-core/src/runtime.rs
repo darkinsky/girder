@@ -481,12 +481,22 @@ impl AgentRuntime {
                 Ok(_) => {}
                 Err(error) => {
                     // A failed turn still reports an end, or a client would wait forever for one.
+                    //
+                    // A cancellation is not a failure, and reporting it as one told a UI that turn 0 errored: turn zero
+                    // does not exist, so a client grouping deltas by turn had nothing to attach the failure to, and a
+                    // user pressing Ctrl-C was shown a provider error. `Aborted` is the variant for it and was only ever
+                    // produced by the `OpenAI` provider's own chunk mapping, never by this loop.
+                    let reason = if matches!(error, crate::agent_loop::LoopError::Cancelled) {
+                        FinishReason::Aborted
+                    } else {
+                        FinishReason::Error {
+                            message: error.to_string(),
+                        }
+                    };
                     self.publish(AgentEvent::TurnEnded {
                         session_id: session_id.to_owned(),
                         turn: 0,
-                        reason: FinishReason::Error {
-                            message: error.to_string(),
-                        },
+                        reason,
                     });
                     return;
                 }

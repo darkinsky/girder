@@ -23,14 +23,12 @@
 //!
 //! # What this file found
 //!
-//! Cancellation reaches the client as **`AgentEvent::TurnEnded { turn: 0, reason: Error { message:
-//! "loop cancelled" } }`**, not as `FinishReason::Aborted`: the runtime maps *every* loop error —
-//! including `LoopError::Cancelled` — onto `FinishReason::Error` with turn `0`, and `Aborted` is
-//! only produced by the `OpenAI` provider's own chunk mapping. A UI rendering that event shows "turn
-//! `0` failed" for a user's `Ctrl-C`, and a client that groups deltas by turn number has nothing to
-//! attach the failure to. The test below pins only the part that must hold (an end *is* announced,
-//! and the reason names cancellation) so that fixing the reason does not require rewriting the
-//! test.
+//! Cancellation used to reach the client as `AgentEvent::TurnEnded { turn: 0, reason: Error {
+//! message: "loop cancelled" } }` -- the runtime mapped every loop error onto a failed turn zero, and
+//! `Aborted` was only ever produced by the `OpenAI` provider's own chunk mapping. A UI showed a
+//! provider error for a user's `Ctrl-C`, and a client grouping deltas by turn had nothing to attach
+//! it to. The runtime now reports `FinishReason::Aborted` for a cancellation and keeps `Error` for
+//! real failures; the assertions here pin that split.
 //!
 //! Also confirmed here: a scope `cancel()` marks the tree but does **not** stop in-flight work by
 //! itself — the work's token is only cancelled by the owner's `run_cleanups`. That is the documented
@@ -469,19 +467,13 @@ async fn a_cancelled_turn_leaves_one_open_turn_in_the_log() {
     let AgentEvent::TurnEnded { reason, .. } = ended else {
         panic!("the awaited event is a turn end");
     };
-    let names_cancellation = match reason {
-        // Either shape is accepted on purpose. `Aborted` is the honest one, and is what a fixed
-        // runtime should send; today the runtime maps every loop error -- including
-        // `LoopError::Cancelled` -- onto `Error`, so the message is what identifies a cancel. Pinning
-        // the exact variant here would either lock in the defect or force a rewrite when it is fixed.
-        FinishReason::Aborted => true,
-        FinishReason::Error { message } => message.contains("cancel"),
-        FinishReason::Stop | FinishReason::Length | FinishReason::ToolCalls => false,
-    };
-    assert!(
-        names_cancellation,
-        "the announced end must identify a cancellation; a stop reported as a plain success or a \
-         truncation misleads every client that renders the reason"
+    // Exactly `Aborted`. The looser check this file started with accepted an `Error` whose message mentioned
+    // cancellation, which described the defect rather than the contract: a cancellation is not a failure, and a
+    // client that branches on the variant could not tell a `Ctrl-C` from a provider error.
+    assert_eq!(
+        reason,
+        FinishReason::Aborted,
+        "a cancelled turn ends as `Aborted`; anything else makes a client treat a user's interrupt as a failure"
     );
 }
 
