@@ -280,6 +280,7 @@ mod time;
 mod todo_tool;
 mod token_meter;
 mod tool_batching;
+mod tool_budget_config;
 mod tool_cache;
 mod tool_contracts;
 mod tool_extract;
@@ -958,6 +959,10 @@ pub use token_meter::{
 };
 pub use tokio_util::sync::CancellationToken;
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
+pub use tool_budget_config::{
+    Budget as ToolBudget, DEFAULT_MAX_CALLS, MAX_CALLS_KEY, Warning as BudgetWarning,
+    Watcher as ToolBudgetWatcher,
+};
 pub use tool_cache::{
     Cache as ToolCache, Entry as ToolCacheEntry, Key as ToolCacheKey,
     is_cacheable as is_tool_cacheable,

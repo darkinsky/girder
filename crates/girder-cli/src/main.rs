@@ -789,6 +789,13 @@ fn print_disk() {
     // The persistence layer's own bytes, which the log total above does not include: checkpoints, terminal transcripts and
     // the search cache all live beside the logs and all occupy disk. A `disk` command that reported only logs would
     // understate a deployment by however much the search index has grown.
+    // The tool budget the settings document currently asks for. Printed because a stored setting that never reaches a
+    // reader is the failure this whole path exists to make visible: `tools.maxCalls` was write-only before the watcher.
+    let settings: Arc<dyn girder_core::SettingsStore> = Arc::new(
+        girder_core::FileSettingsStore::open(sessions_root().join("settings.json")),
+    );
+    let budget = girder_core::ToolBudgetWatcher::from_arc(Arc::clone(&settings));
+    println!("tool call budget: {} per tool", budget.current().max_calls);
     let persistence = girder_core::Persistence::new(sessions_root());
     let persist = persistence.footprint();
     println!("logs: {}", usage.total_bytes);
