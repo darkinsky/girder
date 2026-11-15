@@ -160,6 +160,13 @@ pub struct AgentRuntime {
     running: Mutex<BTreeMap<String, Running>>,
 }
 
+/// How many read results one conversation remembers.
+///
+/// Small on purpose: the cache exists to stop a model re-reading the same file twice in a turn, not to be a store. Each
+/// entry holds a whole file's text, and the point at which remembering more costs more than the reads it saves is well
+/// below a hundred.
+const CACHE_CAPACITY: usize = 32;
+
 impl AgentRuntime {
     /// Builds a runtime.
     #[must_use]
@@ -413,6 +420,10 @@ impl AgentRuntime {
         // tool never does, and the cancellation token is only read between steps -- which is exactly what a hung tool
         // prevents. The budget is per tool so a build can take minutes and a read cannot.
         context = context.with_tool_timeout(crate::tool_watchdog::Policy::default());
+        // The read cache, on by default. Its whitelist is one tool -- `read` -- and it invalidates on a write through
+        // `cache_invalidate`, so the failure it can cause is a re-read rather than a stale answer. Before this line the
+        // cache was implemented, exported and entirely dead: a deployment could not get a hit.
+        context = context.with_tool_cache(CACHE_CAPACITY);
         // The loop's own goal, shared with the tool. Without this assignment the continuation logic below was dead
         // code: it read a field nothing ever set, so a created goal recorded an intent that never affected a turn.
         context.goal = self.goal.clone();

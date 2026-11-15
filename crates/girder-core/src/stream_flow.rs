@@ -74,7 +74,7 @@ pub enum SendResult {
 /// Not `Clone`: two handles over one window would each believe they owned its credit, and the
 /// capacity would then be enforced twice over or not at all. A streaming connection has exactly one
 /// sender, so one owner is the honest shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Flow {
     /// The maximum number of frames that may be outstanding at once.
     capacity: usize,
