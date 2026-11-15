@@ -621,45 +621,28 @@ pub fn register_terminal_retain_method(
     registry.register(NAMESPACE, "retain", move |call: RemoteCall| {
         let store = std::sync::Arc::clone(&store);
         Box::pin(async move {
-            let id = call
-                .args
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| crate::remote::RemoteError::InvalidArguments {
+            // Through the module's parser rather than by hand. Reading `lines` with `and_then(as_u64)` turned a negative
+            // or string limit into `None`, which means "keep everything" -- a caller asking for a bad value would have
+            // been given the whole transcript instead of an error.
+            let parsed = crate::terminal_retain_rpc::parse_args(&call.args).map_err(|detail| {
+                crate::remote::RemoteError::InvalidArguments {
                     namespace: NAMESPACE.to_owned(),
                     method: "retain".to_owned(),
-                    message: "`retain` needs an `id` naming the terminal".to_owned(),
-                })?;
-            let lines = call
-                .args
-                .get("lines")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok());
-            // The text to keep arrives in the call rather than being read from a live terminal: this method's job is to
-            // outlive the process, and the process asking for that is the one that has the bytes.
+                    message: detail,
+                }
+            })?;
             let output = call
                 .args
                 .get("output")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-
-            let request = crate::terminal_retain::Request {
-                id: id.to_owned(),
-                lines,
-            };
-            let retained =
-                crate::terminal_retain::retain(&store, &request, output).map_err(|error| {
-                    crate::remote::RemoteError::InvalidArguments {
-                        namespace: NAMESPACE.to_owned(),
-                        method: "retain".to_owned(),
-                        message: error.to_string(),
-                    }
-                })?;
-            Ok(serde_json::json!({
-                "bytes": retained.bytes,
-                "lines": retained.lines,
-                "truncated": retained.truncated,
-            }))
+            crate::terminal_retain_rpc::execute(&store, &parsed, output).map_err(|detail| {
+                crate::remote::RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "retain".to_owned(),
+                    message: detail,
+                }
+            })
         })
     });
 }

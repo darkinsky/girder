@@ -269,6 +269,7 @@ mod terminal_local;
 mod terminal_meta;
 mod terminal_persist;
 mod terminal_retain;
+mod terminal_retain_rpc;
 mod terminal_rpc;
 mod terminal_rpc_extra;
 mod terminal_tool;
@@ -923,6 +924,10 @@ pub use terminal_persist::{PersistError as TerminalPersistError, Store as Termin
 pub use terminal_retain::{
     Request as RetainRequest, RetainError, Retained as RetainedOutput, read as read_retained,
     retain,
+};
+pub use terminal_retain_rpc::{
+    Args as RetainArgs, description as retain_description, execute as execute_retain,
+    parse_args as parse_retain_args,
 };
 pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
