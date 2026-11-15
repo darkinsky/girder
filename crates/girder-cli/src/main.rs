@@ -570,10 +570,19 @@ fn print_schema(format: Option<&str>) -> Result<()> {
                     "The RPC surface a client can call over /api/remote.invoke.".to_owned(),
                 ),
             };
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&girder_core::openapi_document(&catalogue, info))?
-            );
+            // The document must describe what a server serves, and this catalogue is three namespaces of the
+            // thirteen a server registers. `openapi_full` reads the registry instead, so a method that exists cannot
+            // be missing from the document -- the listing of `catalogue` above stays because it carries the type
+            // definitions that give the schemas names.
+            let _ = &catalogue;
+            let names = girder_core::registered_method_names();
+            let described = serde_json::json!({
+                "title": info.title,
+                "version": info.version,
+                "description": info.description,
+            });
+            let full = girder_core::openapi_document_from_names(&names, &described);
+            println!("{}", serde_json::to_string_pretty(&full)?);
         }
         Some("metrics") => print_metrics(),
         Some("disk") => print_disk(),

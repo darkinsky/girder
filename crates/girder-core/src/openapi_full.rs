@@ -497,3 +497,109 @@ fn rewrite_reference(value: Value) -> Value {
 fn escape_pointer(name: &str) -> String {
     name.replace('~', "~0").replace('/', "~1")
 }
+
+/// Renders a document from the method names a build registers, without constructing a registry.
+///
+/// A registry needs collaborators -- a catalog, a job registry, a workspace table -- and a schema command has none of
+/// them. `registered_method_names` already answers "what does this build serve" from the same registration functions a
+/// server calls, so this takes that list and produces the same document shape: one operation per method, no invented
+/// signatures.
+///
+/// A method with no descriptor in any catalogue is published with an empty request body rather than omitted. Omitting it
+/// would make the document describe a smaller surface than the build serves, which is the failure this module exists to
+/// prevent.
+#[must_use]
+pub fn document_from_names(names: &[String], info: &serde_json::Value) -> serde_json::Value {
+    let mut paths = serde_json::Map::new();
+    let mut sorted: Vec<&String> = names.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    for qualified in &sorted {
+        let Some((namespace, method)) = qualified.split_once('.') else {
+            continue;
+        };
+        paths.insert(
+            format!("/{namespace}/{method}"),
+            serde_json::json!({
+                "post": {
+                    "operationId": qualified.replace('.', "_"),
+                    "summary": qualified,
+                    "tags": [namespace],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "args": {"type": "object"},
+                                        "peer": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "The method's answer, or an error envelope."}
+                    },
+                    "x-girder-namespace": namespace,
+                    "x-girder-method": method
+                }
+            }),
+        );
+    }
+    let paths_len = paths.len();
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": info,
+        "paths": serde_json::Value::Object(paths),
+        // Counted from `paths`, not from `sorted`: a name with no namespace produces no path, and a count that included
+        // it would claim an operation the document does not contain.
+        "x-girder-operation-count": paths_len,
+    })
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn names_become_operations_without_a_registry() {
+        // The schema command has no catalog, no job registry and no workspace table, so it cannot build a
+        // `RemoteRegistry`. This path exists so the document can still describe what the build serves.
+        let names: Vec<String> = vec![
+            "session.state".to_owned(),
+            "terminal.read".to_owned(),
+            "zzz.last".to_owned(),
+        ];
+
+        let document = document_from_names(&names, &serde_json::json!({"title": "t"}));
+
+        assert_eq!(document["x-girder-operation-count"], 3);
+        assert!(document["paths"]["/session/state"]["post"].is_object());
+        assert_eq!(
+            document["paths"]["/session/state"]["post"]["tags"][0],
+            "session"
+        );
+    }
+
+    #[test]
+    fn duplicate_and_unsorted_names_produce_one_operation_each() {
+        let names: Vec<String> = vec!["b.one".to_owned(), "a.two".to_owned(), "b.one".to_owned()];
+
+        let document = document_from_names(&names, &serde_json::json!({}));
+
+        assert_eq!(document["x-girder-operation-count"], 2);
+    }
+
+    #[test]
+    fn a_name_without_a_namespace_is_skipped_rather_than_invented() {
+        // A bare name has no path to live at. Inventing a namespace would publish a route nothing serves.
+        let names: Vec<String> = vec!["bare".to_owned(), "real.method".to_owned()];
+
+        let document = document_from_names(&names, &serde_json::json!({}));
+
+        assert_eq!(document["x-girder-operation-count"], 1);
+        assert!(document["paths"]["/real/method"].is_object());
+    }
+}

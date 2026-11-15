@@ -1,8 +1,8 @@
 //! One persistence layer per deployment, so the three durable stores are constructed, pruned, and
 //! measured together instead of being rediscovered by each caller.
 //!
-//! The crate already has three durable stores — [`crate::CheckpointStore`],
-//! [`crate::TerminalPersistStore`], and the search cache in [`crate::search_persist`] — and all three
+//! The crate already has three durable stores — `CheckpointStore`,
+//! `TerminalPersistStore`, and the search cache in `search_persist` — and all three
 //! are individually tested. What is missing is a single object that *holds* them. Each one takes a
 //! directory of its own, so a caller that wires them up by hand has to decide the layout itself, and
 //! two callers that decide differently put one deployment's checkpoints somewhere its terminals are
@@ -26,7 +26,7 @@
 //! in a deployment where every individual store is working correctly. The fan-out lives here so a
 //! caller cannot forget a store that was added after it wrote its policy. The search index is pruned
 //! for the same reason, by dropping the whole file — it is a cache, and a cache that outlives its
-//! usefulness is rebuilt cheaply, which is the argument [`crate::search_persist`] itself makes for a
+//! usefulness is rebuilt cheaply, which is the argument `search_persist` itself makes for a
 //! version mismatch.
 //!
 //! # Why pruning stops at the first failure
@@ -133,7 +133,7 @@ pub struct Footprint {
 impl Footprint {
     /// The total bytes this layer occupies.
     ///
-    /// Saturating for the same reason [`crate::StorageQuota`]'s arithmetic is: a sum that wrapped
+    /// Saturating for the same reason `StorageQuota`'s arithmetic is: a sum that wrapped
     /// would report a deployment as nearly empty at exactly the moment it is full, which is the one
     /// direction of error a quota check must not make.
     #[must_use]
@@ -224,12 +224,12 @@ impl Persistence {
     /// The search index has no age of its own that can be tested this way: it describes every session
     /// at once and is rewritten wholesale, so a single stale record is not a stale file. It is pruned
     /// by removing the whole file, which is safe because it is a cache rebuilt on the next query —
-    /// see [`crate::search_persist`] for why a missing cache is not a failure.
+    /// see `search_persist` for why a missing cache is not a failure.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistError::Terminals`], [`PersistError::Checkpoints`], or
-    /// [`PersistError::SearchIndex`] when that stage failed, in which case the stages after it were
+    /// Returns `PersistError::Terminals`, `PersistError::Checkpoints`, or
+    /// `PersistError::SearchIndex` when that stage failed, in which case the stages after it were
     /// not attempted. In a successful result the counts are exact: nothing that failed is counted as
     /// removed.
     pub fn prune(&self, now_ms: u64, older_than_ms: u64) -> Result<Pruned, PersistError> {
@@ -253,7 +253,7 @@ impl Persistence {
     /// and is visibly "nothing measured".
     ///
     /// The session logs themselves are not counted: this is the persistence layer's footprint, and the
-    /// logs belong to the session store, which measures them in [`crate::StorageQuota`].
+    /// logs belong to the session store, which measures them in `StorageQuota`.
     #[must_use]
     pub fn footprint(&self) -> Footprint {
         let mut footprint = Footprint::default();

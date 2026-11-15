@@ -153,6 +153,7 @@ mod name_suggest;
 mod observation;
 mod office_document;
 mod openapi;
+mod openapi_full;
 mod output_budget;
 mod output_digest;
 mod output_predict;
@@ -573,6 +574,10 @@ pub use office_document::{
     from_extension as document_from_extension, is_document, is_readable as document_is_readable,
 };
 pub use openapi::{Info as OpenApiInfo, document as openapi_document};
+pub use openapi_full::{
+    Operation as FullOpenApiOperation, document as full_openapi_document,
+    document_from_names as openapi_document_from_names, operations as openapi_operations,
+};
 pub use output_budget::{
     Allocation as OutputAllocation, Budget as OutputBudget, allocate as allocate_output,
 };
