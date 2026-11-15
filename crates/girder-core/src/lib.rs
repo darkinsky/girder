@@ -195,6 +195,7 @@ mod search_tools;
 mod service;
 mod session;
 mod session_archive;
+mod session_backend;
 mod session_branch;
 mod session_digest;
 mod session_export_rpc;
@@ -282,6 +283,7 @@ mod tool_schedule;
 mod tool_schema_export;
 mod tool_trace;
 mod tool_usage;
+mod tool_value;
 mod tool_watchdog;
 mod tools;
 mod trace_span;
@@ -697,6 +699,10 @@ pub use session::{
 pub use session_archive::{
     ArchiveOutcome, ArchivePolicy, LogStats, analyze as analyze_log, archive as archive_session,
 };
+pub use session_backend::{
+    Backend as SessionBackend, Capabilities as BackendCapabilities, Choice as BackendChoice,
+    Config as SessionBackendConfig, choose as choose_session_backend,
+};
 pub use session_branch::{
     BranchError, Forest as SessionForest, Link as SessionLink, forest_from_ids, links_from_ids,
 };
@@ -942,6 +948,10 @@ pub use tool_trace::{
     summarize as summarize_tool_traces,
 };
 pub use tool_usage::{ToolStats, usage as tool_usage};
+pub use tool_value::{
+    Table as RenderedTable, Value as StructuredValue, infer as infer_tool_value,
+    render as render_tool_value,
+};
 pub use tool_watchdog::{Policy as WatchdogPolicy, Verdict as WatchdogVerdict, Watch};
 pub use tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolBody, ToolDefinition, ToolError,
