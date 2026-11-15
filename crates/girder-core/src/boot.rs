@@ -207,7 +207,10 @@ impl BootConfig {
             cwd: std::env::var("GIRDER_CWD")
                 .ok()
                 .map(std::path::PathBuf::from),
-            session_dir: std::env::var("GIRDER_SESSION_DIR")
+            // `GIRDER_SESSIONS` is the name the rest of the harness reads -- the CLI's `sessions_root` and every
+            // documented example. This field said `GIRDER_SESSION_DIR`, so a deployment that set the documented variable
+            // got a boot report claiming no session directory was configured while the CLI was using one.
+            session_dir: std::env::var("GIRDER_SESSIONS")
                 .ok()
                 .map(std::path::PathBuf::from),
             max_turns: std::env::var("GIRDER_MAX_TURNS")
