@@ -572,6 +572,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         Some("metrics") => print_metrics(),
         Some("disk") => print_disk(),
         Some("csv") => print_csv(),
+        Some("health") => print_health(),
         Some("catalog") => {
             // What the framework offers, as a machine-readable list. The service names come from the
             // registry's own key constants, so a name that is not published cannot appear here.
@@ -619,7 +620,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, tools-mcp, or tools-openai"
+                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, health, tools-mcp, or tools-openai"
             );
         }
     }
@@ -646,6 +647,42 @@ fn apply_model_limits(
         .max_tokens
         .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
     girder_core::AgentRuntime::set_model_limits(runtime, resolved.context_window, output);
+}
+
+/// Prints how healthy this deployment's sessions are.
+///
+/// A score per session, then the fleet rate. The score is a reading of one log -- whether its calls pair, its turns close,
+/// its events order -- and the rate is what an operator actually watches, because a single bad log is normal and a third of
+/// them is not.
+fn print_health() {
+    let layout = girder_core::SessionLayout::new(sessions_root());
+    let mut logs: Vec<Vec<girder_core::SessionEvent>> = Vec::new();
+    if let Ok(ids) = layout.ids() {
+        for id in ids {
+            let Ok(files) = layout.files(&id) else {
+                continue;
+            };
+            if let Ok(events) = girder_core::read_session_file(&files.log) {
+                logs.push(events);
+            }
+        }
+    }
+    let sample = girder_core::sample_health(&logs, girder_core::now_millis());
+    println!("sessions: {}", sample.sessions);
+    println!("healthy: {}", sample.healthy);
+    println!("errors: {}", sample.errors);
+    println!("mean score: {:.1}", sample.mean_score);
+    // The issues, grouped: one log with five problems and five logs with one each look the same in a count and are
+    // different situations.
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for events in &logs {
+        for issue in girder_core::diagnose_health(events) {
+            *counts.entry(format!("{:?}", issue.kind)).or_insert(0) += 1;
+        }
+    }
+    for (kind, count) in counts {
+        println!("  {kind}: {count}");
+    }
 }
 
 /// Prints the tool usage table as CSV.

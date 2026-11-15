@@ -117,6 +117,8 @@ mod fs_rpc;
 mod fs_tools;
 mod goal;
 mod goal_tool;
+mod health_trend;
+
 mod home_paths;
 mod host_rpc;
 mod image_block;
@@ -264,11 +266,13 @@ mod tool_batching;
 mod tool_cache;
 mod tool_contracts;
 mod tool_extract;
+mod tool_graph;
 mod tool_idempotency;
 mod tool_limits;
 mod tool_output_view;
 mod tool_result_pruning;
 mod tool_retry;
+mod tool_retry_plan;
 mod tool_schedule;
 mod tool_schema_export;
 mod tool_trace;
@@ -455,6 +459,10 @@ pub use goal::{
     Phase, check_reference as check_goal_reference,
 };
 pub use goal_tool::goal_tool;
+pub use health_trend::{
+    HEALTH_RATE_DROP, SCORE_DROP, Sample as HealthSample, Trend as HealthTrend,
+    analyze as analyze_health_trend, sample as sample_health,
+};
 pub use home_paths::Paths as HomePaths;
 pub use host_rpc::{
     Opener, SystemOpener, UnavailableOpener, register_host_methods, register_host_methods_with,
@@ -890,6 +898,9 @@ pub use tool_contracts::{FailureKind, Violation, validate_arguments as validate_
 pub use tool_extract::{
     Extracted as ExtractedOutput, extract as extract_output, glob_paths, grep_paths,
 };
+pub use tool_graph::{
+    GraphError, Node as GraphNode, Plan as GraphPlan, happens_before, plan as plan_graph,
+};
 pub use tool_idempotency::{
     Decision as IdempotencyDecision, Executed, Idempotency, decide as decide_idempotent,
     executed as executed_calls, idempotency as tool_idempotency,
@@ -900,6 +911,9 @@ pub use tool_result_pruning::{Presentation, apply as apply_pruning, decide as de
 pub use tool_retry::{
     Failure as ToolFailure, FailureReason as ToolFailureReason, Policy as ToolRetryPolicy,
     corrective_message,
+};
+pub use tool_retry_plan::{
+    Failure as RetryFailure, Kind as RetryKind, Plan as RetryPlan, plan as plan_tool_retry,
 };
 pub use tool_schedule::{
     Call as ScheduleCall, Plan as SchedulePlan, is_read_only, plan as plan_schedule,
