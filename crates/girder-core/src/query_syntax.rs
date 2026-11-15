@@ -365,7 +365,8 @@ impl Parser {
         let mut left = self.parse_unary()?;
         loop {
             match self.peek() {
-                None | Some(Spanned {
+                None
+                | Some(Spanned {
                     token: Token::RParen | Token::Or,
                     ..
                 }) => return Ok(left),
@@ -414,12 +415,18 @@ impl Parser {
             Token::LParen => {
                 // `()` is the identity, not an error: it is what a query builder produces when every
                 // optional clause was omitted, and "no constraint" is exactly what that means.
-                if matches!(self.peek().map(|spanned| &spanned.token), Some(Token::RParen)) {
+                if matches!(
+                    self.peek().map(|spanned| &spanned.token),
+                    Some(Token::RParen)
+                ) {
                     self.next += 1;
                     return Ok(Expr::All);
                 }
                 let inner = self.parse_or()?;
-                if matches!(self.peek().map(|spanned| &spanned.token), Some(Token::RParen)) {
+                if matches!(
+                    self.peek().map(|spanned| &spanned.token),
+                    Some(Token::RParen)
+                ) {
                     self.next += 1;
                     return Ok(inner);
                 }

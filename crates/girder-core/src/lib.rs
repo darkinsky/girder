@@ -63,6 +63,7 @@ pub mod api_config;
 pub mod api_job;
 mod api_key;
 pub mod api_session;
+mod api_version;
 mod approval;
 mod approval_rules;
 mod argument_infer;
@@ -175,6 +176,7 @@ mod retry;
 mod retrying_provider;
 mod rpc_limits;
 mod runtime;
+mod sandbox_path;
 mod schedule;
 mod schedule_rpc;
 mod schedule_runner;
@@ -630,6 +632,7 @@ pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_wi
 pub use retrying_provider::RetryingProvider;
 pub use rpc_limits::{Limiter, Permit, Quota, Refusal as QuotaRefusal};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
+pub use sandbox_path::{Sandbox as PathSandbox, SandboxError, Verdict as SandboxVerdict};
 pub use schedule::{
     CreateError, CronExpression, Firing, Instant as ScheduleInstant, MAX_TITLE_CHARS, MIN_INTERVAL,
     Offset, Rule, Schedule, ScheduleError, ScheduleId, Scheduler, Tick, TimeOfDay,

@@ -962,6 +962,16 @@ fn register_session_core(
     register_create(registry, catalog);
     register_history(registry, catalog);
     register_follow(registry, catalog);
+    // The version handshake. A client that speaks an older shape asks once and learns it is old, instead of discovering it
+    // from an argument error it cannot interpret -- and a client newer than this build is told to upgrade rather than
+    // silently degraded, which is the one failure a version check exists to prevent.
+    registry.register("session", "version", move |_call| {
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                "version": crate::api_version::Version::CURRENT.as_u32(),
+            }))
+        })
+    });
     register_stream(registry, catalog);
     crate::session_export_rpc::register_session_export_method(registry, catalog);
     register_rename(registry, catalog);

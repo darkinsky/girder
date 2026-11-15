@@ -133,10 +133,7 @@ fn a_path_inside_is_inside() {
 fn the_root_itself_is_inside() {
     let fixture = Fixture::new("root-itself");
 
-    assert_eq!(
-        fixture.sandbox.check(&fixture.inside("")),
-        Verdict::Inside
-    );
+    assert_eq!(fixture.sandbox.check(&fixture.inside("")), Verdict::Inside);
 }
 
 #[test]
@@ -161,7 +158,9 @@ fn parent_segments_cannot_climb_out() {
     let fixture = Fixture::new("dotdot");
 
     // `..` here is resolved against the root, so this names the parent of the root, not the root.
-    let verdict = fixture.sandbox.check(&format!("{}/../etc/passwd", fixture.root.display()));
+    let verdict = fixture
+        .sandbox
+        .check(&format!("{}/../etc/passwd", fixture.root.display()));
 
     assert!(is_outside(&verdict), "{verdict:?}");
 }
@@ -170,10 +169,9 @@ fn parent_segments_cannot_climb_out() {
 fn a_deep_climb_is_outside() {
     let fixture = Fixture::new("deep-dotdot");
 
-    let verdict = fixture.sandbox.check(&format!(
-        "{}/a/b/../../../..",
-        fixture.root.display()
-    ));
+    let verdict = fixture
+        .sandbox
+        .check(&format!("{}/a/b/../../../..", fixture.root.display()));
 
     assert!(is_outside(&verdict), "{verdict:?}");
 }
@@ -183,7 +181,9 @@ fn parent_segments_that_stay_inside_are_inside() {
     let fixture = Fixture::new("dotdot-inside");
     std::fs::create_dir_all(fixture.root.join("a/b")).expect("directory created");
 
-    let verdict = fixture.sandbox.check(&format!("{}/a/b/../c", fixture.root.display()));
+    let verdict = fixture
+        .sandbox
+        .check(&format!("{}/a/b/../c", fixture.root.display()));
 
     assert_eq!(verdict, Verdict::Inside);
 }
@@ -354,7 +354,9 @@ fn a_new_file_under_a_symlinked_directory_that_leaves_is_outside() {
     let fixture = Fixture::new("new-file-link");
     let link = fixture.link("out", Path::new("/tmp"));
 
-    let verdict = fixture.sandbox.check(&format!("{link}/not-created-yet.txt"));
+    let verdict = fixture
+        .sandbox
+        .check(&format!("{link}/not-created-yet.txt"));
 
     assert!(is_outside(&verdict), "{verdict:?}");
 }
@@ -374,7 +376,10 @@ fn a_relative_path_is_taken_from_the_root() {
 fn a_relative_path_can_climb_out() {
     let fixture = Fixture::new("relative-escape");
 
-    assert!(is_outside(&fixture.sandbox.check("../outside.txt")), "one up");
+    assert!(
+        is_outside(&fixture.sandbox.check("../outside.txt")),
+        "one up"
+    );
     assert!(
         is_outside(&fixture.sandbox.check("src/../../outside.txt")),
         "two up"

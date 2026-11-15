@@ -62,6 +62,11 @@
 //! bound of the window, so a caller whose own version is at or above that bound can still tell that
 //! the cause is removal rather than a bad guess.
 
+// `parse` and the error type are the receiving end of the handshake: this build reports its version, and a caller that
+// wants to check a peer's implements the parse side. They are exported for that caller rather than removed, because a
+// version number without a parser is a number nobody can compare.
+#![allow(dead_code)]
+
 use std::fmt;
 
 /// One API version.
