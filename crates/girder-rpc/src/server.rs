@@ -263,11 +263,23 @@ impl RpcServer {
             // origin to configure, and so opening it proves the server is running.
             .route(crate::WEB_INDEX_PATH, get(web_index));
         if self.remote.is_some() {
-            router = router.route(INVOKE_PATH, axum::routing::post(invoke));
+            // The bound the server actually applied before this line was axum's default of 2 MiB -- an accidental ceiling
+            // rather than a configured one. `rpc_limits` documents a `max_request_bytes` and has no caller in this crate,
+            // so a deployment tuning it changed nothing.
+            router = router
+                .route(INVOKE_PATH, axum::routing::post(invoke))
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES));
         }
         router.with_state(self)
     }
 }
+
+/// The largest request body the invoke endpoint accepts.
+///
+/// Chosen to match what `rpc_limits::Quota::default` describes. A tool call carries its arguments inline and the largest
+/// one this build produces is a `write` of a source file, so a megabyte is generous for the protocol and small enough that
+/// a hostile body is refused before it is parsed.
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// Serves the embedded probe page.
 ///
