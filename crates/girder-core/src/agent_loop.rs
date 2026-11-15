@@ -1284,7 +1284,16 @@ fn tool_calls<'a>(
             // An oversized result is saved and replaced by a locator. The decision is made here rather than inside
             // each tool because every tool produces output and only this layer knows what the session can afford:
             // a tool that spilled on its own would do it at a threshold of its own choosing.
-            let blocks = spill_if_needed(context, result.content.clone()).await;
+            // A tool that returned structured data says so with `value`, and nothing read that field: the text block was
+            // the only thing the model ever saw, so a table was however the tool happened to stringify it. Rendering here
+            // makes the canonical value the thing that reaches the model, and leaves a text-only result untouched.
+            // `to_content` is the renderer the value already carries; the point is that it is now called. Before this,
+            // `ToolResult::json` set `value` and nothing read it, so the canonical value never reached the model.
+            let rendered = match &result.value {
+                Some(value) => value.to_content(),
+                None => result.content.clone(),
+            };
+            let blocks = spill_if_needed(context, rendered).await;
             // A failed tool is where a model most often repeats itself: the error names what went wrong and not what to
             // do instead, so "change what the call depends on" was advice without a next move. Appended rather than
             // substituted, because the tool's own words are the evidence and the suggestion is a reading of them.
