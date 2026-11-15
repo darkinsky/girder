@@ -228,6 +228,21 @@ impl<'a> Watcher<'a> {
         Watcher::from_source(Source::Owned(store))
     }
 
+    /// Builds a watcher over `source`, performing the initial read.
+    fn from_source(source: Source<'a>) -> Self {
+        let snapshot = Snapshot::read(source.store());
+        let (max_calls, warning) = resolve(snapshot.max_calls.as_ref());
+        Self {
+            current: Budget {
+                max_calls,
+                version: 0,
+            },
+            source,
+            snapshot,
+            warnings: warning.into_iter().collect(),
+        }
+    }
+
     /// Reads the current configuration and reports whether it differs from the last read.
     ///
     /// Returns `true` only when the stored configuration changed, so a caller that rebuilds its

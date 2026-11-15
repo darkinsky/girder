@@ -148,6 +148,7 @@ mod mcp;
 mod mcp_client;
 mod mcp_process;
 mod mcp_stdio;
+mod mcp_subprocess;
 mod mcp_tools;
 mod message;
 pub mod method_surface;
@@ -570,6 +571,7 @@ pub use mcp_process::{
     ExitReason, Fleet as McpFleet, FleetError as McpFleetError, Lifecycle, State as McpState,
 };
 pub use mcp_stdio::{FrameBuffer, StdioConfig, decode_frames, encode_frame};
+pub use mcp_subprocess::Subprocess as McpSubprocess;
 pub use mcp_tools::{MAX_BRIDGED_TOOLS, register_mcp_tools};
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,

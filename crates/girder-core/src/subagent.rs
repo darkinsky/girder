@@ -155,11 +155,21 @@ pub async fn delegate(
         ))
     })?;
 
+    // The child's tool view is depth-limited rather than the parent's registry: the parent's registry captured *its own*
+    // depth when it was built, so a child calling `subagent` would read depth zero forever and re-delegate without ever
+    // reaching the ceiling. `DepthLimitedTools` exists for exactly this and had no caller.
+    let child_tools: Arc<dyn ToolRegistryView> = Arc::new(DepthLimitedTools::new(
+        Arc::clone(&context.tools),
+        child_depth,
+        max_depth,
+        "subagent",
+    ));
+
     // The child's context: same provider and bus, its own session, and the depth it must respect.
     let child_session: Arc<dyn Session> = Arc::new(MemorySession::new());
     let mut child = LoopContext::new(
         Arc::clone(&context.provider),
-        Arc::clone(&context.tools),
+        child_tools,
         child_session,
         Arc::clone(&context.bus),
         context.model.clone(),
