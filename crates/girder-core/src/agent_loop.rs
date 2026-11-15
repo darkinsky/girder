@@ -1420,6 +1420,46 @@ fn note_phase(context: &LoopContext, phase: crate::tool_trace::Phase, started_ms
     }
 }
 
+/// What to tell a model whose tool was stopped by its deadline.
+///
+/// A free function because `dispatch` is at the length the linter enforces, and because the decision -- whether repeating
+/// the call is safe -- deserves to be visible next to the wording it produces.
+fn stopped_message(tool: &str) -> String {
+    // A timeout is the one failure that carries real uncertainty: the tool may have run halfway. What to do about it
+    // depends on whether repeating it is safe, which is a question the tool's name answers and this line does not guess.
+    let idempotent = matches!(
+        girder_core::tool_idempotency(tool),
+        girder_core::Idempotency::Safe
+    );
+    let failure = girder_core::RetryFailure {
+        tool: tool.to_owned(),
+        attempt: 1,
+        kind: girder_core::RetryKind::Timeout,
+    };
+    let plan = girder_core::plan_tool_retry(&failure, idempotent, 1);
+    timeout_message(tool, &plan)
+}
+
+/// What to tell a model whose tool ran out of time.
+///
+/// The plan decides the wording, because the three answers are genuinely different instructions: retry the call, stop and
+/// tell the user, or stop and ask whether to try again. A single "it timed out" makes the model choose, and it chooses
+/// retry.
+fn timeout_message(tool: &str, plan: &girder_core::RetryPlan) -> String {
+    match plan {
+        girder_core::RetryPlan::Retry { after_ms, .. } => format!(
+            "`{tool}` did not finish within its budget and was stopped. Calling it again is safe; wait about {after_ms} ms."
+        ),
+        girder_core::RetryPlan::Ask { why } => format!(
+            "`{tool}` did not finish within its budget and was stopped partway through, so whether it changed anything is \
+             unknown. {why} Ask the user before calling it again."
+        ),
+        girder_core::RetryPlan::GiveUp { why } => {
+            format!("`{tool}` did not finish within its budget and was stopped. {why}")
+        }
+    }
+}
+
 /// What to tell a model that named a tool this build does not have.
 ///
 /// The name is echoed and a near miss is suggested. Nothing is suggested when no candidate is close: a plausible guess
@@ -1520,10 +1560,7 @@ pub async fn dispatch(
     let Some(result) =
         run_with_deadline(context, &execution, Arc::clone(&tool), cancel.clone()).await
     else {
-        return Ok(ToolResult::error(format!(
-            "`{}` did not finish within its budget and was stopped",
-            execution.name
-        )));
+        return Ok(ToolResult::error(stopped_message(&execution.name)));
     };
 
     note_phase(
