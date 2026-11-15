@@ -153,6 +153,7 @@ mod office_document;
 mod openapi;
 mod output_budget;
 mod output_digest;
+mod output_predict;
 mod patch;
 mod paths;
 mod pattern_check;
@@ -571,6 +572,7 @@ pub use output_digest::{
     Importance as DigestImportance, Line as DigestLine, classify as classify_output,
     digest as digest_output, has_errors as output_has_errors,
 };
+pub use output_predict::{Prediction as OutputPrediction, predict as predict_output};
 pub use patch::{
     Applied as PatchApplied, Failure as PatchFailure, Hunk as PatchHunk,
     Operation as PatchOperation, ParseError as PatchParseError, Reason as PatchFailureReason,
