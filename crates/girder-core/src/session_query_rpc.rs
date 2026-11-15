@@ -129,11 +129,12 @@ fn search(args: &Value, root: &Path) -> Result<Value, RemoteError> {
         // established.
         .max(1);
 
+    let query = Query::parse(request.text.unwrap_or_default());
     let query = Query {
-        text: request.text.unwrap_or_default(),
         kind: parse_kind(request.kind.as_deref())?,
         session: request.session,
         limit: Some(limit),
+        ..query
     };
 
     // `search_files` is synchronous — it lists a directory and decompresses every session log it

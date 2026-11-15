@@ -105,6 +105,13 @@ impl Kind {
 pub struct Query {
     /// Case-insensitive text to look for; empty matches everything.
     pub text: String,
+
+    /// The parsed form of `text`, when it was built through [`Query::parse`].
+    ///
+    /// Kept beside the string rather than replacing it because a caller echoing the query back to a person wants the
+    /// spelling they typed, and because a `Query` built by hand with a plain substring still has to work. `None` means
+    /// "treat `text` as one literal substring", which is what every caller before this field did.
+    pub expr: Option<girder_core::QueryExpr>,
     /// Which kinds to consider.
     pub kind: Option<Kind>,
     /// Restrict to one session; `None` searches every session.
@@ -119,6 +126,22 @@ impl Query {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A query with operators: implicit AND, `-word`, `OR`, quoted phrases, parentheses.
+    ///
+    /// The string is kept alongside the parsed expression so a caller can echo what the person typed, and a parse failure
+    /// leaves `expr` unset rather than failing the constructor: a query that does not parse still has a `text`, and
+    /// falling back to a literal substring is what a search box does while someone is still typing.
+    #[must_use]
+    pub fn parse(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let expr = girder_core::parse_query(&text).ok();
+        Self {
+            text,
+            expr,
             ..Self::default()
         }
     }
@@ -239,6 +262,11 @@ pub fn matches(event: &SessionEvent, query: &Query) -> bool {
     }
     if query.text.is_empty() {
         return true;
+    }
+    // A parsed query answers through the expression language; a plain string stays a substring, which is what every
+    // caller that never asked for operators expects.
+    if let Some(expr) = &query.expr {
+        return girder_core::query_matches(expr, &searchable_text(event));
     }
     // Lowercased on both sides: a caller searching for "BASH" expects to find `bash`, and an
     // earlier version lowercased only the haystack.

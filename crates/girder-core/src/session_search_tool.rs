@@ -70,12 +70,14 @@ fn search(args: &serde_json::Value, root: &std::path::Path) -> ToolResult {
     .unwrap_or(DEFAULT_HITS)
     .max(1);
 
-    let mut query = Query {
-        text: args
-            .get("text")
+    // Parsed, so a model that writes `error -warning` gets the operator rather than a literal search for that string:
+    // the tool's description promises the operators, and a model that reads it will use them.
+    let query = Query::parse(
+        args.get("text")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+            .unwrap_or_default(),
+    );
+    let mut query = Query {
         // A model that sent an unknown spelling gets no filter rather than an error: it is reasoning about what it
         // asked for, and a tool result it can read serves better than a refusal it has to decode.
         kind: args
@@ -88,6 +90,7 @@ fn search(args: &serde_json::Value, root: &std::path::Path) -> ToolResult {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
         limit: Some(limit),
+        ..query
     };
     // A query with no text matches everything, which is what a caller asking "show me this session" means. Anything
     // else would need a second tool for the same read.

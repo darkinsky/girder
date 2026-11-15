@@ -165,6 +165,7 @@ mod prompt_template;
 mod provider_health;
 mod providers;
 mod ptc_policy;
+mod query_syntax;
 mod questions;
 mod registry;
 mod remote;
@@ -597,6 +598,10 @@ pub use providers::{
 };
 pub use ptc_policy::{
     Decision as PtcDecision, ExecRequest, Limits as PtcLimits, Policy as PtcPolicy,
+};
+pub use query_syntax::{
+    Expr as QueryExpr, QueryError as QuerySyntaxError, matches as query_matches,
+    parse as parse_query,
 };
 pub use questions::{
     Answer, AnsweredBy, DEFAULT_TIMEOUT as DEFAULT_QUESTION_TIMEOUT, Option_ as QuestionOption,
