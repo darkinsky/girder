@@ -567,19 +567,17 @@ fn the_streaming_methods_are_declared_as_gaps() {
         .map(|(namespace, method)| format!("{namespace}.{method}"))
         .collect();
 
-    // `retain` needs storage this build does not have. Declaring it means a client gets "not implemented" rather than
-    // "unknown method", which reads as its own typo.
-    //
-    // `attach` was on this list until it was implemented as a begin-poll pair: the registry has no stream mode, so a
-    // begin returns a viewer id and reads from that viewer's offset. Asserting it stays a gap would pin the gap rather
-    // than the distinction this test is for.
+    // `attach` was on this list until it was implemented as a begin-poll pair, and `retain` until `terminal_persist`
+    // gave it storage that outlives the process. Asserting either stays a gap would pin the gap rather than the
+    // distinction this test is for: a declared gap is a method a client is told "this build cannot" about, and it must
+    // shrink as capabilities arrive.
     assert!(
         !declared.contains(&"terminal.attach".to_owned()),
         "attach answers now: {declared:?}"
     );
     assert!(
-        declared.contains(&"terminal.retain".to_owned()),
-        "{declared:?}"
+        !declared.contains(&"terminal.retain".to_owned()),
+        "retain answers now, through the store that keeps its output: {declared:?}"
     );
     assert!(
         declared.contains(&"terminal.rename".to_owned()),

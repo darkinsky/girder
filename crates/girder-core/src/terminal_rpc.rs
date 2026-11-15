@@ -112,12 +112,11 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 ///
 /// Every name here must stay absent. `environment` and `shells` need a session's working directory
 /// and a shell-discovery provider; `rename` needs a title the session does not hold; `attach` and
-/// `retain` need the stream mode this registry does not have.
 /// Methods still needing storage this build does not have.
 ///
-/// `rename` needs a label store and `retain` needs output that outlives the process. Both are declared rather than
-/// omitted so a client is told "this build cannot" instead of "no such method", which reads as its own typo.
-const UNIMPLEMENTED: &[&str] = &["rename", "retain"];
+/// `rename` needs a label store. It is declared rather than omitted so a client is told "this build cannot" instead of
+/// "no such method", which reads as its own typo.
+const UNIMPLEMENTED: &[&str] = &["rename"];
 
 /// The arguments of `terminal.create`.
 ///
@@ -241,6 +240,10 @@ pub fn register_terminal_methods(
 
     // Declared, not omitted: a client is told "this build cannot" rather than "no such method", and
     // the two call for different handling on its side.
+    // `retain` no longer needs a capability this build lacks: `terminal_persist` writes output that outlives the process,
+    // which is exactly what its entry in `UNIMPLEMENTED` asked for. It is registered by
+    // `register_terminal_retain_method`, which takes the store; leaving it declared as a gap would tell a client "this
+    // build cannot" about something it now can.
     registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
 }
 
@@ -604,4 +607,59 @@ fn invalid(method: &str, message: &str) -> RemoteError {
         method: method.to_owned(),
         message: message.to_owned(),
     }
+}
+
+/// Registers `terminal.retain`, which keeps output where a restarted process can find it.
+///
+/// Separate from [`register_terminal_methods`] because it needs a `TerminalPersistStore` and the rest do not: a caller
+/// that has no directory to write into still gets the live-terminal surface, and a caller that passes a store gets one
+/// more method rather than a different registration path for all of them.
+pub fn register_terminal_retain_method(
+    registry: &mut RemoteRegistry,
+    store: std::sync::Arc<crate::terminal_persist::Store>,
+) {
+    registry.register(NAMESPACE, "retain", move |call: RemoteCall| {
+        let store = std::sync::Arc::clone(&store);
+        Box::pin(async move {
+            let id = call
+                .args
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| crate::remote::RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "retain".to_owned(),
+                    message: "`retain` needs an `id` naming the terminal".to_owned(),
+                })?;
+            let lines = call
+                .args
+                .get("lines")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok());
+            // The text to keep arrives in the call rather than being read from a live terminal: this method's job is to
+            // outlive the process, and the process asking for that is the one that has the bytes.
+            let output = call
+                .args
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+
+            let request = crate::terminal_retain::Request {
+                id: id.to_owned(),
+                lines,
+            };
+            let retained =
+                crate::terminal_retain::retain(&store, &request, output).map_err(|error| {
+                    crate::remote::RemoteError::InvalidArguments {
+                        namespace: NAMESPACE.to_owned(),
+                        method: "retain".to_owned(),
+                        message: error.to_string(),
+                    }
+                })?;
+            Ok(serde_json::json!({
+                "bytes": retained.bytes,
+                "lines": retained.lines,
+                "truncated": retained.truncated,
+            }))
+        })
+    });
 }
