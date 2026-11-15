@@ -82,6 +82,7 @@ mod boot_stages;
 mod bounded_queue;
 mod brand;
 mod builtin_commands;
+mod cache_invalidate;
 mod call_config;
 mod cancel_scope;
 mod canonical;
@@ -363,6 +364,10 @@ pub use brand::{
     SessionIdBrand, ToolCallId, ToolCallIdBrand, WorkspaceId, WorkspaceIdBrand,
 };
 pub use builtin_commands::register_builtin_commands;
+pub use cache_invalidate::{
+    Effect as CacheEffect, apply as apply_cache_effect, effect as cache_effect,
+    normalized_path as normalize_cache_path,
+};
 pub use call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
 pub use cancel_scope::{CancelReason, Scope as CancelScope, run_cleanups};
 pub use canonical::{Encoder, canonical_json, key_of};

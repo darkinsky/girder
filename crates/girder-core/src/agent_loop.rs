@@ -1420,6 +1420,21 @@ fn note_phase(context: &LoopContext, phase: crate::tool_trace::Phase, started_ms
     }
 }
 
+/// Invalidates whatever the cache may now be wrong about.
+///
+/// A free function because `dispatch` is at the length the linter enforces, and because the "after the body, whatever
+/// happened" part is the whole reason this is safe.
+fn invalidate_after(context: &LoopContext, execution: &ToolExecution) {
+    let Some(cache) = &context.tool_cache else {
+        return;
+    };
+    let effect = girder_core::cache_effect(&execution.name, &execution.arguments);
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    girder_core::apply_cache_effect(&effect, &mut cache);
+}
+
 /// What to tell a model whose tool was stopped by its deadline.
 ///
 /// A free function because `dispatch` is at the length the linter enforces, and because the decision -- whether repeating
@@ -1568,6 +1583,10 @@ pub async fn dispatch(
         crate::tool_trace::Phase::Executing,
         executing_started,
     );
+    // After the body, and regardless of whether it succeeded: a shell command that exited non-zero may still have written
+    // files, and a timeout may have written half of one. Invalidating only on success would leave a cache answering with
+    // the pre-write content of a file that a failed command already changed.
+    invalidate_after(context, &execution);
     let args = PostExecuteArgs {
         execution: execution.clone(),
         result: result.clone(),
