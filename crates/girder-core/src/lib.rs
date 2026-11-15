@@ -137,6 +137,7 @@ mod llm;
 mod llm_deepseek;
 mod llm_openai;
 mod llm_stats;
+mod log_compact;
 mod lsp;
 mod lsp_tool;
 mod mcp;
@@ -522,6 +523,7 @@ pub use llm_openai::{
     provider_from_env as provider_from_environment,
 };
 pub use llm_stats::Stats as LlmStats;
+pub use log_compact::{Compacted, compact as compact_log, is_compactable};
 pub use lsp::{
     Answer as LspAnswer, Location as LspLocation, LspError, Operation as LspOperation,
     Position as LspPosition, Provider as LspProvider, Range as LspRange, Registry as LspRegistry,
