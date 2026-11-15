@@ -153,6 +153,7 @@ mod output_budget;
 mod output_digest;
 mod patch;
 mod paths;
+mod pattern_check;
 mod permissions;
 pub mod persistent_shell;
 mod plugin_lifecycle;
@@ -570,6 +571,10 @@ pub use paths::{
     AGENTS_HOME_DISPLAY, AGENTS_HOME_ENV, HARNESS_HOME_DISPLAY, HARNESS_HOME_ENV, Root,
     RootEnvironment, RootError, abbreviate_home, agents_home, expand_home, harness_home, home_dir,
     join_within,
+};
+pub use pattern_check::{
+    Outcome as PatternOutcome, check as check_pattern, check_enum as check_pattern_enum,
+    check_length as check_pattern_length,
 };
 pub use permissions::{
     Approval, Catalogue as PermissionCatalogue, Entry as PermissionEntry, Knobs, PermissionError,

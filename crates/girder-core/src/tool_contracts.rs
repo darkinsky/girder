@@ -352,6 +352,7 @@ fn check(schema: &Value, value: &Value, path: &str, depth: usize, found: &mut Ve
         return;
     }
     check_literals(node, value, path, found);
+    check_string_constraints(node, value, path, found);
     match declared {
         Some(JsonType::Object) => check_object(node, value, path, depth, found),
         Some(JsonType::Array) => check_array(node, value, path, depth, found),
@@ -556,6 +557,59 @@ fn type_matches(kind: JsonType, value: &Value) -> bool {
         JsonType::Integer => is_json_integer(value),
         JsonType::Boolean => value.is_boolean(),
         JsonType::Null => value.is_null(),
+    }
+}
+
+/// Enforces `pattern` and `minLength`/`maxLength` on a string value.
+///
+/// Two different failure kinds, because they blame different people. A pattern that does not compile is the schema
+/// author's mistake and no argument will satisfy it; a value that does not match a valid pattern is the caller's. Reporting
+/// both as an argument error would send a model looking for a different value when the tool itself is broken.
+fn check_string_constraints(
+    node: &serde_json::Map<String, Value>,
+    value: &Value,
+    path: &str,
+    found: &mut Vec<Violation>,
+) {
+    let Some(text) = value.as_str() else {
+        // A non-string has already been reported by the `type` check, and pattern on a number says nothing useful.
+        return;
+    };
+    if let Some(pattern) = node.get("pattern").and_then(Value::as_str) {
+        match girder_core::check_pattern(pattern, text) {
+            girder_core::PatternOutcome::Ok => {}
+            girder_core::PatternOutcome::NoMatch { .. } => found.push(Violation::new(
+                FailureKind::InvalidArguments,
+                format!("`{path}` does not match the pattern `{pattern}`"),
+                format!("pass `{path}` as a string matching `{pattern}`"),
+            )),
+            girder_core::PatternOutcome::BadPattern { detail, .. } => {
+                found.push(schema_error(format!(
+                    "the schema for `{path}` declares a pattern that cannot be compiled: {detail}"
+                )));
+            }
+        }
+    }
+    let length = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    let minimum = node.get("minLength").and_then(Value::as_u64);
+    if let Some(minimum) = minimum
+        && length < minimum
+    {
+        found.push(Violation::new(
+            FailureKind::InvalidArguments,
+            format!("`{path}` is {length} character(s); the minimum is {minimum}"),
+            format!("pass `{path}` with at least {minimum} character(s)"),
+        ));
+    }
+    let maximum = node.get("maxLength").and_then(Value::as_u64);
+    if let Some(maximum) = maximum
+        && length > maximum
+    {
+        found.push(Violation::new(
+            FailureKind::InvalidArguments,
+            format!("`{path}` is {length} character(s); the maximum is {maximum}"),
+            format!("pass `{path}` with at most {maximum} character(s)"),
+        ));
     }
 }
 
