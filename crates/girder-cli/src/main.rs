@@ -752,7 +752,19 @@ fn print_disk() {
     let footprints = layout.footprints();
     let usage = girder_core::storage_usage(&footprints);
     println!("sessions: {}", usage.sessions);
-    println!("bytes: {}", usage.total_bytes);
+    // The persistence layer's own bytes, which the log total above does not include: checkpoints, terminal transcripts and
+    // the search cache all live beside the logs and all occupy disk. A `disk` command that reported only logs would
+    // understate a deployment by however much the search index has grown.
+    let persistence = girder_core::Persistence::new(sessions_root());
+    let persist = persistence.footprint();
+    println!("logs: {}", usage.total_bytes);
+    println!("checkpoints: {}", persist.checkpoints_bytes);
+    println!("terminals: {}", persist.terminals_bytes);
+    println!("search index: {}", persist.search_index_bytes);
+    println!(
+        "bytes: {}",
+        usage.total_bytes.saturating_add(persist.total())
+    );
     let mut oldest: Vec<&girder_core::Footprint> = footprints.iter().collect();
     oldest.sort_by_key(|footprint| (footprint.modified_ms, footprint.session.as_str()));
     for footprint in oldest.iter().take(20) {
