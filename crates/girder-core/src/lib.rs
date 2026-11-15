@@ -277,6 +277,7 @@ mod tools;
 mod trace_span;
 mod typert;
 mod typert_json;
+mod undo_log;
 mod usage_quota;
 mod web;
 mod web_tools;
@@ -914,6 +915,7 @@ pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
 };
 pub use typert_json::{catalogue_to_json_schema, method_to_json_schema, to_json_schema};
+pub use undo_log::{Change as UndoChange, Log as UndoLog};
 pub use usage_quota::{
     Quota as UsageQuota, Totals as UsageTotals, Tracker as UsageTracker, Usage as UsageRecord,
     Verdict as UsageVerdict,
