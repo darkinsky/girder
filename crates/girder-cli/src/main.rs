@@ -1029,8 +1029,20 @@ fn compaction_policy() -> girder_core::CompactionPolicy {
 }
 
 fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {
-    // A missing directory lists as empty rather than erroring: a fresh install has no sessions.
-    Arc::new(girder_core::DirectoryCatalog::new(sessions_root()))
+    // Through `choose_session_backend`, not straight to a directory: the module exists so the choice is stated with a
+    // reason, and so a test run cannot write into a real sessions directory. A missing directory lists as empty rather
+    // than erroring, because a fresh install has no sessions.
+    let root = sessions_root();
+    let choice = girder_core::choose_session_backend(&girder_core::SessionBackendConfig {
+        session_dir: Some(root.clone()),
+        ephemeral: false,
+    });
+    // The reason is printed rather than kept: a deployment that set a directory and a test run that did not should see
+    // which backend they got and why, and the module exists to make that answerable.
+    if std::env::var("GIRDER_BACKEND_REPORT").is_ok() {
+        eprintln!("[session] {:?}: {}", choice.backend, choice.reason);
+    }
+    Arc::new(girder_core::DirectoryCatalog::new(root))
 }
 
 /// The live provider when a key is present, the scripted one otherwise.

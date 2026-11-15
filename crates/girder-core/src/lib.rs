@@ -146,6 +146,7 @@ mod mcp_process;
 mod mcp_stdio;
 mod mcp_tools;
 mod message;
+pub mod method_surface;
 mod model_catalog_extra;
 mod model_fallback;
 mod model_memory;
@@ -314,6 +315,7 @@ pub use agent::{
 };
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 pub use api_catalog::{Catalog, CatalogError, EventEntry, MethodEntry, ServiceEntry};
+pub use api_config::WorkspaceRegistry;
 pub use api_key::{KeyCheck, check as check_api_key, normalize as normalize_api_key};
 /// The session Remote surface, namespaced because its wire types share names with the
 /// service-side request types in `remote`.
@@ -553,6 +555,10 @@ pub use mcp_tools::{MAX_BRIDGED_TOOLS, register_mcp_tools};
 pub use message::{
     CONTEXT_SUMMARY_MAX_CHARS, ContextForm, ContextSnapshotSection, Message as ChatMessage,
     MessageError, MessageSource, Role as ChatRole, bound_context_summary, check_history,
+};
+pub use method_surface::{
+    Discrepancy as SurfaceDiscrepancy, Surface as MethodSurface, declared as declared_surface,
+    reconcile as reconcile_surface, registration_of as surface_registration_of,
 };
 pub use model_catalog_extra::{
     Capabilities as ModelCapabilities, ModelEntry, filter_by as filter_models,
@@ -913,6 +919,7 @@ pub use todo_tool::{Status as TodoStatus, Todo, read_todos, todo_tool};
 pub use token_meter::{
     Price, cost as token_cost, estimate_blocks, estimate_message, estimate_text, price_for,
 };
+pub use tokio_util::sync::CancellationToken;
 pub use tool_batching::{Strategy as BatchStrategy, ToolCallInfo, choose as choose_batch_strategy};
 pub use tool_cache::{
     Cache as ToolCache, Entry as ToolCacheEntry, Key as ToolCacheKey,
