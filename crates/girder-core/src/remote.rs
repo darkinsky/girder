@@ -672,6 +672,12 @@ impl SessionCatalog for DirectoryCatalog {
                 };
                 // `file_stem` on `a.jsonl.zst` yields `a.jsonl`; strip that too.
                 let id = id.trim_end_matches(".jsonl");
+                // An archive is named `{id}.archive-{stamp}.jsonl.zst`, which satisfies the extension filter, so a listing
+                // returned it as a session -- openable, countable, a phantom. It is discoverable as an archive; it is not
+                // a conversation.
+                if id.contains(".archive-") {
+                    continue;
+                }
                 let updated_at = entry
                     .metadata()
                     .ok()
@@ -1021,7 +1027,10 @@ fn register_list(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog
             let items: Vec<SessionSummary> = records
                 .iter()
                 .map(|record| {
-                    SessionSummary::from_events(&record.id, &record.events, record.updated_at)
+                    // `from_record`, not `from_events`: `list` deliberately leaves `events` empty, so reading them here
+                    // reported every session as blank -- a conversation with seven messages listed as unused. The
+                    // constructor written for this case existed and had no caller.
+                    SessionSummary::from_record(record)
                 })
                 .collect();
             serde_json::to_value(SessionListValue { items })
@@ -1057,10 +1066,17 @@ fn register_create(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
 
 /// Mints a session id from the current time.
 fn mint_session_id() -> String {
+    // A millisecond is not a unit of uniqueness: two conversations opened in the same one collided, and `create` is
+    // deliberately idempotent per id, so the second was silently merged into the first -- two chats in one log, no error
+    // anywhere. The counter is what makes two creates in one millisecond two sessions.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis());
-    format!("session-{now}")
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // The timestamp first so ids sort by creation time, the counter after so they stay distinct. Zero-padded to a fixed
+    // width because a sortable id has to be lexically sortable too.
+    format!("session-{now}-{seq:06}")
 }
 
 /// Registers `session.page` and `session.events`.

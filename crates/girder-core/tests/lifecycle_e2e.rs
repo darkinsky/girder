@@ -27,12 +27,15 @@
 //! the byte offset a repair cuts at is the difference between losing a torn write and losing a
 //! conversation.
 //!
-//! # Tests that document a defect rather than a property
+//! # What this file found
 //!
-//! Three tests are `#[ignore]`d with a `BUG-n` reason. They assert the behaviour the rest of this
-//! crate documents as intended, which the code does not currently have. They are kept as executable
-//! statements of the contract, and they are ignored so the suite is a usable signal for everything
-//! else. Run them with `cargo test -p girder-core --test lifecycle_e2e -- --ignored`.
+//! Four defects were found here and fixed: session ids collided within a millisecond and merged two conversations into one
+//! log; every list row reported `blank` because `list` returns records with no events and the constructor reading events
+//! was used instead of the one written for records; a second prompt reopened turn 1, so the log disagreed with the turn
+//! number the client was told; and an archive was listed as an openable session.
+//!
+//! Each has a test now, and the tests are ordinary ones. They were written as `#[ignore]`d assertions of the contract
+//! first, which is what made the defects visible as failures rather than as prose.
 
 #![allow(
     clippy::unwrap_used,
@@ -775,9 +778,6 @@ async fn two_sessions_created_together_are_independent_and_individually_readable
 }
 
 #[tokio::test]
-#[ignore = "BUG-1: `mint_session_id` has millisecond resolution, so two creates in one \
-            millisecond produce the same id and `DirectoryCatalog::create` (idempotent per id) \
-            silently merges the two conversations into one log"]
 async fn two_sessions_created_in_the_same_millisecond_get_distinct_ids() {
     // The contract a client relies on when it omits an id: `session.create` makes a NEW session.
     // It does not, so a user who opens two chats at once loses one of them -- the second prompt is
@@ -954,8 +954,6 @@ async fn archiving_shrinks_the_log_while_every_event_stays_accounted_for() {
 }
 
 #[tokio::test]
-#[ignore = "BUG-4: an archive is named `{id}.archive-{stamp}.jsonl.zst`, which `DirectoryCatalog::list` \
-            accepts as a session, so the moved prefix appears as a phantom row a client can open"]
 async fn an_archive_is_not_listed_as_a_session() {
     // `session_archive`'s docs promise the archive sits "beside" the log and that session discovery
     // will not mistake the evidence for a log. The evidence file (`.torn-N`) honours that; the
@@ -1202,9 +1200,6 @@ async fn a_tear_with_readable_frames_after_it_is_refused_rather_than_cut() {
 // ---- 6. defects this suite found, as executable statements of the contract -----------------------
 
 #[tokio::test]
-#[ignore = "BUG-2: `session.list` builds each row with `SessionSummary::from_events(&record.events)`, \
-            but `DirectoryCatalog::list` leaves `events` empty, so every row reports `blank: true` \
-            and `from_record` (which exists for this) is never called"]
 async fn a_session_with_messages_is_listed_as_not_blank() {
     // A client uses `blank` to decide whether to open a session by replaying it or to show an empty
     // composer. Reporting `true` for a conversation with seven events makes it look unused.
@@ -1241,9 +1236,6 @@ async fn a_session_with_messages_is_listed_as_not_blank() {
 }
 
 #[tokio::test]
-#[ignore = "BUG-3: `AgentRuntime::prompt` returns `user_messages + 1`, but the loop it spawns counts \
-            from 1 (`for turn in 1..=max_turns`), so the second prompt is reported as turn 2 while the \
-            log records a second `turn/start turn=1`"]
 async fn a_second_prompt_advances_the_turn_number_in_the_log() {
     // Turn numbers are how every projection identifies a turn: `SessionStats::turns` counts distinct
     // numbers, `session.state.timeline` has one segment per turn, and `session.resume` reports the

@@ -372,7 +372,9 @@ impl AgentRuntime {
         let session_id = session_id.to_owned();
         let text = text.to_owned();
         tokio::spawn(async move {
-            runtime.drive(&session_id, text, session, cancel).await;
+            runtime
+                .drive(&session_id, text, session, cancel, turn)
+                .await;
             // Cleared however the turn ended, so a failed turn does not wedge the session forever.
             runtime.lock().remove(&session_id);
         });
@@ -399,6 +401,7 @@ impl AgentRuntime {
         text: String,
         session: Arc<dyn Session>,
         cancel: CancellationToken,
+        first_turn: u64,
     ) {
         let mut context = LoopContext::new(
             Arc::clone(&self.config.provider),
@@ -435,6 +438,8 @@ impl AgentRuntime {
         context = context.with_window(window, output);
         // The prompt was already written by `prompt()`, before the spawn.
         context.record_prompt = false;
+        // The turn the client was told about, so the log agrees with the answer it already received.
+        context.first_turn = first_turn;
         let context = Arc::new(context);
 
         let mut stream = Box::pin(crate::agent_loop::run(context, text, cancel));

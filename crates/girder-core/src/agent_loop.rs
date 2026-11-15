@@ -305,6 +305,13 @@ pub struct LoopContext {
     /// if the model never answers, and a second write would put the same message in the log twice.
     pub record_prompt: bool,
 
+    /// The turn number this run starts at.
+    ///
+    /// A second prompt in one conversation is turn two, and the log has to say so. Starting every run at one meant a
+    /// conversation with three prompts held three `turn/start turn=1` records -- the client was told "turn 2" and the log
+    /// disagreed, so the timeline showed one turn three times.
+    pub first_turn: u64,
+
     /// The largest context the model accepts, when the deployment knows it.
     ///
     /// `None` means nobody stated one, and the loop does not guess: a budget check against an invented window would
@@ -341,6 +348,7 @@ impl LoopContext {
             max_depth: 2,
             message_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             record_prompt: true,
+            first_turn: 1,
             budget: crate::limits::Ceiling::Unlimited,
             spent: std::sync::atomic::AtomicU64::new(0),
             spill: None,
@@ -691,7 +699,8 @@ pub fn run(
         // turn that carries their message began. It is emitted inside the first iteration instead.
         let mut prompt_pending = context.record_prompt;
 
-        for turn in 1..=u64::from(context.max_turns) {
+        let last_turn = context.first_turn.saturating_add(u64::from(context.max_turns)).saturating_sub(1);
+        for turn in context.first_turn..=last_turn {
             // The agent's token is a second cancellation source: a UI cancels through the agent, and
             // a loop that only watched the caller's token would keep running after the user's
             // interrupt.
