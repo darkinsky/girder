@@ -330,7 +330,11 @@ impl Layout {
 /// treats as structure — a separator, a `.`/`..` component — addresses a file other than the one the
 /// id names. Control characters are refused too: a newline in a name is a forged log line for
 /// anything that prints one, and a NUL truncates the name in the syscall.
-fn validate_id(id: &str) -> Result<(), LayoutError> {
+/// Refuses an id that would make a path address something other than a session file.
+///
+/// Public because every store that turns an id into a path has to apply the same rule, and the one that did not --
+/// `DirectoryCatalog` -- let `create("../escaped")` write outside the sessions directory.
+pub fn validate_id(id: &str) -> Result<(), LayoutError> {
     if id.is_empty() {
         return Err(LayoutError::EmptyId);
     }

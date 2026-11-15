@@ -651,6 +651,22 @@ impl DirectoryCatalog {
     }
 }
 
+/// The log path for `id`, refusing an id that would address another directory.
+///
+/// `SessionLayout` has enforced this since it was written and the catalog never used it: every method joined the root
+/// directly, so `create("../escaped")` wrote outside the sessions directory and `read("../secret")` read a file that was
+/// never a session. The check belongs on the path because that is the only place it cannot be forgotten.
+fn log_path(root: &std::path::Path, id: &str) -> Result<std::path::PathBuf, RemoteError> {
+    girder_core::session_layout::validate_id(id).map_err(|error| {
+        RemoteError::InvalidArguments {
+            namespace: "session".to_owned(),
+            method: "id".to_owned(),
+            message: error.to_string(),
+        }
+    })?;
+    Ok(root.join(format!("{id}.jsonl.zst")))
+}
+
 impl SessionCatalog for DirectoryCatalog {
     fn list(&self) -> BoxFut<Vec<SessionRecord>> {
         let root = self.root.clone();
@@ -706,7 +722,11 @@ impl SessionCatalog for DirectoryCatalog {
     }
 
     fn read(&self, id: &str) -> BoxFut<Option<SessionRecord>> {
-        let path = self.root.join(format!("{id}.jsonl.zst"));
+        // An unusable id is "no such session" rather than an error: the signature has no way to say why, and a caller
+        // asking for `../etc/passwd` should get the same answer as one asking for a session that does not exist.
+        let Ok(path) = log_path(&self.root, id) else {
+            return Box::pin(async { None });
+        };
         let id = id.to_owned();
         Box::pin(async move { read_record(&path, id) })
     }
@@ -731,10 +751,13 @@ impl SessionCatalog for DirectoryCatalog {
     }
 
     fn rename(&self, id: &str, title: &str) -> BoxFut<Result<String, RemoteError>> {
-        let path = self.root.join(format!("{id}.title"));
         let id = id.to_owned();
         let title = title.trim().to_owned();
-        let log = self.root.join(format!("{id}.jsonl.zst"));
+        let log = match log_path(&self.root, &id) {
+            Ok(path) => path,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+        let path = self.root.join(format!("{id}.title"));
         Box::pin(async move {
             if title.is_empty() {
                 return Err(RemoteError::InvalidArguments {
@@ -764,7 +787,10 @@ impl SessionCatalog for DirectoryCatalog {
     /// answer, so the cut moves backwards to the nearest `turn/end` at or before the requested
     /// sequence.
     fn fork(&self, id: &str, at_seq: Option<u64>) -> BoxFut<Result<String, RemoteError>> {
-        let source = self.root.join(format!("{id}.jsonl.zst"));
+        let source = match log_path(&self.root, id) {
+            Ok(path) => path,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let id = id.to_owned();
         let root = self.root.clone();
         Box::pin(async move {
@@ -812,7 +838,10 @@ impl SessionCatalog for DirectoryCatalog {
     /// Returns whether anything was removed, so a client distinguishes a deletion from a no-op without
     /// an error. A missing title file is not a failure: most sessions never had one.
     fn delete(&self, id: &str) -> BoxFut<Result<bool, RemoteError>> {
-        let log = self.root.join(format!("{id}.jsonl.zst"));
+        let log = match log_path(&self.root, id) {
+            Ok(path) => path,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let title = self.root.join(format!("{id}.title"));
         let id = id.to_owned();
         Box::pin(async move {
@@ -829,7 +858,8 @@ impl SessionCatalog for DirectoryCatalog {
     }
 
     fn open(&self, id: &str) -> Option<Arc<dyn crate::session::Session>> {
-        let path = self.root.join(format!("{id}.jsonl.zst"));
+        // An id that names something outside the directory opens nothing, for the same reason `read` answers `None`.
+        let path = log_path(&self.root, id).ok()?;
         // Only an existing session opens: a prompt to an unknown id must fail, not mint a log.
         path.is_file().then(|| {
             Arc::new(crate::session::SessionStore::new(path)) as Arc<dyn crate::session::Session>
@@ -837,7 +867,10 @@ impl SessionCatalog for DirectoryCatalog {
     }
 
     fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>> {
-        let path = self.root.join(format!("{id}.jsonl.zst"));
+        let path = match log_path(&self.root, id) {
+            Ok(path) => path,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         let id = id.to_owned();
         Box::pin(async move {
             if let Some(parent) = path.parent() {
