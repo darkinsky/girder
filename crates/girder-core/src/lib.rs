@@ -146,6 +146,7 @@ mod lsp;
 mod lsp_tool;
 mod mcp;
 mod mcp_client;
+mod mcp_config;
 mod mcp_process;
 mod mcp_stdio;
 mod mcp_subprocess;
@@ -567,6 +568,11 @@ pub use mcp_client::{
     NAMESPACE_SEPARATOR, PROTOCOL_VERSION, RpcError, ServerConfig, call_tool_request,
     initialize_request, list_tools_request, parse_response, parse_tools, qualified_name,
     split_qualified_name, validate_server_name,
+};
+pub use mcp_config::{
+    ConfigError as McpConfigError, ServerConfig as McpServerConfig,
+    StartedServer as StartedMcpServer, parse_config as parse_mcp_config,
+    start_all as start_mcp_servers,
 };
 pub use mcp_process::{
     ExitReason, Fleet as McpFleet, FleetError as McpFleetError, Lifecycle, State as McpState,

@@ -588,6 +588,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         Some("disk") => print_disk(),
         Some("csv") => print_csv(),
         Some("surface") => print_surface(),
+        Some("mcp") => print_mcp()?,
         Some("health") => print_health(),
         Some("catalog") => {
             // What the framework offers, as a machine-readable list. The service names come from the
@@ -636,7 +637,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, health, surface, tools-mcp, or tools-openai"
+                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, health, surface, mcp, tools-mcp, or tools-openai"
             );
         }
     }
@@ -699,6 +700,34 @@ fn print_health() {
     for (kind, count) in counts {
         println!("  {kind}: {count}");
     }
+}
+
+/// Starts the MCP servers the settings document configures, and reports what each one offered.
+///
+/// The command exists because the pieces were all present and nothing joined them: a transport that can spawn a server, a
+/// parser for the server list, and no code that reads the list. Running it is the only way to learn whether a configured
+/// server works -- `tools-mcp` prints the tool set this build declares, which is a different question.
+fn print_mcp() -> Result<()> {
+    let settings: Arc<dyn girder_core::SettingsStore> = Arc::new(
+        girder_core::FileSettingsStore::open(sessions_root().join("settings.json")),
+    );
+    let configured = match settings.get("mcp.servers") {
+        Some(value) => girder_core::parse_mcp_config(&value).map_err(|error| {
+            anyhow::anyhow!("`mcp.servers` is not a usable server list: {error}")
+        })?,
+        None => Vec::new(),
+    };
+    if configured.is_empty() {
+        println!("no MCP servers configured (`mcp.servers` in settings.json)");
+        return Ok(());
+    }
+    for started in girder_core::start_mcp_servers(&configured) {
+        match started.failed {
+            Some(reason) => println!("{}: failed ({reason})", started.name),
+            None => println!("{}: {} tool(s)", started.name, started.tools),
+        }
+    }
+    Ok(())
 }
 
 /// Prints the declared method surface and checks it against what the registry serves.

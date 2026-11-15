@@ -426,7 +426,7 @@ fn an_unknown_schema_format_fails_with_the_full_list_of_valid_formats() {
     assert_eq!(
         stderr(&output),
         "Error: unknown schema format `bogus`; expected rpc, openapi, catalog, metrics, disk, csv, \
-         health, surface, tools-mcp, or tools-openai\n",
+         health, surface, mcp, tools-mcp, or tools-openai\n",
         "the error is pinned verbatim because it is the only complete list of accepted formats"
     );
     assert!(

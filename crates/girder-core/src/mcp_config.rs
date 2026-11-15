@@ -247,11 +247,7 @@ fn parse_entry(index: usize, entry: &Value) -> Result<ServerConfig, ConfigError>
 /// A non-string value is reported as [`ConfigError::MissingField`]: this module needs a string there,
 /// and a caller that wrote a number where a command goes has the same fix to make as one that wrote
 /// nothing.
-fn string_field(
-    entry: &Value,
-    index: usize,
-    field: &'static str,
-) -> Result<String, ConfigError> {
+fn string_field(entry: &Value, index: usize, field: &'static str) -> Result<String, ConfigError> {
     entry
         .get(field)
         .and_then(Value::as_str)

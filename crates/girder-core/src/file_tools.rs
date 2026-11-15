@@ -63,8 +63,11 @@ async fn read(
     workspace: &Path,
     ctx: &ToolRunContext,
 ) -> Result<ToolResult, crate::tools::ToolError> {
-    let Ok(path) = resolve(args, workspace) else {
-        return Ok(ToolResult::error("`path` is required"));
+    // The resolver's own message, not `path` is required: a refused escape and a missing argument are different answers,
+    // and collapsing them told a caller their argument was absent when it was present and out of bounds.
+    let path = match resolve(args, workspace) {
+        Ok(path) => path,
+        Err(error) => return Ok(ToolResult::error(error)),
     };
     // A document is refused with an explanation rather than decoded as text: a .docx is a zip, and showing its bytes
     // as text gives a model a screenful of noise it will try to reason about.
@@ -169,8 +172,11 @@ async fn write(
     workspace: &Path,
     ctx: &ToolRunContext,
 ) -> Result<ToolResult, crate::tools::ToolError> {
-    let Ok(path) = resolve(args, workspace) else {
-        return Ok(ToolResult::error("`path` is required"));
+    // The resolver's own message, not `path` is required: a refused escape and a missing argument are different answers,
+    // and collapsing them told a caller their argument was absent when it was present and out of bounds.
+    let path = match resolve(args, workspace) {
+        Ok(path) => path,
+        Err(error) => return Ok(ToolResult::error(error)),
     };
     let content = args
         .get("content")
@@ -271,8 +277,11 @@ async fn edit(
     workspace: &Path,
     ctx: &ToolRunContext,
 ) -> Result<ToolResult, crate::tools::ToolError> {
-    let Ok(path) = resolve(args, workspace) else {
-        return Ok(ToolResult::error("`path` is required"));
+    // The resolver's own message, not `path` is required: a refused escape and a missing argument are different answers,
+    // and collapsing them told a caller their argument was absent when it was present and out of bounds.
+    let path = match resolve(args, workspace) {
+        Ok(path) => path,
+        Err(error) => return Ok(ToolResult::error(error)),
     };
     let old = args
         .get("old")
@@ -476,13 +485,53 @@ async fn apply(
     )))
 }
 
-/// Resolves a path against the workspace.
+/// Resolves a path against the workspace and refuses one that leaves it.
+///
+/// Lexical first, then canonical: `../..` is caught by the string form, and a symlink inside the workspace pointing outside
+/// is caught only by asking the filesystem where it goes. Both checks are needed because each misses what the other sees --
+/// a purely lexical check reports an escaping symlink as inside, and canonicalising alone cannot describe a file that does
+/// not exist yet.
 fn resolve(args: &serde_json::Value, workspace: &Path) -> Result<PathBuf, String> {
     let path = args
         .get("path")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "`path` is required".to_owned())?;
-    Ok(crate::workspace_path::resolve(Some(workspace), path))
+    let lexical =
+        crate::workspace_path::normalize(&crate::workspace_path::resolve(Some(workspace), path));
+    if !crate::workspace_path::contains(workspace, &lexical) {
+        return Err(format!("`path` = `{path}` is outside the workspace"));
+    }
+    // The canonical form of the deepest component that exists: a new file has no canonical path, so its directory is what
+    // gets asked, and a symlink that points outside resolves to outside.
+    if let Ok(root) = workspace.canonicalize() {
+        let mut probe = lexical.clone();
+        let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+        loop {
+            match probe.canonicalize() {
+                Ok(resolved) => {
+                    let joined = suffix
+                        .iter()
+                        .rev()
+                        .fold(resolved, |path, part| path.join(part));
+                    if !crate::workspace_path::contains(&root, &joined) {
+                        return Err(format!("`path` = `{path}` is outside the workspace"));
+                    }
+                    break;
+                }
+                Err(_) => match (
+                    probe.file_name().map(std::ffi::OsStr::to_os_string),
+                    probe.parent(),
+                ) {
+                    (Some(name), Some(parent)) => {
+                        suffix.push(name);
+                        probe = parent.to_path_buf();
+                    }
+                    _ => break,
+                },
+            }
+        }
+    }
+    Ok(lexical)
 }
 
 /// Builds the `ask_user` tool.

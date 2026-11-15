@@ -100,7 +100,8 @@ fn glob(args: &serde_json::Value, workspace: &Path) -> ToolResult {
 
     let mut found = Vec::new();
     let mut truncated = false;
-    walk(&start, &matcher, 0, &mut |path| {
+    let boundary = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    walk_within(&start, &matcher, 0, Some(&boundary), &mut |path| {
         if found.len() >= limit {
             truncated = true;
             return;
@@ -141,7 +142,16 @@ fn split_pattern(workspace: &Path, pattern: &str) -> (PathBuf, GlobMatcher) {
             if prefix.is_empty() {
                 (workspace.to_path_buf(), name)
             } else {
-                (workspace.join(prefix), name)
+                // The prefix comes from the pattern, so it can climb: `../outside/*.rs` named a sibling directory and the
+                // walk listed it. A pattern is model input like any other path and gets the same boundary.
+                let joined = crate::workspace_path::normalize(&workspace.join(prefix));
+                if crate::workspace_path::contains(workspace, &joined) {
+                    (joined, name)
+                } else {
+                    // A start that leaves the workspace matches nothing rather than being silently rewritten to the
+                    // root: the caller asked for something outside, and an empty answer is the honest one.
+                    (workspace.join("\u{0}no-such-start"), name)
+                }
             }
         }
         // A bare pattern has no directory, so the walk covers the workspace and the whole name is the matcher.
@@ -212,6 +222,21 @@ impl GlobMatcher {
 
 /// Walks a directory, calling `visit` for each matching file.
 fn walk(directory: &Path, matcher: &GlobMatcher, depth: usize, visit: &mut dyn FnMut(&Path)) {
+    walk_within(directory, matcher, depth, None, visit);
+}
+
+/// Walks `directory`, never following a link that leaves `boundary`.
+///
+/// A symlink inside the workspace that points outside it is a real escape: `read_dir` follows it, so a directory listing
+/// would report files the tool was never given access to. The boundary is checked with the same lexical rule the rest of
+/// the crate uses, and only when walking -- a link whose target is inside the workspace is followed normally.
+fn walk_within(
+    directory: &Path,
+    matcher: &GlobMatcher,
+    depth: usize,
+    boundary: Option<&Path>,
+    visit: &mut dyn FnMut(&Path),
+) {
     if depth > MAX_DEPTH {
         return;
     }
@@ -224,8 +249,16 @@ fn walk(directory: &Path, matcher: &GlobMatcher, depth: usize, visit: &mut dyn F
         if is_ignored(&name) {
             continue;
         }
+        // Where the entry really points, when it is a link: a lexical check on the link's own name says "inside" while the
+        // kernel would read somewhere else.
+        let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let outside =
+            boundary.is_some_and(|boundary| !crate::workspace_path::contains(boundary, &real));
+        if outside {
+            continue;
+        }
         if path.is_dir() {
-            walk(&path, matcher, depth + 1, visit);
+            walk_within(&path, matcher, depth + 1, boundary, visit);
         } else if matcher.matches(&name) {
             visit(&path);
         }
@@ -274,8 +307,19 @@ fn grep(args: &serde_json::Value, workspace: &Path) -> ToolResult {
     )
     .unwrap_or(DEFAULT_LIMIT)
     .max(1);
+    // Confined like every other path a model supplies. A search root outside the workspace reads files the tool was
+    // never given access to, and it did: `../outside` was answered with the contents of a sibling directory.
     let root = match args.get("path").and_then(serde_json::Value::as_str) {
-        Some(path) => crate::workspace_path::resolve(Some(workspace), path),
+        Some(path) => {
+            let lexical = crate::workspace_path::normalize(&crate::workspace_path::resolve(
+                Some(workspace),
+                path,
+            ));
+            if !crate::workspace_path::contains(workspace, &lexical) {
+                return ToolResult::error(format!("`path` = `{path}` is outside the workspace"));
+            }
+            lexical
+        }
         None => workspace.to_path_buf(),
     };
 
