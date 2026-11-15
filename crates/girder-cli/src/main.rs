@@ -60,8 +60,11 @@ struct Cli {
     #[arg(long, value_name = "FORMAT")]
     schema_format: Option<String>,
 
-    /// Tool the offline provider asks for when the prompt mentions files: `list` or `bash`.
-    #[arg(long, default_value = "list")]
+    /// Tool the offline provider asks for when the prompt mentions files, for example `bash`, `read` or `write`.
+    ///
+    /// `list` was the default and the help text promised it, but `list` is only registered by `serve`: a prompt run named it
+    /// and got "no tool named `list`". The default is now a tool both modes register.
+    #[arg(long, default_value = "bash")]
     tool: String,
 
     /// How many nested subagent delegations are allowed.
@@ -1144,9 +1147,11 @@ fn offline_arguments(tool: &str) -> String {
         // Matching everything keeps the search independent of what the workspace happens to contain.
         "grep" => r#"{"pattern":".","limit":5}"#,
         "read" => r#"{"path":"README.md"}"#,
+        // `\n` as an escape, not a literal newline: a raw string cannot carry one inside a JSON string, and the argument
+        // parser rejected the call before the tool ever ran. The offline provider's every value has to be valid JSON or
+        // the tool path it exists to exercise is never reached.
         "write" => {
-            r#"{"path":"offline-written.txt","content":"written by the offline provider
-"}"#
+            r#"{"path":"offline-written.txt","content":"written by the offline provider\n"}"#
         }
         // A plain string because the replacement text contains `"#`, which would close a raw string early.
         "edit" => "{\"path\":\"README.md\",\"old\":\"#\",\"new\":\"#\"}",
