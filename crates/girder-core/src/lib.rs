@@ -276,6 +276,7 @@ mod tool_usage;
 mod tool_watchdog;
 mod tools;
 mod trace_span;
+mod transcript_import;
 mod typert;
 mod typert_json;
 mod undo_log;
@@ -916,6 +917,10 @@ pub use tools::{
     ToolResult, ToolRunContext, ToolValue, ToolsKey,
 };
 pub use trace_span::{Span as TraceSpan, Tracer};
+pub use transcript_import::{
+    IMPORTED_PROVIDER, ImportError as TranscriptImportError, Imported as ImportedTranscript,
+    detect as detect_transcript_format, import as import_transcript,
+};
 pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
 };

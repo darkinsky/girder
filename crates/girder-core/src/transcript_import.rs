@@ -50,10 +50,12 @@
 //!
 //! Three decisions are worth stating:
 //!
-//! - **a turn begins at a user message.** That is where one exchange ends and the next begins in
-//!   every chat transcript. Messages before the first user message — a source that opens with an
-//!   assistant greeting is common — belong to turn 1, because a turn with no prompt is still a turn
-//!   and inventing an empty user turn in front of it would add a message nobody wrote.
+//! - **a turn ends when the model has answered a prompt in it.** A person's message opens a new
+//!   turn once the current one holds both a person's message *and* a model reply — that pair is the
+//!   exchange boundary, and it is the only boundary a transcript actually records. Two lines typed
+//!   before the model answered therefore stay in one turn, because they are one prompt. A source
+//!   that opens with an assistant greeting puts the first person turn in turn 1 rather than
+//!   inventing an assistant-only turn in front of it.
 //! - **each model reply is its own step.** A step is "one model call plus the tools it requested"
 //!   ([`crate::session::SessionEvent::StepStart`]); a transcript is exactly a list of model calls,
 //!   so one reply per step is the faithful reading, and it never claims a call that produced no
@@ -272,11 +274,9 @@ pub fn detect(value: &Value) -> Option<Format> {
 /// - [`ImportError::Malformed`] when there is no `messages` array, or a message is not an object
 ///   with a string `role`, or a `content` value is neither a string, an array, nor null.
 pub fn import(value: &Value, format: Format) -> Result<Imported, ImportError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| ImportError::Malformed {
-            detail: "a transcript is a JSON object holding a `messages` array".to_owned(),
-        })?;
+    let object = value.as_object().ok_or_else(|| ImportError::Malformed {
+        detail: "a transcript is a JSON object holding a `messages` array".to_owned(),
+    })?;
     let messages = object
         .get("messages")
         .ok_or_else(|| ImportError::Malformed {
@@ -327,10 +327,7 @@ fn decisive_format(object: &Map<String, Value>, messages: &[Value]) -> Option<Fo
     {
         return Some(Format::Anthropic);
     }
-    if OPENAI_TOP_LEVEL
-        .iter()
-        .any(|key| object.contains_key(*key))
-    {
+    if OPENAI_TOP_LEVEL.iter().any(|key| object.contains_key(*key)) {
         return Some(Format::OpenAi);
     }
 
@@ -416,7 +413,9 @@ fn read_content(value: &Value) -> Result<Content, ImportError> {
     };
 
     match value {
-        Value::String(text) => content.text = text.trim().to_owned(),
+        // `clone_into` rather than `to_owned`: this is the whole-message case, which is the common
+        // one, and reusing the buffer avoids a second allocation per message.
+        Value::String(text) => text.trim().clone_into(&mut content.text),
         Value::Array(blocks) => {
             for block in blocks {
                 match block {
@@ -425,12 +424,14 @@ fn read_content(value: &Value) -> Result<Content, ImportError> {
                     Value::String(text) => push_text(&mut content.text, text),
                     Value::Object(object) => {
                         let kind = object.get("type").and_then(Value::as_str);
-                        match (kind, object.get("text").and_then(Value::as_str)) {
-                            (None | Some("text"), Some(text)) => push_text(&mut content.text, text),
-                            _ => {
-                                let name = kind.unwrap_or("untyped").to_owned();
-                                *content.dropped.entry(name).or_insert(0) += 1;
-                            }
+                        let text = object.get("text").and_then(Value::as_str);
+                        // An untagged object carrying `text` is what the simplest exporters write,
+                        // and it is the same content as a `text`-typed block.
+                        if let (None | Some("text"), Some(text)) = (kind, text) {
+                            push_text(&mut content.text, text);
+                        } else {
+                            let name = kind.unwrap_or("untyped").to_owned();
+                            *content.dropped.entry(name).or_insert(0) += 1;
                         }
                     }
                     _ => *content.dropped.entry("untyped".to_owned()).or_insert(0) += 1,
@@ -442,7 +443,8 @@ fn read_content(value: &Value) -> Result<Content, ImportError> {
         Value::Null => {}
         _ => {
             return Err(ImportError::Malformed {
-                detail: "a `content` value must be a string, an array of blocks, or null".to_owned(),
+                detail: "a `content` value must be a string, an array of blocks, or null"
+                    .to_owned(),
             });
         }
     }
@@ -673,11 +675,21 @@ fn assemble(inbound: &[Inbound], advisory: &[String]) -> Result<Vec<SessionEvent
     };
 
     // Grouped before framing rather than while framing, because a turn boundary depends on what the
-    // turn already holds: a user message opens a turn only when something precedes it.
+    // turn already holds. A turn ends when the model has answered a prompt in it, so a person's
+    // message opens a new turn only once the current one holds *both* sides of an exchange: two
+    // lines typed before the model replied are one prompt, and a source that opens with an
+    // assistant greeting still puts the first person turn in turn 1 rather than inventing an
+    // assistant-only turn in front of it.
     let mut groups: Vec<Vec<&Inbound>> = Vec::new();
     for item in inbound {
-        let opens = groups.is_empty()
-            || (item.role == Speaker::User && groups.last().is_some_and(|group| !group.is_empty()));
+        let opens = match groups.last() {
+            None => true,
+            Some(group) => {
+                item.role == Speaker::User
+                    && group.iter().any(|held| held.role == Speaker::User)
+                    && group.iter().any(|held| held.role == Speaker::Assistant)
+            }
+        };
         if opens {
             groups.push(Vec::new());
         }
