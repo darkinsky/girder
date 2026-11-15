@@ -46,6 +46,7 @@ fn record(id: &str, updated_at: u64, has_message: bool) -> SessionRecord {
         id: id.to_owned(),
         updated_at,
         blank: !has_message,
+        integrity: girder_core::LogIntegrity::default(),
         events,
     }
 }
@@ -450,6 +451,7 @@ impl SessionCatalog for EmptyCatalog {
                 id,
                 updated_at: 1,
                 blank: true,
+                integrity: girder_core::LogIntegrity::default(),
                 events: vec![SessionEvent::TurnStart { turn: 1 }],
             })
         })
@@ -591,6 +593,7 @@ fn catalog_with_events(id: &str, count: usize) -> Arc<dyn SessionCatalog> {
         id: id.to_owned(),
         updated_at: 1,
         blank: false,
+        integrity: girder_core::LogIntegrity::default(),
         events,
     }]))
 }
@@ -764,6 +767,7 @@ async fn page_of_an_empty_log_is_empty() {
         id: "s".to_owned(),
         updated_at: 1,
         blank: false,
+        integrity: girder_core::LogIntegrity::default(),
         events: Vec::new(),
     }])));
 

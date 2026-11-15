@@ -154,6 +154,7 @@ impl SessionCatalog for TitledCatalog {
                 id,
                 updated_at: 0,
                 blank,
+                integrity: girder_core::LogIntegrity::default(),
                 events,
             })
         })

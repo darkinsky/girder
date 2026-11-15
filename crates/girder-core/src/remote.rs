@@ -121,6 +121,14 @@ pub struct SessionSummary {
     pub running: bool,
     /// Whether the session has no messages yet.
     pub blank: bool,
+
+    /// How much of the log could be read.
+    ///
+    /// `Empty` and `TornTail` both produce no events, and before this field they were the same thing to a caller: a
+    /// session that was created and never used, and a session whose last write was interrupted. The second is repairable
+    /// and the first needs nothing, so a reader had no way to tell which it was looking at.
+    pub integrity: crate::log_integrity::Integrity,
+
     /// Working directory, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -147,6 +155,10 @@ impl SessionSummary {
             agent_available: false,
             running: false,
             blank: !has_messages,
+            // The summary was built from events this caller already decoded, so it can say how many.
+            integrity: crate::log_integrity::Integrity::Readable {
+                events: events.len(),
+            },
             cwd: None,
         }
     }
@@ -162,6 +174,7 @@ impl SessionSummary {
             agent_available: false,
             running: false,
             blank: record.blank,
+            integrity: record.integrity.clone(),
             cwd: None,
         }
     }
@@ -421,6 +434,12 @@ pub struct SessionRecord {
     /// `events` empty: decoding every event of every session to compute this one bit is
     /// O(sessions x events) of work for a list view.
     pub blank: bool,
+    /// How much of the log could be read.
+    ///
+    /// `Empty` and `TornTail` both produce no events, and before this field they were the same thing to a caller: a
+    /// session that was created and never used, and a session whose last write was interrupted. The second is repairable
+    /// and the first needs nothing, so a reader had no way to tell which it was looking at.
+    pub integrity: crate::log_integrity::Integrity,
     /// Its durable events. Empty for a row returned by `list`.
     pub events: Vec<SessionEvent>,
 }
@@ -710,10 +729,19 @@ impl SessionCatalog for DirectoryCatalog {
                 let blank = !crate::session::SessionStore::new(&path)
                     .has_user_message()
                     .unwrap_or(true);
+                // A listing does not read the events, so it cannot say more than whether the file has bytes. That is
+                // still the distinction that matters: an empty file is a created session and a non-empty one is a session
+                // with content, whatever its state.
+                let integrity = match std::fs::metadata(&path) {
+                    Ok(meta) if meta.len() == 0 => crate::log_integrity::Integrity::Empty,
+                    Ok(meta) => crate::log_integrity::Integrity::Unread { bytes: meta.len() },
+                    Err(_) => crate::log_integrity::Integrity::Empty,
+                };
                 records.push(SessionRecord {
                     id: id.to_owned(),
                     updated_at,
                     blank,
+                    integrity,
                     events: Vec::new(),
                 });
             }
@@ -925,6 +953,17 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
     if !path.is_file() {
         return None;
     }
+    // Not `unwrap_or_default`: that turned a damaged log into `events: []`, which is indistinguishable from a session
+    // created and never used, and `session.state` then reported `events: 0` with no error. The integrity check keeps the
+    // difference -- a torn tail is readable and repairable, a broken middle is neither -- and the record carries it.
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let outcome = crate::session::read_session_file(path)
+        .map(|events| events.len())
+        .map_err(|error| error.to_string());
+    let integrity = crate::log_integrity::inspect(
+        &bytes,
+        outcome.as_ref().map(|count| *count).map_err(String::as_str),
+    );
     let events = crate::session::read_session_file(path).unwrap_or_default();
     let updated_at = std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -940,6 +979,7 @@ fn read_record(path: &std::path::Path, id: String) -> Option<SessionRecord> {
         id,
         updated_at,
         blank,
+        integrity,
         events,
     })
 }

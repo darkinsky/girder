@@ -467,6 +467,7 @@ impl girder_core::SessionCatalog for OneSession {
                 id: "s1".to_owned(),
                 updated_at: 7,
                 blank: false,
+                integrity: girder_core::LogIntegrity::default(),
                 events: vec![girder_core::SessionEvent::user_text(
                     "msg-1",
                     "hi".to_owned(),
@@ -480,6 +481,7 @@ impl girder_core::SessionCatalog for OneSession {
             id: "s1".to_owned(),
             updated_at: 7,
             blank: false,
+            integrity: girder_core::LogIntegrity::default(),
             events: vec![girder_core::SessionEvent::TurnStart { turn: 1 }],
         });
         Box::pin(async move { found })
@@ -495,6 +497,7 @@ impl girder_core::SessionCatalog for OneSession {
                 id,
                 updated_at: 1,
                 blank: true,
+                integrity: girder_core::LogIntegrity::default(),
                 events: Vec::new(),
             })
         })

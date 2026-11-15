@@ -316,6 +316,7 @@ async fn a_session_with_no_writable_handle_reports_that() {
                     id,
                     updated_at: 0,
                     blank: false,
+                    integrity: girder_core::LogIntegrity::default(),
                     events,
                 })
             })

@@ -77,6 +77,7 @@ impl SessionCatalog for FixedCatalog {
                 id: id.clone(),
                 updated_at: 0,
                 blank: true,
+                integrity: girder_core::LogIntegrity::default(),
                 events: Vec::new(),
             })
             .collect();
@@ -92,6 +93,7 @@ impl SessionCatalog for FixedCatalog {
                 id: id.clone(),
                 updated_at: 0,
                 blank: true,
+                integrity: girder_core::LogIntegrity::default(),
                 events: Vec::new(),
             });
         Box::pin(async move { found })
