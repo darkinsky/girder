@@ -587,6 +587,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         Some("metrics") => print_metrics(),
         Some("disk") => print_disk(),
         Some("csv") => print_csv(),
+        Some("surface") => print_surface(),
         Some("health") => print_health(),
         Some("catalog") => {
             // What the framework offers, as a machine-readable list. The service names come from the
@@ -635,7 +636,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, health, tools-mcp, or tools-openai"
+                "unknown schema format `{other}`; expected rpc, openapi, catalog, metrics, disk, csv, health, surface, tools-mcp, or tools-openai"
             );
         }
     }
@@ -697,6 +698,39 @@ fn print_health() {
     }
     for (kind, count) in counts {
         println!("  {kind}: {count}");
+    }
+}
+
+/// Prints the declared method surface and checks it against what the registry serves.
+///
+/// Two numbers that must agree: the declaration table and a registry built from the same registration functions a server
+/// calls. A `schema` command that reported one without the other would leave the reader to trust it.
+fn print_surface() {
+    let surface = girder_core::declared_surface();
+    println!("declared: {}", surface.methods.len());
+    println!("needs collaborator: {}", surface.needs_collaborator.len());
+    let mut namespaces: Vec<&str> = surface
+        .methods
+        .iter()
+        .filter_map(|method| method.split('.').next())
+        .collect();
+    namespaces.sort_unstable();
+    namespaces.dedup();
+    for namespace in namespaces {
+        let count = surface
+            .methods
+            .iter()
+            .filter(|method| method.starts_with(&format!("{namespace}.")))
+            .count();
+        println!("  {namespace}: {count}");
+    }
+    // The names that need a collaborator, listed because they are the difference between what this build declares and what
+    // a registry assembled from nothing can serve. A caller that sees them knows which dependencies to supply.
+    for name in surface.needs_collaborator.iter().take(8) {
+        println!("  needs collaborator: {name}");
+    }
+    if surface.needs_collaborator.len() > 8 {
+        println!("  ... and {} more", surface.needs_collaborator.len() - 8);
     }
 }
 

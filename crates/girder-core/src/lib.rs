@@ -133,6 +133,7 @@ mod jobs;
 mod json;
 mod launch_environment;
 mod limits;
+mod list_render;
 mod llm;
 mod llm_deepseek;
 mod llm_openai;
@@ -236,6 +237,7 @@ mod skill_tool;
 mod spill;
 mod spill_policy;
 mod ssh;
+mod state_consistency;
 mod stats_csv;
 mod stats_trend;
 mod storage;
@@ -254,6 +256,7 @@ mod subagent_providers;
 mod subagent_tools;
 mod subprocess;
 mod system_prompt;
+mod table_tools;
 mod terminal;
 mod terminal_attach;
 mod terminal_attach_rpc;
@@ -516,6 +519,10 @@ pub use launch_environment::{
     is_ambient, is_forbidden, resolve as resolve_launch_environment,
 };
 pub use limits::{Budget, Ceiling, Session as SessionBudget};
+pub use list_render::{
+    FileEntry, MatchEntry, parse_glob_output, parse_grep_output, render_files as render_file_list,
+    render_matches as render_match_list,
+};
 pub use llm::{
     AssembleError, AssistantMessage, ChunkStream, ContentBlock, FinishReason, LlmError, LlmKey,
     LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolSchema,
@@ -827,6 +834,10 @@ pub use ssh::{
     DEFAULT_TIMEOUT as SSH_DEFAULT_TIMEOUT, Host as SshHost, Outcome as SshOutcome, SshError,
     Transport as SshTransport, Unavailable as UnavailableSsh,
 };
+pub use state_consistency::{
+    Inconsistency, Severity as InconsistencySeverity, Values as ConsistencyValues,
+    check as check_state_consistency,
+};
 pub use stats_csv::{Table as CsvTable, escape_field, session_table, tool_table};
 pub use stats_trend::{
     Comparison as TrendComparison, Point as TrendPoint, Trend, analyze as analyze_trend,
@@ -878,6 +889,9 @@ pub use subprocess::{
     run as run_process, spawn as spawn_process,
 };
 pub use system_prompt::{Parts as PromptParts, assemble as assemble_prompt};
+pub use table_tools::{
+    FileRow, MatchRow, file_table, match_table, render_table as render_aligned_table,
+};
 pub use terminal::{
     DEFAULT_MAX_BYTES as DEFAULT_TRANSCRIPT_BYTES, Launch as TerminalLaunch,
     Registry as TerminalRegistry, Session as TerminalSession, Shell, Size as TerminalSize,
