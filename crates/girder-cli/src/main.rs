@@ -56,7 +56,10 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
-    /// Which document `schema` prints: `rpc` (the default), `openapi`, `tools-mcp`, or `tools-openai`.
+    /// Which document `schema` prints: `rpc` (the default), `openapi`, `catalog`, `metrics`, `disk`,
+    /// `csv`, `health`, `tools-mcp`, or `tools-openai`.
+    // Logic: the list was four names long while nine formats existed, so five were undiscoverable from help -- the same
+    // class of gap as a method that is implemented and never documented.
     #[arg(long, value_name = "FORMAT")]
     schema_format: Option<String>,
 

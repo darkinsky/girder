@@ -204,6 +204,7 @@ mod session_lifecycle_rpc;
 mod session_link;
 mod session_metrics;
 mod session_migration;
+mod session_persistence;
 mod session_portable;
 mod session_preview;
 mod session_query;
@@ -724,6 +725,9 @@ pub use session_metrics::{
 pub use session_migration::{
     FormatVersion, Migration, MigrationError, Migrator, detect as detect_format,
     upgrade as upgrade_event, upgrade_in_session,
+};
+pub use session_persistence::{
+    Footprint as PersistenceFootprint, Persistence, Pruned as PrunedData,
 };
 pub use session_portable::{
     Bundle as SessionBundle, BundleError, VERSION as BUNDLE_VERSION, export as export_bundle,
