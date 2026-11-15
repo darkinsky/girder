@@ -687,7 +687,9 @@ impl SessionCatalog for DirectoryCatalog {
                     continue;
                 };
                 // `file_stem` on `a.jsonl.zst` yields `a.jsonl`; strip that too.
-                let id = id.trim_end_matches(".jsonl");
+                // `strip_suffix`, not `trim_end_matches`: the latter strips repeatedly, so a session created as
+                // `notes.jsonl` listed under `notes` and the row the UI rendered could not be opened.
+                let id = id.strip_suffix(".jsonl").unwrap_or(id);
                 // An archive is named `{id}.archive-{stamp}.jsonl.zst`, which satisfies the extension filter, so a listing
                 // returned it as a session -- openable, countable, a phantom. It is discoverable as an archive; it is not
                 // a conversation.

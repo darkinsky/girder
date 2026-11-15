@@ -347,7 +347,7 @@ pub fn search_files(root: &std::path::Path, query: &Query) -> Results {
         let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        let id = id.trim_end_matches(".jsonl").to_owned();
+        let id = id.strip_suffix(".jsonl").unwrap_or(id).to_owned();
         if let Some(only) = &query.session
             && &id != only
         {
@@ -393,7 +393,7 @@ impl Catalogue for FileCatalogue {
                 let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
                     continue;
                 };
-                let id = id.trim_end_matches(".jsonl").to_owned();
+                let id = id.strip_suffix(".jsonl").unwrap_or(id).to_owned();
                 if let Some(only) = &only
                     && &id != only
                 {
