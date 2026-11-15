@@ -103,6 +103,7 @@ mod credentials;
 mod deliverable;
 mod diff_patch;
 mod error_recovery;
+mod error_taxonomy;
 mod event_index;
 mod events;
 mod exec;
@@ -267,6 +268,7 @@ mod terminal_env;
 mod terminal_local;
 mod terminal_meta;
 mod terminal_persist;
+mod terminal_retain;
 mod terminal_rpc;
 mod terminal_rpc_extra;
 mod terminal_tool;
@@ -435,6 +437,10 @@ pub use diff_patch::{
 pub use error_recovery::{
     Action as RecoveryAction, Kind as RecoveryKind, Suggestion as RecoverySuggestion,
     suggest as suggest_recovery,
+};
+pub use error_taxonomy::{
+    Category as ErrorCategory, categorize as categorize_error, categorize_removal, looks_missing,
+    tag as error_tag,
 };
 pub use event_index::{Index as EventIndex, TurnSpan};
 pub use events::{
@@ -914,6 +920,10 @@ pub use terminal_meta::{
     Store as TerminalMetaStore,
 };
 pub use terminal_persist::{PersistError as TerminalPersistError, Store as TerminalPersistStore};
+pub use terminal_retain::{
+    Request as RetainRequest, RetainError, Retained as RetainedOutput, read as read_retained,
+    retain,
+};
 pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
     register_terminal_methods as register_terminal_rpc_methods,
