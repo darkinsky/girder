@@ -342,6 +342,7 @@ mod web_tools;
 mod workflow;
 mod workflow_rpc;
 mod workflow_tool;
+mod workspace_controller_gap;
 mod workspace_desktop_rpc;
 mod workspace_diff;
 mod workspace_files_extra;
@@ -1170,6 +1171,16 @@ pub use workflow::{
 };
 pub use workflow_rpc::register_workflow_methods;
 pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_status_tool};
+pub use workspace_controller_gap::{
+    AllowAll, ConfiguredDocuments, DEFAULT_FOLLOW_FRAMES, DEFAULT_JOURNAL_CAPACITY,
+    DEFAULT_WORKSPACE_DIRECTORY, DirectoryEntry, DirectoryListing, DirectoryPickerBackend,
+    DocumentsDirectory, FollowAccess, FollowPage, HARNESS_DIRECTORY, Hidden, LocalDirectoryPicker,
+    MAX_DIRECTORY_ENTRIES, MutableAccess, PickerCapability, PickerError, SystemDocuments,
+    WorkspaceFeed, default_workspace_path, is_default_workspace_title, register_directory_picker,
+    register_initialize_default, register_workspace_follow, register_workspace_follow_allow_all,
+    validate_directory_name, validate_documents_directory, validate_documents_directory_for,
+    workspace_display_title, workspace_id_for_path,
+};
 pub use workspace_desktop_rpc::{
     DesktopEnvironment, FileApplication, FileApplicationProber, FileManager, HostPlatform,
     register_workspace_desktop_methods, register_workspace_desktop_methods_with,
