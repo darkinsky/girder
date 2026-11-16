@@ -228,6 +228,7 @@ mod session_persistence;
 mod session_portable;
 mod session_preview;
 mod session_query;
+pub mod session_query_gap;
 mod session_query_rpc;
 mod session_queue_rpc;
 mod session_recovery;
