@@ -495,7 +495,7 @@ pub fn resources_of(event: &str, args: &[Value]) -> Result<Vec<Resource>, Forwar
         let id = reader(args).ok_or_else(|| ForwardError::InvalidResources {
             event: event.to_owned(),
         })?;
-        resources.push(Resource::new(*kind, id));
+        resources.push(Resource::new(kind, id));
     }
     Ok(resources)
 }
@@ -648,6 +648,18 @@ pub struct WaterfallSlot {
     reply: oneshot::Sender<Outcome>,
 }
 
+impl PartialEq for WaterfallSlot {
+    /// Compares the facts a consumer can see, not the reply channel.
+    ///
+    /// The channel has no identity worth comparing -- two slots carrying the same invocation are the same fact even
+    /// though their senders are different objects -- and a derived `PartialEq` could not have compiled.
+    fn eq(&self, other: &Self) -> bool {
+        self.event == other.event
+            && self.agent_id == other.agent_id
+            && self.request == other.request
+    }
+}
+
 impl WaterfallSlot {
     /// The Host Cordis event name.
     #[must_use]
@@ -677,10 +689,7 @@ impl WaterfallSlot {
         object.insert("type".to_owned(), Value::String("waterfall".to_owned()));
         object.insert("event".to_owned(), Value::String(self.event.to_owned()));
         object.insert("eventId".to_owned(), Value::String(event_id.to_owned()));
-        object.insert(
-            "agentId".to_owned(),
-            Value::String(self.agent_id.clone()),
-        );
+        object.insert("agentId".to_owned(), Value::String(self.agent_id.clone()));
         object.insert("request".to_owned(), self.request.clone());
         Value::Object(object)
     }
@@ -714,7 +723,8 @@ impl WaterfallSlot {
 }
 
 /// One item a Client's event stream may yield.
-#[derive(Debug)]
+
+#[derive(Debug, PartialEq)]
 pub enum Dispatch {
     /// A one-way notification.
     Emit(Frame),
@@ -815,9 +825,19 @@ impl EventQueue {
         // No user code runs under this lock — a rejected slot's `send` only moves a value — so a
         // panic elsewhere cannot have left the queue half-updated. Propagating the poison would
         // turn an unrelated panic into a permanent outage of the stream.
-        self.inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes the oldest item, if one is waiting.
+    ///
+    /// The consumer side of [`Self::push`]. A queue that could only be filled would be a queue whose contents nobody
+    /// could read, and a caller asserting on what a stream produced needs to take items out one at a time.
+    pub fn try_pop_emit(&self) -> Option<Dispatch> {
+        let mut inner = self.lock();
+        if inner.buffered.is_empty() {
+            return None;
+        }
+        inner.buffered.pop_front()
     }
 
     /// How many items are waiting for the consumer.
@@ -881,13 +901,16 @@ impl EventQueue {
     ///
     /// Idempotent: the first call's reason wins, and a later call changes nothing.
     pub fn end(&self, reason: Option<String>) {
+        // Kept because the reason is both recorded on the queue and handed to every rejected slot, and the first of those
+        // moves it.
+        let for_slots = reason.clone();
         let rejected: Vec<WaterfallSlot> = {
             let mut inner = self.lock();
             if inner.ended {
                 return;
             }
             inner.ended = true;
-            inner.reason = reason.clone();
+            inner.reason = reason;
             inner
                 .buffered
                 .drain(..)
@@ -897,7 +920,10 @@ impl EventQueue {
         // Outside the lock: `settle` runs no user code today, but a future reply payload could, and
         // a queue's mutex must never be held across code the caller controls.
         for slot in rejected {
-            slot.reject(reason.clone());
+            // The reply cannot fail: the ticket's receiver is alive for as long as the Host
+            // listener is parked on it, and if it is not, the ticket already reads a closed channel
+            // as a rejection.
+            let _ = slot.reject(for_slots.clone());
         }
         // `notify_waiters` rather than `notify_one`: every waiter has to learn about the end, not
         // just the next one in line.
@@ -909,7 +935,7 @@ impl EventQueue {
     /// Upstream's `remoteEventSourceEndReason`: a cancelled source reports *its own* reason, because
     /// that reason is the one the Client's pending waterfalls must be rejected with; a source that
     /// ended without being cancelled reports a fixed message, because nothing else explains it.
-    pub fn end_from(&self, end: SourceEnd) {
+    pub fn end_from(&self, end: &SourceEnd) {
         self.end(end.reason());
     }
 
@@ -918,7 +944,15 @@ impl EventQueue {
     /// `None` is the end of the stream, not a lull: a live Client's stream is idle most of the time
     /// and nothing ends it but [`EventQueue::end`]. A consumer that treated the first quiet moment
     /// as terminal would disconnect at once.
-    pub async fn next(&mut self) -> Option<Dispatch> {
+    ///
+    /// Named `recv` rather than `next` so it does not read as [`Iterator::next`]: this is an
+    /// asynchronous pull, and an iterator that blocked would be a different primitive.
+    ///
+    /// Takes `&self` although a queue hands each item to exactly one consumer, for the same reason
+    /// [`BoundedQueue`](girder_core::BoundedQueue) lets a clone receive: two concurrent calls are
+    /// memory-safe and simply split the stream between them. A design that needs one consumer owns
+    /// one handle and passes [`EventQueue`] by reference to the producers.
+    pub async fn recv(&self) -> Option<Dispatch> {
         loop {
             // Registered and enabled before the queue is inspected, so a push that lands between
             // the check and the await cannot be lost: `Notify` stores at most one permit for a
@@ -1076,14 +1110,18 @@ pub fn project_request(
     carrier: &str,
     request: &Value,
 ) -> Result<ProjectedRequest, ForwardError> {
-    let object = request.as_object().ok_or_else(|| ForwardError::MissingAgent {
-        event: event.to_owned(),
-    })?;
-    let agent_id = object.get(AGENT_FIELD).and_then(id_of).ok_or_else(|| {
-        ForwardError::MissingAgent {
+    let object = request
+        .as_object()
+        .ok_or_else(|| ForwardError::MissingAgent {
             event: event.to_owned(),
-        }
-    })?;
+        })?;
+    let agent_id =
+        object
+            .get(AGENT_FIELD)
+            .and_then(id_of)
+            .ok_or_else(|| ForwardError::MissingAgent {
+                event: event.to_owned(),
+            })?;
     if agent_id != carrier {
         return Err(ForwardError::MissingAgent {
             event: event.to_owned(),

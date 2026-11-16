@@ -62,6 +62,7 @@ mod api_catalog;
 pub mod api_config;
 pub mod api_job;
 mod api_key;
+pub mod api_remotes_gap;
 pub mod api_session;
 mod api_version;
 mod approval;
@@ -336,6 +337,14 @@ pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
 pub use api_catalog::{Catalog, CatalogError, EventEntry, MethodEntry, ServiceEntry};
 pub use api_config::WorkspaceRegistry;
 pub use api_key::{KeyCheck, check as check_api_key, normalize as normalize_api_key};
+pub use api_remotes_gap::{
+    ABANDONED_INVOCATION, AGENT_FIELD, AllowlistError, Delivery as ForwardDelivery,
+    Dispatch as QueueEvent, Dispatch, EventQueue, FORWARDED_EVENTS, ForwardError, ForwardedEvent,
+    Frame, GLOBAL_RESOURCE_KIND, Outcome, ProjectedRequest, Push, Resource, SESSION_RESOURCE_KIND,
+    SIGNAL_FIELD, SourceEnd, UNEXPECTED_SOURCE_END, WaterfallSlot, WaterfallTicket,
+    forward_waterfall, forwarded_event, forwarded_event_names, is_forwardable, project_request,
+    resources_of, source_end_reason, validate_allowlist, validate_args,
+};
 /// The session Remote surface, namespaced because its wire types share names with the
 /// service-side request types in `remote`.
 pub use api_session as session_api;
