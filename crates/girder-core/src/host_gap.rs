@@ -1243,7 +1243,15 @@ impl<R> WebRouter<R> {
         // every candidate is compared; the table holds routes, not request paths.
         let mut best: Option<(&str, &Responder<R>)> = None;
         for (prefix, responder) in &self.prefixes {
-            if pathname != prefix && !pathname.starts_with(&format!("{prefix}/")) {
+            // A prefix may or may not carry its trailing separator, and a caller registering `/api/` means the same
+            // directory as one registering `/api`. Joining unconditionally produced `/api//`, which nothing starts with,
+            // so a prefix route with a trailing slash could never match anything.
+            let boundary = if prefix.ends_with('/') {
+                prefix.clone()
+            } else {
+                format!("{prefix}/")
+            };
+            if pathname != prefix && !pathname.starts_with(&boundary) {
                 continue;
             }
             if best.is_none_or(|(current, _)| prefix.len() > current.len()) {

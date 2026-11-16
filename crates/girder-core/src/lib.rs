@@ -129,6 +129,7 @@ mod goal_tool;
 mod health_trend;
 
 mod home_paths;
+pub mod host_gap;
 mod host_rpc;
 mod image_block;
 mod inbox;
