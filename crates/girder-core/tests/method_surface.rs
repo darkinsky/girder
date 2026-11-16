@@ -103,11 +103,34 @@ fn serve_shaped_registry(scratch: &std::path::Path) -> girder_core::RemoteRegist
     register_host_surface(&mut registry, scratch);
     register_lifecycle_surface(&mut registry, &catalog, &runtime, scratch);
     register_settings_surface(&mut registry);
+    // The three namespaces added after this table was written. They take collaborators the scratch build creates itself,
+    // which is exactly what the declaration's `capability` column says each one needs.
+    register_goal_surface(&mut registry);
+    register_workflow_surface(&mut registry);
+    register_question_surface(&mut registry);
 
     registry
 }
 
 /// Projections, jobs, and extensions -- the group that needs something the server owns.
+fn register_goal_surface(registry: &mut girder_core::RemoteRegistry) {
+    let store: std::sync::Arc<dyn girder_core::GoalStore> =
+        std::sync::Arc::new(girder_core::MemoryGoalStore::new());
+    girder_core::register_goal_methods(registry, &store);
+}
+
+fn register_workflow_surface(registry: &mut girder_core::RemoteRegistry) {
+    let workflows = std::sync::Arc::new(girder_core::WorkflowRegistry::new());
+    girder_core::register_workflow_methods(registry, workflows);
+}
+
+fn register_question_surface(registry: &mut girder_core::RemoteRegistry) {
+    let store: std::sync::Arc<dyn girder_core::QuestionStore> =
+        std::sync::Arc::new(girder_core::MemoryQuestionStore::new());
+    let queue = std::sync::Arc::new(girder_core::QuestionQueue::new(store));
+    girder_core::register_question_methods(registry, queue);
+}
+
 fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
     let projections = Arc::new(ProjectionRegistry::new());
     let jobs = Arc::new(JobRegistry::new(4096));

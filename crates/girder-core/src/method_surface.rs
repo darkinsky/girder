@@ -434,6 +434,94 @@ const DECLARED: &[Declared] = &[
         registration: "register_settings_methods",
         capability: Some("SettingsStore"),
     },
+    // ---- goal ------------------------------------------------------------------
+    Declared {
+        method: "goal.get",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.list",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.create",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.update",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.edit",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.pause",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.resume",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.complete",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.block",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    Declared {
+        method: "goal.clear",
+        registration: "register_goal_methods",
+        capability: Some("GoalStore"),
+    },
+    // ---- workflow ------------------------------------------------------------------
+    Declared {
+        method: "workflow.list",
+        registration: "register_workflow_methods",
+        capability: Some("WorkflowRegistry"),
+    },
+    Declared {
+        method: "workflow.get",
+        registration: "register_workflow_methods",
+        capability: Some("WorkflowRegistry"),
+    },
+    Declared {
+        method: "workflow.start",
+        registration: "register_workflow_methods",
+        capability: Some("WorkflowRegistry"),
+    },
+    Declared {
+        method: "workflow.cancel",
+        registration: "register_workflow_methods",
+        capability: Some("WorkflowRegistry"),
+    },
+    // ---- userQuestions ------------------------------------------------------------------
+    Declared {
+        method: "userQuestions.list",
+        registration: "register_question_methods",
+        capability: Some("QuestionQueue"),
+    },
+    Declared {
+        method: "userQuestions.answer",
+        registration: "register_question_methods",
+        capability: Some("QuestionQueue"),
+    },
+    Declared {
+        method: "userQuestions.cancel",
+        registration: "register_question_methods",
+        capability: Some("QuestionQueue"),
+    },
 ];
 
 /// One group of methods, as the build declares it.
