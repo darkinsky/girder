@@ -818,8 +818,11 @@ impl StorageMeta {
 ///
 /// Returns [`HeaderError`] for a non-object, a missing required key, an unknown or retired key, a
 /// mistyped or out-of-range value, a relative `cwd`, or an unknown `origin`.
-pub fn parse_header_record(value: &Value) -> Result<StorageMeta, HeaderError> {
-    let object = value.as_object().ok_or(HeaderError::NotAnObject)?;
+/// Enforces the required, retired and unknown-key rules before any field is read.
+///
+/// Separate from the field parsing because the two answer different questions -- "is this a header at all" and "what does
+/// it say" -- and a caller fixing a malformed file wants the first answer without the second's error text.
+fn check_header_keys(object: &serde_json::Map<String, Value>) -> Result<(), HeaderError> {
     for key in StorageHeader::REQUIRED_KEYS {
         if !object.contains_key(key) {
             return Err(HeaderError::MissingKey { key });
@@ -844,6 +847,12 @@ pub fn parse_header_record(value: &Value) -> Result<StorageMeta, HeaderError> {
             expected: "the string \"session\"",
         });
     }
+    Ok(())
+}
+
+pub fn parse_header_record(value: &Value) -> Result<StorageMeta, HeaderError> {
+    let object = value.as_object().ok_or(HeaderError::NotAnObject)?;
+    check_header_keys(object)?;
     let version = object
         .get("version")
         .and_then(Value::as_u64)

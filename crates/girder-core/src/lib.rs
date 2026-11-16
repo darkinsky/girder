@@ -79,6 +79,7 @@ mod backoff;
 mod block_assembler;
 mod boot;
 mod boot_check;
+mod boot_gap;
 mod boot_stages;
 mod bounded_queue;
 mod brand;
