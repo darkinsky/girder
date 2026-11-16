@@ -275,6 +275,7 @@ mod subagent_pool;
 mod subagent_providers;
 mod subagent_tools;
 mod subprocess;
+pub mod subprocess_gap;
 mod system_prompt;
 mod table_tools;
 mod terminal;
