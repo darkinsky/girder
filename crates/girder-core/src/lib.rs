@@ -118,6 +118,7 @@ mod file_lock;
 mod file_tools;
 mod file_watch;
 mod fs;
+mod fs_gap;
 mod fs_rpc;
 mod fs_tools;
 mod goal;
@@ -241,6 +242,7 @@ mod settings_file;
 mod settings_rpc;
 mod share_link;
 mod shell;
+mod shell_gap;
 mod skill;
 mod skill_catalog;
 mod skill_tool;
@@ -494,6 +496,13 @@ pub use file_watch::{
 pub use fs::{
     FileSystem, FsDirEntry, FsError, FsInfo, FsTarget, FsTargetKey, FsType, FsVersion,
     LocalFileSystem, read_file as read_file_via_fs, target_at,
+};
+pub use fs_gap::{
+    FileMatches, GLOB_MAX_RESULTS, GREP_MAX_LINE_BYTES, GREP_MAX_MATCHES, GlobSample, GrepMatch,
+    LineMatch, SEARCH_META_MAX_BYTES, SearchMeta, format_glob_output, format_grep_matches,
+    format_grep_output, format_retained_grep, glob_search_meta, grep_search_meta,
+    group_matches_by_file, preview_line, render_glob_paths, retain_glob_paths, retain_grep_matches,
+    sample_across_top_level, to_workdir_relative,
 };
 pub use fs_rpc::{DEFAULT_LIST_LIMIT as FS_LIST_LIMIT, register_fs_methods};
 pub use fs_tools::{copy_tool, delete_tool, make_dir_tool, move_tool, register_fs_tools};
@@ -863,6 +872,13 @@ pub use shell::{
     DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT, ENV_PREFIX, Environment as ShellEnvironment, Program,
     Request as ShellRequest, RunResult as ShellRunResult, SandboxMode,
     Specification as ShellSpecification, split_words, which,
+};
+pub use shell_gap::{
+    Channel as ShellChannel, Chunk as ShellChunk, CollectedOutput, ParsedExit, ParsedExitStatus,
+    RunOutcome as ShellRunOutcome, RunnerFailureRule, SandboxEnforcement, ShellSandboxInfo,
+    classify_denial, classify_runner_failure, escalation_hint_marker, matches_signature,
+    parse_exit_status, render_job_read, render_promoted, render_result, ring_delta,
+    runner_failure_notice, sandbox_denial_marker, stream_text,
 };
 pub use skill::{
     Definition as SkillDefinition, Provider as SkillProvider, Registry as SkillRegistry,
