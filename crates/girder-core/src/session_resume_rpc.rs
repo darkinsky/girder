@@ -215,13 +215,8 @@ fn invalid(message: String) -> RemoteError {
 /// final record of a cut-off turn is usually a message or a tool call. A finished turn always ends
 /// with `turn/end`, which is what makes the boundary the right thing to look at.
 fn ends_mid_turn(events: &[SessionEvent]) -> bool {
-    let mut open = false;
-    for event in events {
-        match event {
-            SessionEvent::TurnStart { .. } => open = true,
-            SessionEvent::TurnEnd { .. } => open = false,
-            _ => {}
-        }
-    }
-    open
+    // Delegated, not reimplemented. This function and `session_timeline::open_turn` answered the same question with two
+    // different rules -- this one ignored the turn number, the other compared it -- so a log whose `turn/end` named the
+    // wrong turn made `interrupted` and `openTurn` contradict each other. `turn_closure` is now the one implementation.
+    girder_core::turns_interrupted(events)
 }

@@ -401,15 +401,10 @@ fn invalid(message: String) -> RemoteError {
 /// [`crate::session_resume_rpc`]; sharing it would need a new public helper in a file this module may
 /// not edit, and ten lines that must agree are the smaller cost.
 fn ends_mid_turn(events: &[SessionEvent]) -> bool {
-    let mut open = false;
-    for event in events {
-        match event {
-            SessionEvent::TurnStart { .. } => open = true,
-            SessionEvent::TurnEnd { .. } => open = false,
-            _ => {}
-        }
-    }
-    open
+    // Delegated, not reimplemented. This function and `session_timeline::open_turn` answered the same question with two
+    // different rules -- this one ignored the turn number, the other compared it -- so a log whose `turn/end` named the
+    // wrong turn made `interrupted` and `openTurn` contradict each other. `turn_closure` is now the one implementation.
+    girder_core::turns_interrupted(events)
 }
 
 /// Where a session forked from.

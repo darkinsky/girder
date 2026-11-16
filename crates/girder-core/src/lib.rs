@@ -301,6 +301,7 @@ mod tool_watchdog;
 mod tools;
 mod trace_span;
 mod transcript_import;
+mod turn_closure;
 mod typert;
 mod typert_json;
 mod undo_log;
@@ -1017,6 +1018,10 @@ pub use trace_span::{Span as TraceSpan, Tracer};
 pub use transcript_import::{
     IMPORTED_PROVIDER, ImportError as TranscriptImportError, Imported as ImportedTranscript,
     detect as detect_transcript_format, import as import_transcript,
+};
+pub use turn_closure::{
+    Closure as TurnClosure, evaluate as evaluate_turn_closure, is_interrupted as turns_interrupted,
+    open_turn_of as open_turn_number,
 };
 pub use typert::{
     Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant, to_typescript,
