@@ -99,6 +99,7 @@ mod compaction_summary;
 mod config;
 mod config_edit;
 mod context_budget;
+mod context_gap;
 mod core_gap;
 mod cost_estimate;
 mod credential_ref;
@@ -198,6 +199,7 @@ mod retry;
 mod retrying_provider;
 mod rpc_limits;
 mod runtime;
+mod sandbox_gap;
 mod sandbox_path;
 mod schedule;
 mod schedule_rpc;
@@ -315,6 +317,7 @@ mod typert;
 mod typert_json;
 mod undo_log;
 mod usage_quota;
+pub mod util_gap;
 mod web;
 mod web_tools;
 mod workflow;
@@ -442,6 +445,13 @@ pub use config_edit::{SchemaError, SchemaRegistry, SettingSpec};
 pub use context_budget::{
     Budget as ContextBudget, Decision as BudgetDecision, Usage as ContextUsage,
     check as check_context_budget,
+};
+pub use context_gap::{
+    ErrorCode as ReferenceErrorCode, Limits as ReferenceLimits, ParsedText, ReferenceError,
+    decode_uri, encode_uri, format_mention, normalize_references, parse_text,
+    project as project_references, rank_candidates, reference_budget, render_omissions,
+    render_reference_prompt, retain as retain_references, stringify_tag_safe_json,
+    truncate_with_notice, validate_limits,
 };
 pub use core_gap::{
     EncodedSeq, OpenTurnCloseCause, SeqRangeError, SurfaceEnvelope, SurfaceError, SurfaceFold,
@@ -751,6 +761,22 @@ pub use retry::{Backoff, FailureCode, RetryError, RetryMode, RetryPolicy, run_wi
 pub use retrying_provider::RetryingProvider;
 pub use rpc_limits::{Limiter, Permit, Quota, Refusal as QuotaRefusal};
 pub use runtime::{AgentEvent, AgentRuntime, AgentTurn, RuntimeConfig, RuntimeError};
+pub use sandbox_gap::{
+    ConfineError as SandboxConfineError, ConfinedArgv, ESCALATION_TARGETS, EscalationApproval,
+    EscalationApprover, EscalationAsk, EscalationDisplayReason, EscalationError,
+    EscalationErrorCode, EscalationOutcome, EscalationRequest, ExecutionPolicy as SandboxPolicy,
+    LANDLOCK_LAUNCHER_FAILURE_EXIT, LandlockGrants, PolicyRequest, PolicyResolver,
+    Runner as SandboxRunner, SANDBOX_MODES, SandboxRootError, SelectedRunner,
+    WINDOWS_ACL_RUNNER_FAILURE_EXIT, approve_escalation, assert_temp_root_outside_workspace,
+    bwrap_profile_args, canonical_path as sandbox_canonical_path,
+    configured_runner_denial_signatures, confine, denial_signatures, escalation_audit_reason,
+    escalation_display_reason, host_temp_root, is_execution_world_path, is_strictly_wider,
+    landlock_grants, parse_mode, platform_chain, render_policy_context, runner_failure_rules,
+    sandbox_permissions_description, seatbelt_profile_args, select_runner, session_override,
+    set_sandbox_mode, static_enforcement, temp_root_inside_workspace, unavailable_message,
+    validate_escalation_args, validate_runner_config, wider_modes, workspace_writable_roots,
+    writable_roots,
+};
 pub use sandbox_path::{Sandbox as PathSandbox, SandboxError, Verdict as SandboxVerdict};
 pub use schedule::{
     CreateError, CronExpression, Firing, Instant as ScheduleInstant, MAX_TITLE_CHARS, MIN_INTERVAL,
@@ -1097,6 +1123,7 @@ pub use usage_quota::{
     Quota as UsageQuota, Totals as UsageTotals, Tracker as UsageTracker, Usage as UsageRecord,
     Verdict as UsageVerdict,
 };
+pub use util_gap::{PartialArguments, deep_equal_json, is_json_value, utf16_len};
 pub use web::{
     EndpointProvider, FetchBody, FetchProvider, FetchRequest, FetchResult, SearchProvider,
     SearchRequest, SearchResult, SearchSource, Web, WebError, build_web_from_env,
