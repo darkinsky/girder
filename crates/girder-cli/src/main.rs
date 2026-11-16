@@ -825,6 +825,21 @@ fn print_disk() {
     );
     let budget = girder_core::ToolBudgetWatcher::from_arc(Arc::clone(&settings));
     println!("tool call budget: {} per tool", budget.current().max_calls);
+    // The goal state, which decides whether a turn ends the session or continues it. A goal that is active but disarmed
+    // is the state a restart leaves, and it is why the loop stops instead of continuing -- worth printing, because
+    // "the agent went quiet" and "the goal is disarmed" look the same from outside.
+    let goal = girder_core::GoalState::new();
+    match goal.current() {
+        Some(current) => println!(
+            "goal: {} rev {} [{}] ({:?}, may continue: {})",
+            current.id.as_str(),
+            current.revision,
+            current.phase.as_str(),
+            goal.activation(),
+            goal.may_continue()
+        ),
+        None => println!("goal: none"),
+    }
     let persistence = girder_core::Persistence::new(sessions_root());
     let persist = persistence.footprint();
     println!("logs: {}", usage.total_bytes);
