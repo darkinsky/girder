@@ -123,6 +123,7 @@ mod fs_gap;
 mod fs_rpc;
 mod fs_tools;
 mod goal;
+mod goal_rpc;
 mod goal_tool;
 mod health_trend;
 
@@ -519,6 +520,10 @@ pub use girder_macros::{Typert, remote};
 pub use goal::{
     Activation, BlockReason, DEFAULT_MAX_GOAL_ROUNDS, Goal, GoalError, GoalId, GoalRef, GoalState,
     Phase, check_reference as check_goal_reference,
+};
+pub use goal_rpc::{
+    GoalStore, METHODS as GOAL_METHODS, MemoryGoalStore, STARTS_ROUNDS, UnavailableGoalStore,
+    register_goal_methods,
 };
 pub use goal_tool::goal_tool;
 pub use health_trend::{

@@ -506,6 +506,7 @@ fn register_workspace_file_surface(
     // Settings share this function rather than `serve` because they are the other half of what a client configures --
     // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
     register_settings_surface(remote);
+    register_goal_surface(remote);
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);
@@ -1028,6 +1029,16 @@ fn boot_check(cli: &Cli) -> Result<()> {
     }
     let _ = cli;
     Ok(())
+}
+
+/// Registers the `goal` namespace.
+///
+/// A goal decides whether a turn ends the session or continues it, and 575 lines of state machine were reachable only from
+/// inside this build. The store is in-memory on purpose: `goal.rs` treats a restart as disarming a goal, so persisting one
+/// across a restart would contradict the rule the state machine is built on.
+fn register_goal_surface(remote: &mut girder_core::RemoteRegistry) {
+    let goals: Arc<dyn girder_core::GoalStore> = Arc::new(girder_core::MemoryGoalStore::new());
+    girder_core::register_goal_methods(remote, &goals);
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {
