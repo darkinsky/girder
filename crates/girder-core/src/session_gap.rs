@@ -6,12 +6,16 @@
 //!
 //! # Why this module exists
 //!
-//! Upstream's session workspace is twenty-nine packages. The local crate covers most of them —
+//! Upstream's session workspace is twenty-four packages. The local crate covers most of them —
 //! format migration ([`crate::session_migration`]), JSONL persistence, projections, titles,
 //! checkpoints, stats, replay, rewind — but telemetry has **no local counterpart at all**: no
 //! `session_telemetry` module, no `telemetry` / `otel` / `opentelemetry` mention anywhere under
 //! `crates/girder-core/src`. A deployment could record a session perfectly and still have no way to
 //! report what happened in it.
+//!
+//! The count said twenty-nine until it was checked against the source tree, which holds twenty-four
+//! directories. A number in a comment is a claim like any other, and this one had been wrong for
+//! several rounds without anything failing.
 //!
 //! # What is ported, and what is deliberately not
 //!
