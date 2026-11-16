@@ -274,6 +274,7 @@ mod stream_stall;
 mod stream_validate;
 mod subagent;
 mod subagent_depth;
+pub mod subagent_extra_gap;
 mod subagent_interrupt;
 mod subagent_pool;
 mod subagent_providers;
