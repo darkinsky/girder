@@ -60,6 +60,7 @@ extern crate self as girder_core;
 
 mod api_catalog;
 pub mod api_config;
+pub mod api_extra_gap;
 pub mod api_job;
 mod api_key;
 pub mod api_remotes_gap;
