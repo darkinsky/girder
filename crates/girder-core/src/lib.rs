@@ -53,6 +53,7 @@
 mod access;
 mod agent;
 mod agent_loop;
+mod agent_scope_gap;
 // The derive emits `::girder_core::…`, which cannot resolve inside `girder-core` itself. This alias
 // lets generated code compile here as well as downstream; it is the supported way to name a crate
 // from within itself.
@@ -363,6 +364,10 @@ pub use agent::{
     ModelSelectionView, SelectionError, SelectionSource, validate as validate_model_selection,
 };
 pub use agent_loop::{LoopContext, LoopError, LoopStep, dispatch, run};
+pub use agent_scope_gap::{
+    Binding as ScopeBinding, ConsumedWork, EndedTurn, Event as ConsumedWorkEvent, ScopeError,
+    ScopeGraph, ScopeKey as ScopeGraphKey, SpliceOutcome, accounts_for_claim, fold_consumed_work,
+};
 pub use api_catalog::{Catalog, CatalogError, EventEntry, MethodEntry, ServiceEntry};
 pub use api_config::WorkspaceRegistry;
 pub use api_key::{KeyCheck, check as check_api_key, normalize as normalize_api_key};
