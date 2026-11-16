@@ -324,6 +324,7 @@ mod trace_span;
 mod transcript_import;
 mod turn_closure;
 mod typert;
+mod typert_gap;
 mod typert_json;
 mod undo_log;
 mod usage_quota;
