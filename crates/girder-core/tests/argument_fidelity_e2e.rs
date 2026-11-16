@@ -93,6 +93,10 @@ fn an_integer_above_f64_precision_survives_the_limits_check_exactly() {
     );
 
     // The value the tool receives must be the integer the model wrote, to the last digit.
+    //
+    // This holds without any feature flag: `serde_json` stores a JSON integer as `u64`/`i64` and only falls back to `f64`
+    // for a literal carrying a decimal point or an exponent. The precision loss this test was written to catch does not
+    // exist at 2^53+1; the case that does need `arbitrary_precision` is a literal past `u64::MAX`, tested separately.
     let parsed: Value = serde_json::from_str(&arguments).expect("the arguments are valid JSON");
     assert_eq!(parsed["id"].as_u64(), Some(ABOVE_F64_EXACT));
     assert_eq!(parsed["id"].to_string(), "9007199254740993");

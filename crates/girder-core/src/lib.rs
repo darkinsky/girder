@@ -84,6 +84,7 @@ mod brand;
 mod builtin_commands;
 mod cache_invalidate;
 mod call_config;
+mod cancel_orchestra;
 mod cancel_scope;
 mod canonical;
 mod checkpoint_store;
@@ -389,6 +390,7 @@ pub use cache_invalidate::{
     normalized_path as normalize_cache_path,
 };
 pub use call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
+pub use cancel_orchestra::{Cancelled as CancelOutcome, cancel_and_clean, is_quiescent};
 pub use cancel_scope::{CancelReason, Scope as CancelScope, run_cleanups};
 pub use canonical::{Encoder, canonical_json, key_of};
 pub use checkpoint_store::{
