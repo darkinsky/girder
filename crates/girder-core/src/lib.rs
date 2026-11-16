@@ -98,6 +98,7 @@ mod compaction_summary;
 mod config;
 mod config_edit;
 mod context_budget;
+mod core_gap;
 mod cost_estimate;
 mod credential_ref;
 mod credentials;
@@ -139,6 +140,7 @@ mod limits;
 mod list_render;
 mod llm;
 mod llm_deepseek;
+mod llm_gap;
 mod llm_openai;
 mod llm_stats;
 mod log_compact;
@@ -208,6 +210,7 @@ mod session_branch;
 mod session_digest;
 mod session_export_rpc;
 mod session_filter;
+mod session_gap;
 mod session_health;
 mod session_layout;
 mod session_lifecycle_rpc;
@@ -426,6 +429,14 @@ pub use context_budget::{
     Budget as ContextBudget, Decision as BudgetDecision, Usage as ContextUsage,
     check as check_context_budget,
 };
+pub use core_gap::{
+    EncodedSeq, OpenTurnCloseCause, SeqRangeError, SurfaceEnvelope, SurfaceError, SurfaceFold,
+    SurfaceOp, SurfaceReplacement, SyntheticToolResult, TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN,
+    ToolCallRecovery, decode_seq_ranges, derive_event_message, encode_seq_ranges, fold_surface,
+    interrupted_turn_closers, is_append_surface_event, is_replacement_surface_event,
+    is_surface_eligible_type, needs_message_projection, open_turn_closers, tool_result_content,
+    validate_surface_metadata,
+};
 pub use cost_estimate::{
     Batch as CostBatch, Estimate as CostEstimate, Price as ModelPrice, Table as PriceTable,
     Usage as CostUsage, estimate as estimate_cost, estimate_batch as estimate_cost_batch,
@@ -546,6 +557,10 @@ pub use llm::{
 };
 pub use llm_deepseek::{
     DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
+};
+pub use llm_gap::{
+    Dimensions as ImageDimensions, ImageRequestPrice, MAX_IMAGE_TOKENS, MIN_PIXELS, PATCH_SIZE,
+    image_tokens, price_request_image, request_dimensions,
 };
 pub use llm_openai::{
     DEFAULT_BASE_URL as OPENAI_DEFAULT_BASE_URL, OpenAiConfig, OpenAiProvider,
@@ -748,6 +763,17 @@ pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
     Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,
     apply as apply_session_filter,
+};
+pub use session_gap::{
+    Attribute as TelemetryAttribute, Channel as TelemetryChannel, Policy as TelemetryPolicy,
+    Record as TelemetryRecord, SessionFacts as TelemetrySessionFacts,
+    Severity as TelemetrySeverity, SharingStatus, Verdict as TelemetryVerdict,
+    agent_error as telemetry_agent_error, apply_policies as apply_telemetry_policies,
+    body_of as telemetry_body, body_texts as telemetry_body_texts, capture as capture_telemetry,
+    error_detail, escalate as telemetry_escalate, is_exported as telemetry_is_exported,
+    plan_export_batches as plan_telemetry_export, redact_literal,
+    resume_after as telemetry_resume_after, severity_of as telemetry_severity,
+    shutdown as telemetry_shutdown, starts_history as telemetry_starts_history,
 };
 pub use session_health::{
     Issue as HealthIssue, Kind as HealthKind, Severity as HealthSeverity,
