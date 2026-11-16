@@ -986,6 +986,10 @@ pub fn skill_gestures_in_text(text: &str) -> Vec<String> {
                 end += 1;
             }
             // The lookahead: whitespace or end of text, and a non-empty, grammar-valid run.
+            //
+            // A gesture is whitespace-bounded in both directions, which is what keeps `/usr/bin` and `5/8` out. The
+            // consequence is deliberate and worth naming: `/commit, /review` yields only `review`, because the comma
+            // after the first name is not whitespace. A caller that wants two gestures writes them separated by space.
             let terminated = end == characters.len() || is_js_whitespace(characters[end]);
             if end > name_start && terminated {
                 let name: String = characters

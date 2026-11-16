@@ -989,3 +989,23 @@ fn a_catalog_publication_digests_its_own_record() {
         "a resumed session must recognize its own catalog as unchanged"
     );
 }
+
+/// A gesture is whitespace-bounded at both ends, which is what keeps paths out.
+///
+/// The consequence is worth pinning because it looks like a bug until you see the reason: `/commit, /review` yields only
+/// `review`. A comma is not whitespace, so the first token never closes -- and the same rule is what stops `/usr/bin` and
+/// `5/8` from being read as skill names.
+#[test]
+fn a_gesture_ends_only_at_whitespace_and_that_is_what_keeps_paths_out() {
+    assert_eq!(skill_gestures_in_text("/commit, /review"), vec!["review"]);
+    assert_eq!(
+        skill_gestures_in_text("/commit /review"),
+        vec!["commit", "review"]
+    );
+    for not_a_gesture in ["/usr/bin", "5/8", "path/to/commit", "//commit", "`/commit`"] {
+        assert!(
+            skill_gestures_in_text(not_a_gesture).is_empty(),
+            "{not_a_gesture:?} must not parse as a gesture"
+        );
+    }
+}
