@@ -252,6 +252,7 @@ mod session_stream;
 mod session_tag;
 mod session_timeline;
 mod session_title;
+mod session_title_llm_gap;
 mod session_transcript;
 mod session_workspace;
 mod settings_file;
@@ -838,6 +839,10 @@ pub use session_branch::{
     BranchError, Forest as SessionForest, Link as SessionLink, forest_from_ids, links_from_ids,
 };
 pub use session_digest::{Digest, digest as digest_session, one_line as digest_one_line};
+pub use session_engine_gap::{
+    Channel as ProjectionChannel, ListenerId as ProjectionListenerId, Notifier,
+    ProjectionValueStore, Publish, PublishKind, SeqCursor,
+};
 pub use session_export_rpc::register_session_export_method;
 pub use session_filter::{
     Filter as SessionFilter, Order as SessionOrder, SessionSummary as FilterSummary,
