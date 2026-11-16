@@ -30,6 +30,17 @@ impl FailureCode {
     pub const EMPTY_RESPONSE: &'static str = "EMPTY_RESPONSE";
     /// The provider rate-limited the request.
     pub const RATE_LIMIT: &'static str = "RATE_LIMIT";
+
+    /// The account is out of balance or over its plan.
+    ///
+    /// Separate from [`Self::RATE_LIMIT`] because both arrive as HTTP 429 and only one of them can be waited out. A
+    /// backoff against an exhausted balance retries a request that will fail every time until someone pays.
+    pub const QUOTA: &'static str = "QUOTA";
+
+    /// The request is larger than the model's context window.
+    ///
+    /// Not retryable at all: the same request will be the same size, and the only fix is for the caller to shorten it.
+    pub const CONTEXT_WINDOW_EXCEEDED: &'static str = "CONTEXT_WINDOW_EXCEEDED";
     /// The provider reported an internal error.
     pub const SERVER: &'static str = "SERVER";
     /// The request timed out.

@@ -15,7 +15,7 @@
 //! | Provider says | Correct code | Retry? | Why it matters |
 //! | --- | --- | --- | --- |
 //! | "context length exceeded" | `CONTEXT_WINDOW_EXCEEDED` | never | the answer is to compact, not to wait |
-//! | "insufficient_quota" | `QUOTA` | never | the answer is to bill, not to wait |
+//! | `insufficient_quota` | `QUOTA` | never | the answer is to bill, not to wait |
 //! | "max context length is 128000" | `CONTEXT_WINDOW_EXCEEDED` | never | same, worded differently |
 //!
 //! Both of the first two are *retryable-looking* to a message scan: an exhausted quota arrives as
@@ -25,7 +25,7 @@
 //!
 //! # Why prose is matched at all, and why narrowly
 //!
-//! Providers do not agree on a machine-readable field for "your context is too long": OpenAI sends
+//! Providers do not agree on a machine-readable field for "your context is too long": `OpenAI` sends
 //! `code: "context_length_exceeded"`, Anthropic sends a `message` only, and gateway proxies forward
 //! either as opaque text. HTTP status alone cannot separate it from a malformed request — both are
 //! 400 — so the wording is the only evidence available and matching it is unavoidable.
@@ -56,6 +56,13 @@
 //! answers membership, and unknown strings are legal — they are simply not offered as policy choices.
 
 use std::collections::BTreeSet;
+
+/// Canonical code: the caller withdrew the request before it completed.
+///
+/// Not a provider failure at all, but it shares the vocabulary because the retry decision branches on
+/// it: a cancellation must be refused by the policy on the first check rather than after a backoff the
+/// caller would have to wait through.
+pub const ABORTED: &str = "ABORTED";
 
 /// Canonical code: the request was rejected because it exceeds the model's context window.
 pub const CONTEXT_WINDOW_EXCEEDED: &str = "CONTEXT_WINDOW_EXCEEDED";
@@ -201,13 +208,7 @@ pub const RETRY_CODE_CHOICES: [&str; 8] = [
 ///
 /// This is [`crate::RetryPolicy::default`]'s list, kept here as the provider-side statement of the
 /// same fact so the two cannot drift apart silently.
-pub const DEFAULT_RETRYABLE: [&str; 5] = [
-    EMPTY_RESPONSE,
-    RATE_LIMIT,
-    SERVER,
-    TIMEOUT,
-    TRANSPORT,
-];
+pub const DEFAULT_RETRYABLE: [&str; 5] = [EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT];
 
 /// The largest delay a scheduled timer accepts, in milliseconds.
 ///
@@ -259,7 +260,7 @@ impl Classification {
 ///
 /// `detail` is the provider's error code, type, and message joined with spaces — the shape upstream
 /// hands its classifiers. Join them before calling: a classifier that saw only the message would miss
-/// OpenAI's `code: "context_length_exceeded"`, which carries the clearest evidence in the payload.
+/// `OpenAI`'s `code: "context_length_exceeded"`, which carries the clearest evidence in the payload.
 #[must_use]
 pub fn classify(detail: &str) -> Classification {
     Classification {
@@ -273,7 +274,7 @@ pub fn classify(detail: &str) -> Classification {
 /// The accepted wordings are upstream's, and each exists for a reason:
 ///
 /// - `context_length_exceeded`, `context-window-overflowed` — a structured code with the words in it.
-/// - `maximum context length is 128000 tokens` — OpenAI's prose, which names no code.
+/// - `maximum context length is 128000 tokens` — `OpenAI`'s prose, which names no code.
 /// - `input is too long for this model`, `request too large for model context` — request-size wording
 ///   that ties "too large" to the model.
 /// - `input exceeds the model context window limit` — an "exceeds" whose object is the context.
@@ -594,8 +595,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year_of_era = year - era * 400;
     let shifted_month = (month + 9) % 12;
     let day_of_year = (153 * i64::from(shifted_month) + 2) / 5 + i64::from(day) - 1;
-    let day_of_era =
-        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
 }
 
@@ -744,7 +744,10 @@ fn separator_run(lower: &str, left: Word<'_>, right: Word<'_>) -> bool {
 
 /// Whether the gap between two words is one or more whitespace characters — upstream's `\s+`.
 fn whitespace_run(lower: &str, left: Word<'_>, right: Word<'_>) -> bool {
-    right.start > left.end && lower[left.end..right.start].chars().all(char::is_whitespace)
+    right.start > left.end
+        && lower[left.end..right.start]
+            .chars()
+            .all(char::is_whitespace)
 }
 
 /// Whether a single-character separator is one the word-boundary patterns accept: whitespace, `-`, `_`.
@@ -753,7 +756,7 @@ fn is_word_separator(c: char) -> bool {
 }
 
 /// Looks up the word at `index`.
-fn at<'a, 'b>(words: &'b [Word<'a>], index: usize) -> Option<Word<'a>> {
+fn at<'a>(words: &[Word<'a>], index: usize) -> Option<Word<'a>> {
     words.get(index).copied()
 }
 
@@ -788,8 +791,7 @@ fn structured_overflow(lower: &str, words: &[Word<'_>]) -> bool {
             "limit" => {
                 if let Some(tail) = at(words, index + 3) {
                     if tail.text == "exceeded"
-                        && single_separator(lower, predicate, tail)
-                            .is_some_and(is_word_separator)
+                        && single_separator(lower, predicate, tail).is_some_and(is_word_separator)
                     {
                         return true;
                     }
@@ -803,7 +805,7 @@ fn structured_overflow(lower: &str, words: &[Word<'_>]) -> bool {
 
 /// `(maximum|max)(\s+(allowed|supported))?\s+context\s+(length|window)`.
 ///
-/// OpenAI's prose: "This model's maximum context length is 128000 tokens". The `maximum`/`max` word
+/// `OpenAI`'s prose: "This model's maximum context length is 128000 tokens". The `maximum`/`max` word
 /// must be directly followed by `context` (optionally through `allowed`/`supported`), which is what
 /// keeps "input exceeds maximum allowed value" out — neither `context length` nor `context window`
 /// follows it.
@@ -847,7 +849,10 @@ fn maximum_context(lower: &str, words: &[Word<'_>]) -> bool {
 /// [`too_long_for_model`] instead, which is a different pattern upstream keeps separate.
 fn too_large_for_context(lower: &str, words: &[Word<'_>]) -> bool {
     for (index, word) in words.iter().enumerate() {
-        if !matches!(word.text, "request" | "prompt" | "input" | "message" | "messages") {
+        if !matches!(
+            word.text,
+            "request" | "prompt" | "input" | "message" | "messages"
+        ) {
             continue;
         }
         let mut cursor = index + 1;
@@ -997,7 +1002,10 @@ fn bounded_gap(lower: &str, left: Word<'_>, right: Word<'_>) -> bool {
 
 /// Whether a word is a predicate of the "exceeds" family.
 fn is_exceed_word(text: &str) -> bool {
-    matches!(text, "exceed" | "exceeds" | "exceeded" | "overflow" | "overflows")
+    matches!(
+        text,
+        "exceed" | "exceeds" | "exceeded" | "overflow" | "overflows"
+    )
 }
 
 /// `(input|prompt|request|messages?).{0,40}(exceed(s|ed)?|overflows?|is larger than).{0,40}
@@ -1010,7 +1018,10 @@ fn is_exceed_word(text: &str) -> bool {
 /// message that mentions context far away from the verb is not read as an overflow.
 fn exceeds_model_context(lower: &str, words: &[Word<'_>]) -> bool {
     for (index, word) in words.iter().enumerate() {
-        if !matches!(word.text, "input" | "prompt" | "request" | "message" | "messages") {
+        if !matches!(
+            word.text,
+            "input" | "prompt" | "request" | "message" | "messages"
+        ) {
             continue;
         }
         for (offset, candidate) in words.iter().enumerate().skip(index + 1) {
@@ -1043,7 +1054,9 @@ fn exceeds_model_context(lower: &str, words: &[Word<'_>]) -> bool {
                 start: candidate.start,
                 end: predicate_end,
             };
-            for tail in words.iter().skip(offset) {
+            // The tail scan starts *after* the predicate: the predicate word's own span already covers
+            // its start, so including it would make the first gap empty and break out at once.
+            for tail in words.iter().skip(offset + 1) {
                 if !bounded_gap(lower, predicate, *tail) {
                     break;
                 }
@@ -1070,25 +1083,28 @@ fn insufficient_quota(lower: &str, words: &[Word<'_>]) -> bool {
 /// `(quota|usage[\s_-]+limit)[\s_-]+(exceeded|exhausted|reached)`.
 fn quota_reached(lower: &str, words: &[Word<'_>]) -> bool {
     let predicates = ["exceeded", "exhausted", "reached"];
-    words.iter().enumerate().any(|(index, word)| {
-        let noun_end = if word.text == "quota" {
-            Some(*word)
+    for (index, word) in words.iter().enumerate() {
+        // The noun is either the single word `quota` or the pair `usage limit`; either way `noun` is
+        // its last word, so one cursor advance reaches the predicate.
+        let (noun, predicate_index) = if word.text == "quota" {
+            (*word, index + 1)
         } else if word.text == "usage" {
-            at(words, index + 1)
-                .filter(|next| next.text == "limit" && separator_run(lower, *word, *next))
+            match at(words, index + 1) {
+                Some(limit) if limit.text == "limit" && separator_run(lower, *word, limit) => {
+                    (limit, index + 2)
+                }
+                _ => continue,
+            }
         } else {
-            None
+            continue;
         };
-        let Some(noun) = noun_end else {
-            return false;
-        };
-        at(words, index + 1)
-            .filter(|_| word.text == "quota")
-            .or_else(|| at(words, index + 2))
-            .is_some_and(|next| {
-                predicates.contains(&next.text) && separator_run(lower, noun, next)
-            })
-    })
+        if at(words, predicate_index)
+            .is_some_and(|next| predicates.contains(&next.text) && separator_run(lower, noun, next))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// `exceed(ed|s)?[\s_-]+((your|the)[\s_-]+)?(current[\s_-]+)?quota`.
@@ -1125,8 +1141,7 @@ fn balance_depleted(lower: &str, words: &[Word<'_>]) -> bool {
     words.iter().enumerate().any(|(index, word)| {
         matches!(word.text, "balance" | "credit" | "credits")
             && at(words, index + 1).is_some_and(|next| {
-                matches!(next.text, "exhausted" | "depleted")
-                    && separator_run(lower, *word, next)
+                matches!(next.text, "exhausted" | "depleted") && separator_run(lower, *word, next)
             })
     })
 }

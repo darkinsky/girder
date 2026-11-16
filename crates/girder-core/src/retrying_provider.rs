@@ -131,6 +131,17 @@ fn classify(error: &LlmError) -> String {
 /// Never -- the classification errs toward *not* retrying a permanent failure, because a request retried three times
 /// against a bad key costs three requests and gains nothing.
 fn classify_provider(message: &str) -> &'static str {
+    // Quota and context-window exhaustion are checked *before* the status ladder, because both arrive with ordinary
+    // statuses: an exhausted balance is an HTTP 429, indistinguishable from a rate limit by number alone. Treating it as
+    // a rate limit spends five backoffs on a balance that will never refill, and treating an oversized request as a
+    // transient failure retries a request that cannot succeed until the caller shortens it.
+    let classified = crate::llm_extra_gap::classify(message);
+    if classified.quota_exceeded {
+        return FailureCode::QUOTA;
+    }
+    if classified.context_window_exceeded {
+        return FailureCode::CONTEXT_WINDOW_EXCEEDED;
+    }
     let lowered = message.to_lowercase();
     for (needle, code) in [
         ("429", FailureCode::RATE_LIMIT),
