@@ -196,6 +196,7 @@ mod questions;
 mod questions_rpc;
 mod registry;
 mod remote;
+mod remote_access_gap;
 mod response_cache;
 mod result_paging;
 mod resume_point;
@@ -218,9 +219,10 @@ mod session;
 mod session_archive;
 mod session_backend;
 mod session_branch;
+pub mod session_controller_gap;
 mod session_digest;
 mod session_export_rpc;
-pub mod session_extra_gap;
+mod session_extra_gap;
 mod session_filter;
 pub mod session_final_gap;
 mod session_gap;
@@ -291,6 +293,7 @@ mod terminal;
 mod terminal_attach;
 mod terminal_attach_rpc;
 mod terminal_buffer;
+pub mod terminal_controller_gap;
 mod terminal_env;
 mod terminal_local;
 mod terminal_meta;
@@ -327,7 +330,7 @@ mod trace_span;
 mod transcript_import;
 mod turn_closure;
 mod typert;
-mod typert_gap;
+pub mod typert_gap;
 mod typert_json;
 mod undo_log;
 mod usage_quota;
@@ -756,6 +759,11 @@ pub use remote::{
     register_job_methods, register_model_catalog, register_projection_methods,
     register_select_model, register_session_methods, register_workspace_methods,
     registered_method_names, registry_with_routes, registry_with_runtime,
+};
+pub use remote_access_gap::{
+    CallRequest as AccessCallRequest, MethodAccessResolver, NO_ALLOW, RESOURCE_INVALID,
+    Refused as AccessRefused, Resolved, ResolvedResource, ResourceIds, all_allowed, declaration,
+    kinds_of, reader, resolve_event_resources,
 };
 pub use response_cache::{
     Cache as ResponseCache, CachedResponse, CachingProvider, DEFAULT_CAPACITY as CACHE_CAPACITY,
