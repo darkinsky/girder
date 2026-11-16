@@ -508,6 +508,7 @@ fn register_workspace_file_surface(
     register_settings_surface(remote);
     register_goal_surface(remote);
     register_workflow_surface(remote);
+    register_question_surface(remote);
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);
@@ -1050,6 +1051,21 @@ fn register_goal_surface(remote: &mut girder_core::RemoteRegistry) {
 fn register_workflow_surface(remote: &mut girder_core::RemoteRegistry) {
     let workflows = Arc::new(girder_core::WorkflowRegistry::new());
     girder_core::register_workflow_methods(remote, workflows);
+}
+
+/// Registers the `userQuestions` namespace.
+///
+/// Upstream has two methods: `answer` and a streaming `attachWait`. This build serves `answer`, adds `list` because
+/// upstream discovers pending questions through a session projection this build does not have -- without it a client could
+/// answer a question it had no way to find -- and leaves `attachWait` unserved and named rather than registered as a unary
+/// method a client would discover cannot stream.
+fn register_question_surface(remote: &mut girder_core::RemoteRegistry) {
+    // Memory, not a file: a question is waited on by a live turn, so a question that outlived the process would be one
+    // nobody is waiting for any more.
+    let store: Arc<dyn girder_core::QuestionStore> =
+        Arc::new(girder_core::MemoryQuestionStore::new());
+    let questions = Arc::new(girder_core::QuestionQueue::new(store));
+    girder_core::register_question_methods(remote, questions);
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {

@@ -187,6 +187,7 @@ mod providers;
 mod ptc_policy;
 mod query_syntax;
 mod questions;
+mod questions_rpc;
 mod registry;
 mod remote;
 mod response_cache;
@@ -715,6 +716,11 @@ pub use questions::{
     Answer, AnsweredBy, DEFAULT_TIMEOUT as DEFAULT_QUESTION_TIMEOUT, Option_ as QuestionOption,
     Question, QuestionError, Reply as QuestionReply, Responder, Scripted as ScriptedResponder,
     Shape as QuestionShape, Unavailable as UnavailableResponder,
+};
+pub use questions_rpc::{
+    MemoryQuestionStore, QuestionQueue, QuestionStore,
+    UNSERVED_METHODS as UNSERVED_QUESTION_METHODS, UnavailableQuestionStore,
+    register_question_methods,
 };
 pub use registry::{Label, Registry, RegistryContext, RegistryError};
 pub use remote::{

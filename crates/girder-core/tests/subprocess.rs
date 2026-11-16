@@ -200,7 +200,18 @@ async fn a_completed_command_leaves_no_zombie() {
     for _ in 0..5 {
         run_process(sh("true"), cancel()).await.unwrap();
     }
-    assert_eq!(zombie_children(), 0);
+    // A child reaped by the runtime becomes a zombie only until the OS finishes collecting it, which is a moment after
+    // `wait` returns. Polling is what distinguishes "not reaped" from "reaped, collection in flight" -- asserting once
+    // made this test fail when the whole suite ran in parallel and the process table was busy.
+    let mut zombies = zombie_children();
+    for _ in 0..50 {
+        if zombies == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        zombies = zombie_children();
+    }
+    assert_eq!(zombies, 0, "a completed command must leave no zombie child");
 }
 
 #[tokio::test]
