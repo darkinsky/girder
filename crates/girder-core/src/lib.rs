@@ -258,6 +258,7 @@ mod state_consistency;
 mod stats_csv;
 mod stats_trend;
 mod storage;
+mod storage_gap;
 mod storage_quota;
 mod str_replace_editor;
 mod stream_blocks;
@@ -960,6 +961,12 @@ pub use stats_trend::{
 pub use storage::{
     FileBackend, KvBackend, Layout, Records, Snapshot, StorageError, Unit, UnitDescriptor,
     is_valid_record_key, is_valid_unit_name,
+};
+pub use storage_gap::{
+    Descriptor as RecordDescriptor, GLOBAL_DOCUMENT, Loaded as LoadedRecords, PerRecordUnit,
+    RECORD_SUFFIX, RecordError, STAGED_SUFFIX, format_backup_stamp, global_path,
+    is_safe_record_key, is_valid_unit_name as is_safe_unit_name, parse_record, record_path,
+    serialize_record, unit_directory,
 };
 pub use storage_quota::{
     Footprint, Quota as StorageQuota, Usage as StorageUsage, evict as evict_storage, is_oversized,
