@@ -317,6 +317,7 @@ mod usage_quota;
 mod web;
 mod web_tools;
 mod workflow;
+mod workflow_rpc;
 mod workflow_tool;
 mod workspace_desktop_rpc;
 mod workspace_diff;
@@ -1100,6 +1101,7 @@ pub use workflow::{
     Phase as WorkflowPhase, Registry as WorkflowRegistry, Run as WorkflowRun, RunId,
     StartRequest as WorkflowStartRequest, Status as WorkflowStatus, WorkflowError,
 };
+pub use workflow_rpc::register_workflow_methods;
 pub use workflow_tool::{register_workflow_tools, workflow_run_tool, workflow_status_tool};
 pub use workspace_desktop_rpc::{
     DesktopEnvironment, FileApplication, FileApplicationProber, FileManager, HostPlatform,

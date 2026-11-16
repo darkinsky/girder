@@ -507,6 +507,7 @@ fn register_workspace_file_surface(
     // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
     register_settings_surface(remote);
     register_goal_surface(remote);
+    register_workflow_surface(remote);
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);
@@ -1039,6 +1040,16 @@ fn boot_check(cli: &Cli) -> Result<()> {
 fn register_goal_surface(remote: &mut girder_core::RemoteRegistry) {
     let goals: Arc<dyn girder_core::GoalStore> = Arc::new(girder_core::MemoryGoalStore::new());
     girder_core::register_goal_methods(remote, &goals);
+}
+
+/// Registers the `workflow` namespace.
+///
+/// Upstream has no RPC surface for workflows -- it exposes a Cordis service, lifecycle events and a model tool -- so these
+/// four methods are shaped for a client rather than copied from one. `start` returns an id immediately instead of awaiting
+/// the run, because a caller that is not handed an id can neither poll nor cancel.
+fn register_workflow_surface(remote: &mut girder_core::RemoteRegistry) {
+    let workflows = Arc::new(girder_core::WorkflowRegistry::new());
+    girder_core::register_workflow_methods(remote, workflows);
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {
