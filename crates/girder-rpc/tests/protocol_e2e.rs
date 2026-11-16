@@ -662,3 +662,56 @@ async fn the_invoke_route_is_absent_without_a_remote_registry() {
     let page = send(server.address, "GET", WEB_INDEX_PATH, &[], b"").await;
     assert_eq!(page.status, 200, "body: {}", page.body);
 }
+
+// ---- what the wire does not check ---------------------------------------------------------------
+
+/// `peer` is carried, never verified -- and that is recorded, not forgotten.
+///
+/// `docs/phase6-scope.md` says it plainly: any client may claim to be any peer, and authentication is a deployment
+/// concern rather than something this layer does. The test exists so the limitation cannot change silently: if someone
+/// later adds peer checking, this fails and the document has to move with it. A security property that lives only in
+/// prose is one that drifts.
+#[tokio::test]
+async fn a_claimed_peer_identity_is_not_verified() {
+    let server = start(Some(Arc::new(test_registry()))).await;
+    let body = json!({
+        "namespace": "test",
+        "method": "echo",
+        // Two unrelated identities: if the server checked, at most one of these could be true.
+        "args": { "value": "first-claim" },
+        "peer": "tenant-a",
+    })
+    .to_string();
+    let response = send(
+        server.address,
+        "POST",
+        INVOKE_PATH,
+        &[("Content-Type", "application/json")],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(response.status, 200, "the call is served, not refused");
+
+    // The same call under a different claimed identity is served just as readily.
+    let body = json!({
+        "namespace": "test",
+        "method": "echo",
+        "args": { "value": "second-claim" },
+        "peer": "tenant-b",
+    })
+    .to_string();
+    let response = send(
+        server.address,
+        "POST",
+        INVOKE_PATH,
+        &[("Content-Type", "application/json")],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(response.status, 200);
+    assert!(
+        response.body.contains("second-claim"),
+        "the second identity reached the handler too: {}",
+        response.body
+    );
+}
