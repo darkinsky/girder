@@ -221,6 +221,7 @@ mod session_backend;
 mod session_branch;
 pub mod session_controller_gap;
 mod session_digest;
+mod session_engine_gap;
 mod session_export_rpc;
 mod session_extra_gap;
 mod session_filter;
