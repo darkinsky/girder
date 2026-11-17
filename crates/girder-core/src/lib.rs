@@ -135,6 +135,7 @@ mod goal_tool;
 mod health_trend;
 
 pub mod account_gap;
+pub mod boot_app_gap;
 pub mod boot_loader_gap;
 pub mod config_schema_gap;
 pub mod content_projection_gap;
