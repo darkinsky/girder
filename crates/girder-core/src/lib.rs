@@ -334,6 +334,7 @@ mod terminal_retain;
 mod terminal_retain_rpc;
 mod terminal_rpc;
 mod terminal_rpc_extra;
+pub mod terminal_screen_rpc;
 mod terminal_tool;
 mod text_safety;
 mod time;
