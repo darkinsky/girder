@@ -133,6 +133,7 @@ mod goal_rpc;
 mod goal_tool;
 mod health_trend;
 
+pub mod account_gap;
 mod home_paths;
 pub mod host_gap;
 mod host_rpc;
