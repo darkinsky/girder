@@ -144,6 +144,7 @@ mod inbox;
 mod injection_guard;
 mod instructions;
 mod instructions_tool;
+pub mod intercept_gap;
 mod job_follow_rpc;
 mod job_tools;
 mod jobs;
