@@ -61,6 +61,7 @@ extern crate self as girder_core;
 
 mod api_catalog;
 pub mod api_config;
+pub mod api_controller_gap;
 pub mod api_extra_gap;
 pub mod api_job;
 mod api_key;
@@ -137,6 +138,7 @@ pub mod account_gap;
 pub mod boot_loader_gap;
 pub mod config_schema_gap;
 pub mod content_projection_gap;
+pub mod core_final_gap;
 pub mod deepseek_serialize_gap;
 mod home_paths;
 pub mod host_gap;
