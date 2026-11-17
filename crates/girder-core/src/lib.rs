@@ -381,6 +381,7 @@ mod workspace_files_rpc;
 mod workspace_open_rpc;
 mod workspace_path;
 mod workspace_rpc_extra;
+pub mod workspace_watch_gap;
 
 pub use access::{
     Access, AllowList, Decision as AccessDecision, Declaration, DenyAll, Policy, ReadOnly,
