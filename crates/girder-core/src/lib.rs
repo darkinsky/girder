@@ -163,6 +163,7 @@ mod llm_deepseek;
 pub mod llm_extra_gap;
 mod llm_gap;
 mod llm_openai;
+pub mod llm_retry_event_gap;
 mod llm_stats;
 pub mod llm_stream_gap;
 mod log_compact;
