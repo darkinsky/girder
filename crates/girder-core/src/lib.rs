@@ -236,6 +236,7 @@ mod session;
 mod session_archive;
 mod session_backend;
 mod session_branch;
+pub mod session_client_gap;
 pub mod session_controller_gap;
 mod session_digest;
 mod session_engine_gap;
