@@ -159,6 +159,7 @@ mod log_compact;
 mod log_integrity;
 mod lsp;
 mod lsp_tool;
+pub mod market_compat_gap;
 mod mcp;
 mod mcp_client;
 mod mcp_config;
