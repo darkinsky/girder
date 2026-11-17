@@ -134,6 +134,7 @@ mod goal_tool;
 mod health_trend;
 
 pub mod account_gap;
+pub mod boot_loader_gap;
 pub mod config_schema_gap;
 pub mod content_projection_gap;
 pub mod deepseek_serialize_gap;
@@ -192,6 +193,7 @@ mod pattern_check;
 mod permissions;
 pub mod persistence_lease_gap;
 pub mod persistent_shell;
+pub mod pi_ai_runtime_gap;
 mod plugin_lifecycle;
 pub mod plugin_market_gap;
 mod present_tool;
