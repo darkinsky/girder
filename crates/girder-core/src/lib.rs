@@ -149,6 +149,7 @@ mod launch_environment;
 mod limits;
 mod list_render;
 mod llm;
+pub mod llm_attempt_gap;
 mod llm_deepseek;
 pub mod llm_extra_gap;
 mod llm_gap;
