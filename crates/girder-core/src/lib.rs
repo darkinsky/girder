@@ -226,6 +226,7 @@ mod schedule;
 mod schedule_rpc;
 mod schedule_runner;
 mod scope;
+pub mod scoped_events_gap;
 mod search_index;
 mod search_persist;
 mod search_tools;
