@@ -325,6 +325,7 @@ mod text_safety;
 mod time;
 mod todo_tool;
 mod token_meter;
+pub mod token_projection_gap;
 mod tool_batching;
 mod tool_budget_config;
 mod tool_cache;
