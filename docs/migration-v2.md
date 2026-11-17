@@ -74,8 +74,12 @@ L5  对外        api / typert / web / host / boot / extensions
 
 已有 `ServiceKey`/`Scope`/`Fiber`/`EventBus`，缺：
 
-- **服务隔离与拦截**：cordis 的 `isolate()` / `intercept()`。当前 registry 是全局表，
-  无法表达「同一服务在不同插件树下有不同实现」。**这是 L4 多 agent 的前置条件。**
+- **服务拦截**：cordis 的 `intercept()`——为某个服务叠加配置，祖先条目先应用。
+  服务隔离本行原先写的是「`isolate()` / `intercept()` 都缺」，那是错的：`isolate()`
+  早已实现（`registry.rs`），只是没有任何测试引用它，所以没人会注意到它停止工作。
+  `tests/registry_isolation.rs` 现在覆盖了它，实测两个子上下文各自提供同名服务且
+  互不干扰、共享 label 的两个上下文看到同一实现、以及隔离不向下传播。**`intercept`
+  仍然缺，它才是 L4 多 agent 剩下的那半。**
 - **作用域事件过滤**：上游 20 个事件带 `Scoped<T>`，按 agent 过滤。当前总线无过滤。
 - **配置 schema 校验**：`schemastery` 的对应物。当前 `config.rs` 只验证 patch 结构。
 
