@@ -139,6 +139,7 @@ pub mod boot_loader_gap;
 pub mod config_schema_gap;
 pub mod content_projection_gap;
 pub mod core_final_gap;
+pub mod deepseek_files_gap;
 pub mod deepseek_serialize_gap;
 mod home_paths;
 pub mod host_gap;
