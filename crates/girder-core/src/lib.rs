@@ -204,6 +204,7 @@ mod process_group;
 mod projection;
 mod projection_extra;
 pub mod projection_extra_gap;
+pub mod projection_final_gap;
 mod projection_host;
 mod prompt_template;
 pub mod provider_catalog_gap;
