@@ -134,6 +134,8 @@ mod goal_tool;
 mod health_trend;
 
 pub mod account_gap;
+pub mod content_projection_gap;
+pub mod deepseek_serialize_gap;
 mod home_paths;
 pub mod host_gap;
 mod host_rpc;
