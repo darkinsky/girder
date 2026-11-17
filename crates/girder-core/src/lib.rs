@@ -262,6 +262,7 @@ mod session_timeline;
 mod session_title;
 mod session_title_llm_gap;
 mod session_transcript;
+pub mod session_window_gap;
 mod session_workspace;
 mod settings_file;
 mod settings_rpc;
