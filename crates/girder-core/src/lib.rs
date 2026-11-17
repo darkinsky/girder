@@ -192,6 +192,7 @@ mod paths;
 mod pattern_check;
 mod permissions;
 pub mod persistence_lease_gap;
+pub mod persistence_win32_gap;
 pub mod persistent_shell;
 pub mod pi_ai_runtime_gap;
 mod plugin_lifecycle;
