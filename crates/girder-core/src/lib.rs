@@ -281,6 +281,7 @@ mod session_tag;
 mod session_timeline;
 mod session_title;
 mod session_title_llm_gap;
+pub mod session_top_gap;
 mod session_transcript;
 pub mod session_window_gap;
 mod session_workspace;
