@@ -85,7 +85,23 @@ impl DeepSeekConfig {
     /// `std::env::set_var` is unsafe in this toolchain, and a test that mutated it would race every other test in the
     /// binary anyway.
     pub fn from_values(lookup: impl Fn(&str) -> Option<String>) -> Option<Self> {
-        let api_key = lookup("DEEPSEEK_API_KEY").or_else(|| lookup("ANTHROPIC_API_KEY"))?;
+        // This provider's own variable first, then the historical alias, and only then the
+        // catalogue. The order matters: `provider_ids()` is sorted, so a directory-wide search
+        // finds `anthropic` before `deepseek` and a deployment that set both would take the alias
+        // while its `DEEPSEEK_BASE_URL` still pointed at DeepSeek. The directory earns its place as
+        // the last resort -- a client repointed at a gateway finds its credential under whatever
+        // name that provider documents.
+        let own = crate::provider_catalog_gap::provider_data("deepseek")
+            .and_then(|data| data.env.iter().find_map(|name| lookup(name)));
+        let api_key = own.or_else(|| lookup("ANTHROPIC_API_KEY")).or_else(|| {
+            crate::provider_catalog_gap::provider_ids()
+                .into_iter()
+                .filter(|id| *id != "deepseek" && *id != "anthropic")
+                .find_map(|id| {
+                    crate::provider_catalog_gap::provider_data(id)
+                        .and_then(|data| data.env.iter().find_map(|name| lookup(name)))
+                })
+        })?;
         // `ANTHROPIC_BASE_URL` is the name a deployment pointing at a compatible service would already have set. Both
         // are read so the same binary serves either without a code change.
         let base_url = lookup("DEEPSEEK_BASE_URL")
@@ -94,13 +110,30 @@ impl DeepSeekConfig {
         let default_model = lookup("GIRDER_MODEL")
             .or_else(|| lookup("ANTHROPIC_MODEL"))
             .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
-        Some(Self {
-            base_url,
-            api_key,
-            anthropic_version: "2023-06-01".to_owned(),
-            max_tokens: 8192,
-            default_model,
-        })
+        // Through the option ladder rather than a literal: `deepseek_options_gap` owns the eighteen
+        // fields and their ten cross-field rules, and its default output cap is 256k, not the 8192
+        // this literal used to say. A deployment that configured a smaller cap now gets it, and one
+        // whose numbers contradict each other is refused here rather than at the provider.
+        let mut options = crate::deepseek_options_gap::Options {
+            base_url: Some(base_url.clone()),
+            ..crate::deepseek_options_gap::Options::default()
+        };
+        options.max_tokens = None;
+        match crate::deepseek_options_gap::resolve_options(
+            &options,
+            &crate::deepseek_options_gap::NoEnvironment,
+        ) {
+            Ok(resolved) => Some(Self {
+                base_url: resolved.base_url,
+                api_key,
+                anthropic_version: "2023-06-01".to_owned(),
+                max_tokens: u32::try_from(resolved.max_tokens).unwrap_or(u32::MAX),
+                default_model,
+            }),
+            // A configuration the ladder refuses is not a configuration. Falling back to the
+            // hard-coded literal would start a provider this build has already judged unusable.
+            Err(_) => None,
+        }
     }
 
     /// The full endpoint URL.
