@@ -86,7 +86,11 @@ mod backoff;
 mod block_assembler;
 mod boot;
 mod boot_check;
-mod boot_gap;
+pub mod boot_gap;
+pub use boot_gap::{
+    InstallFailureKind, ParsedSpec, SpecKind, is_registry_package_name, parse_install_spec,
+    pinned_git_origin,
+};
 mod boot_stages;
 mod bounded_queue;
 mod brand;

@@ -91,6 +91,17 @@ enum Command {
 
     /// Print the RPC JSON Schema that the client side is checked against.
     Schema,
+
+    /// Explain how a plugin installation spec is understood.
+    ///
+    /// The spec grammar decides what a `plugins` entry names: a registry package at a version range,
+    /// a git repository at a pinned commit, or a path. `boot_gap::parse_install_spec` is where that
+    /// grammar lives, and this subcommand is how a person checks that what they wrote means what
+    /// they meant before an install reads the network.
+    Plugin {
+        /// The spec to explain, for example `@scope/name@^1.2` or `git+https://host/repo#sha`.
+        spec: String,
+    },
 }
 
 /// A prompt, or a subcommand.
@@ -101,6 +112,8 @@ enum Mode {
         watch: Vec<String>,
     },
     Schema,
+    /// Explain one installation spec.
+    Plugin(String),
     /// Print what boot assembled, then exit.
     BootReport,
 }
@@ -112,6 +125,7 @@ async fn main() -> Result<()> {
     let mode = match (cli.command.take(), cli.prompt.clone()) {
         (Some(Command::Serve { bind, watch }), _) => Mode::Serve { bind, watch },
         (Some(Command::Schema), _) => Mode::Schema,
+        (Some(Command::Plugin { spec }), _) => Mode::Plugin(spec),
         (None, Some(prompt)) => Mode::Prompt(prompt),
         (None, None) if cli.boot_report => Mode::BootReport,
         (None, None) => {
@@ -158,6 +172,10 @@ async fn main() -> Result<()> {
             print_schema(cli.schema_format.as_deref())?;
             return Ok(());
         }
+        Mode::Plugin(spec) => {
+            explain_spec(&spec)?;
+            return Ok(());
+        }
         Mode::Serve { bind, watch } => {
             serve(cli, bind, watch).await?;
             return Ok(());
@@ -186,6 +204,53 @@ fn print_banner(address: std::net::SocketAddr, selected: &[&str]) {
             selected.join(", ")
         );
     }
+}
+
+/// Explains one plugin installation spec.
+///
+/// `boot_gap` owns the grammar -- registry package with a version range, git repository with a
+/// pinned origin and optional commit, or a path -- and this prints what it decided plus which of the
+/// distinguishing cases applied. A person checking a `plugins` entry needs to know whether the
+/// string they wrote is a range or an exact version, and whether the origin is pinned, before an
+/// install goes to the network.
+fn explain_spec(spec: &str) -> Result<()> {
+    let parsed = girder_core::parse_install_spec(spec)
+        .map_err(|error| anyhow::anyhow!("`{spec}` is not an installation spec: {error}"))?;
+    println!("spec: {spec}");
+    match &parsed {
+        girder_core::ParsedSpec::Registry { name, range, .. } => {
+            println!("kind: registry");
+            println!("name: {name}");
+            // Named separately because "no range" means latest, and a reader checking their entry
+            // needs to know whether they pinned anything at all.
+            println!("range: {}", range.as_deref().unwrap_or("<latest>"));
+        }
+        girder_core::ParsedSpec::Path { path, .. } => {
+            println!("kind: path");
+            println!("path: {path}");
+        }
+        girder_core::ParsedSpec::Tarball { path, host, .. } => {
+            println!("kind: tarball");
+            if let Some(path) = path {
+                println!("path: {path}");
+            }
+            if let Some(host) = host {
+                println!("host: {host}");
+            }
+        }
+        girder_core::ParsedSpec::Git { host, .. } => {
+            println!("kind: git");
+            println!("host: {host}");
+            // `pinned_git_origin` answers only when the fragment carries one full commit, so this
+            // line doubles as the reproducibility check: an origin means the install is pinned, and
+            // `<not pinned>` means it moves with the branch.
+            match girder_core::pinned_git_origin(spec) {
+                Some(origin) => println!("origin: {origin}"),
+                None => println!("origin: <not pinned -- this spec moves with the branch>"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The route table: the built-in provider, plus whatever the settings file declares.
