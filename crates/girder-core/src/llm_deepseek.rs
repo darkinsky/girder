@@ -304,7 +304,10 @@ impl DeepSeekProvider {
                     message
                         .content
                         .iter()
-                        .map(block_to_wire)
+                        // The fallback path has no prepared versions: it exists for the case the serializer
+                        // refused, which is a conversation this build cannot express, not one it can
+                        // enrich. `None` here produces the handle sentence, never a source-less block.
+                        .map(|block| block_to_wire(block, &|_| None))
                         .collect::<Vec<_>>()
                 };
                 serde_json::json!({ "role": role, "content": content })
@@ -342,10 +345,317 @@ impl DeepSeekProvider {
         }
         body
     }
+
+    /// Plans the file uploads a request needs, so a caller knows what to send before it sends it.
+    ///
+    /// This is the caller of `deepseek_files_gap::plan_upload`. That module holds the Files API
+    /// decision layer — reuse-or-upload, the size and expiry refusals, the provider filename — but
+    /// it is pure: it answers one image at a time and reads no request. Walking a request and
+    /// turning its [`ContentBlock::Image`] blocks into those questions is the part that was
+    /// missing, and it is here because this is the provider whose wire format the answers feed.
+    ///
+    /// `images` supplies the prepared request version for each attachment: the media type and the
+    /// encoded bytes the provider would store. It is a parameter rather than a field because the
+    /// preparation pipeline (re-encode, resize, choose an encoder) lives above this crate's
+    /// provider and produces those bytes per request, not per provider instance. `index` is the
+    /// persisted reuse table; an empty index is the correct value for "nothing has been uploaded
+    /// under this credential yet".
+    ///
+    /// The returned plans are in wire order and carry the message and image position each one
+    /// fills, so a caller can resolve them while serializing. Two occurrences of one attachment
+    /// produce two entries — they are separate positions on the wire — but they name the same
+    /// variant, so a caller that commits as it goes uploads once and reuses the id afterwards.
+    ///
+    /// # Errors
+    ///
+    /// [`LlmError::Provider`] when an image block names an attachment that cannot be resolved to a
+    /// prepared version at all, which is a request whose bytes no caller can send; a *refusal* such
+    /// as "too large" is not an error and is reported inside the plan, because a caller that
+    /// substitutes text for that image can still send the rest of the request.
+    pub fn plan_image_uploads(
+        &self,
+        request: &LlmRequest,
+        images: crate::deepseek_serialize_gap::ImageLookup<'_>,
+        index: &crate::deepseek_files_gap::UploadIndex,
+    ) -> Result<Vec<ImageUploadPlan>, LlmError> {
+        let scope = self.file_scope();
+        let policy = crate::deepseek_files_gap::FilePolicy::default();
+        let now = now_millis();
+
+        let mut plans = Vec::new();
+        for (message_index, message) in request.messages.iter().enumerate() {
+            let mut image = 0_usize;
+            for block in &message.content {
+                let ContentBlock::Image { attachment } = block else {
+                    continue;
+                };
+                image += 1;
+                let prepared = images(attachment).ok_or_else(|| {
+                    LlmError::Provider(format!(
+                        "image attachment `{attachment}` has no prepared request version, so there \
+                         are no bytes to upload"
+                    ))
+                })?;
+                let variant = image_variant_id(attachment, &prepared.media_type, &prepared.data);
+                let request_image = crate::deepseek_files_gap::RequestImage {
+                    attachment_id: attachment.clone(),
+                    variant_id: variant.clone(),
+                    bytes: u64::try_from(prepared.data.len()).unwrap_or(u64::MAX),
+                    media_type: prepared.media_type.clone(),
+                };
+                let decision = decision_of(crate::deepseek_files_gap::plan_upload(
+                    &request_image,
+                    index,
+                    &scope,
+                    &policy,
+                    now,
+                ));
+                plans.push(ImageUploadPlan {
+                    message: message_index + 1,
+                    image,
+                    attachment: attachment.clone(),
+                    variant,
+                    decision,
+                });
+            }
+        }
+        Ok(plans)
+    }
+
+    /// Plans image uploads for a request whose prepared bytes the caller cannot supply.
+    ///
+    /// [`ContentBlock::Image`] carries an attachment reference and nothing else: no media type, no
+    /// byte count, no prepared version. Without those three the Files layer cannot answer —
+    /// [`crate::deepseek_files_gap::plan_upload`] refuses on size, expiry, and media type, and all
+    /// three are unanswerable from a bare reference. This method therefore reports each image as
+    /// [`UploadDecision::MissingPreparation`] rather than inventing a media type and a size, which
+    /// would produce a plan that looks authoritative and is wrong.
+    ///
+    /// It is still useful for the one thing a reference *can* answer: which images a request
+    /// contains, in wire order, and the upload position each will occupy. A caller that only needs
+    /// to know "how many uploads will this turn need" gets a correct count here before the
+    /// preparation pipeline runs.
+    #[must_use]
+    pub fn plan_image_uploads_unprepared(&self, request: &LlmRequest) -> Vec<ImageUploadPlan> {
+        let mut plans = Vec::new();
+        for (message_index, message) in request.messages.iter().enumerate() {
+            let mut image = 0_usize;
+            for block in &message.content {
+                let ContentBlock::Image { attachment } = block else {
+                    continue;
+                };
+                image += 1;
+                plans.push(ImageUploadPlan {
+                    message: message_index + 1,
+                    image,
+                    attachment: attachment.clone(),
+                    // No version exists yet, so none can be named. An empty variant is the honest
+                    // value: the mapping this plan would key is created by preparation, which has
+                    // not run.
+                    variant: String::new(),
+                    decision: UploadDecision::MissingPreparation {
+                        attachment: attachment.clone(),
+                    },
+                });
+            }
+        }
+        plans
+    }
+
+    /// The Files namespace this provider's uploads belong to.
+    ///
+    /// Derived rather than stored: the namespace binds the endpoint and the credential together, so
+    /// a provider that changed either would otherwise reuse file ids the new credential cannot
+    /// read. The credential only ever enters a hash, and the result is safe to persist.
+    fn file_scope(&self) -> crate::deepseek_files_gap::FileScope {
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(
+            "anthropic-version".to_owned(),
+            self.config.anthropic_version.clone(),
+        );
+        headers.insert("x-api-key".to_owned(), self.config.api_key.clone());
+        crate::deepseek_files_gap::file_scope(
+            &self.config.base_url,
+            &crate::deepseek_files_gap::scope_credentials(&headers),
+        )
+    }
+}
+
+/// One image of a request, paired with the Files API decision made for it.
+///
+/// The three identifying fields are carried even for a refusal, because a caller that substitutes
+/// text for an un-uploadable image still has to find the position it was at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageUploadPlan {
+    /// 1-based message index, in wire order.
+    pub message: usize,
+    /// 1-based image index within that message.
+    pub image: usize,
+    /// The attachment reference the content block carried.
+    pub attachment: String,
+    /// The prepared request version, as `sha256:<hex>`.
+    ///
+    /// Empty when nothing was prepared, which is the only case where no version exists. The two
+    /// targets are two request variants of one attachment, and the Files index is keyed on this
+    /// rather than on the attachment id.
+    pub variant: String,
+    /// What to do about it.
+    pub decision: UploadDecision,
+}
+
+impl ImageUploadPlan {
+    /// Whether this image already has a provider file id and must not be uploaded again.
+    #[must_use]
+    pub fn is_reuse(&self) -> bool {
+        matches!(self.decision, UploadDecision::Reuse { .. })
+    }
+
+    /// Whether this image needs bytes sent to the Files API.
+    #[must_use]
+    pub fn needs_upload(&self) -> bool {
+        matches!(self.decision, UploadDecision::Upload { .. })
+    }
+
+    /// Whether the caller cannot resolve this image at all, and so must not ask for its file id.
+    #[must_use]
+    pub fn is_unresolved(&self) -> bool {
+        matches!(
+            self.decision,
+            UploadDecision::Refuse(_) | UploadDecision::MissingPreparation { .. }
+        )
+    }
+
+    /// The provider file id, when one is already known.
+    #[must_use]
+    pub fn file_id(&self) -> Option<&str> {
+        match &self.decision {
+            UploadDecision::Reuse { file_id, .. } => Some(file_id),
+            UploadDecision::Upload { .. }
+            | UploadDecision::Refuse(_)
+            | UploadDecision::MissingPreparation { .. } => None,
+        }
+    }
+
+    /// The provider filename an upload would use.
+    ///
+    /// Present exactly when bytes must be sent, because the filename is what the upload request
+    /// carries and what later identifies the file as harness-owned.
+    #[must_use]
+    pub fn upload_filename(&self) -> Option<&str> {
+        match &self.decision {
+            UploadDecision::Upload { filename, .. } => Some(filename),
+            UploadDecision::Reuse { .. }
+            | UploadDecision::Refuse(_)
+            | UploadDecision::MissingPreparation { .. } => None,
+        }
+    }
+
+    /// Why this image cannot be resolved, in the words a caller would show a user.
+    #[must_use]
+    pub fn unresolved_reason(&self) -> Option<String> {
+        match &self.decision {
+            UploadDecision::Refuse(refusal) => Some(refusal.to_string()),
+            UploadDecision::MissingPreparation { attachment } => Some(format!(
+                "image attachment `{attachment}` has no prepared request version, so its media \
+                 type and size are unknown"
+            )),
+            UploadDecision::Reuse { .. } | UploadDecision::Upload { .. } => None,
+        }
+    }
+}
+
+/// What a caller should do about one request image.
+///
+/// A mirror of [`crate::deepseek_files_gap::UploadPlan`] with one addition: that enum has no state
+/// for "the request did not carry enough to decide", because its own input
+/// (`RequestImage`) always carries the size and media type. A request block does not, so the gap
+/// has to be representable rather than silently coerced into a refusal the library never produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadDecision {
+    /// A reusable mapping exists; send nothing.
+    Reuse {
+        /// The provider identifier to cite on the wire.
+        file_id: String,
+        /// When that mapping expires, in Unix milliseconds.
+        expires_at: u64,
+    },
+    /// Upload the prepared bytes.
+    Upload {
+        /// Provider filename to store them under.
+        filename: String,
+        /// Requested lifetime, in seconds.
+        expires_after_seconds: u64,
+    },
+    /// The Files layer refused before any transport.
+    Refuse(crate::deepseek_files_gap::Refusal),
+    /// The request did not carry enough for the Files layer to decide.
+    MissingPreparation {
+        /// The attachment reference that could not be resolved.
+        attachment: String,
+    },
+}
+
+/// Lowers one Files-layer decision into the request-facing one.
+fn decision_of(plan: crate::deepseek_files_gap::UploadPlan) -> UploadDecision {
+    use crate::deepseek_files_gap::UploadPlan;
+    match plan {
+        UploadPlan::Reuse(record) => UploadDecision::Reuse {
+            file_id: record.file_id.to_string(),
+            expires_at: record.expires_at,
+        },
+        // `plan_upload` never returns `ReclaimThenUpload`: that is the recovery half of the upload
+        // loop, decided after a quota error the planning call has not yet provoked. Sharing the
+        // arm keeps the two from disagreeing if a caller ever hands over a recovery plan —
+        // planning an upload is the safe reading, since a caller that uploads and then hits the
+        // quota still has the recovery path.
+        UploadPlan::Upload {
+            filename,
+            expires_after_seconds,
+        }
+        | UploadPlan::ReclaimThenUpload {
+            filename,
+            expires_after_seconds,
+            ..
+        } => UploadDecision::Upload {
+            filename,
+            expires_after_seconds,
+        },
+        UploadPlan::Refuse(refusal) => UploadDecision::Refuse(refusal),
+    }
+}
+
+/// The complete request-transformation identity of one prepared image, as `sha256:<hex>`.
+///
+/// Upstream's variant id folds in the route budgets, the encoder parameters, and the source
+/// digest; this build's preparation pipeline produces the encoded bytes and nothing that names
+/// them, so the identity is derived from what the bytes *are*: the attachment it came from, its
+/// media type, and its length. That is coarser than upstream — two encodings of one attachment that
+/// differ in content but agree on all three would collide — so a caller that owns the pipeline
+/// should pass its own id rather than relying on this one.
+fn image_variant_id(attachment_id: &str, media_type: &str, data: &[u8]) -> String {
+    let mut input = Vec::with_capacity(attachment_id.len() + media_type.len() + 24);
+    input.extend_from_slice(attachment_id.as_bytes());
+    input.push(0);
+    input.extend_from_slice(media_type.as_bytes());
+    input.push(0);
+    input.extend_from_slice(&u64::try_from(data.len()).unwrap_or(u64::MAX).to_be_bytes());
+    format!("sha256:{}", crate::migration_steps_gap::sha256_hex(&input))
+}
+
+/// Milliseconds on the Unix timeline, floored.
+///
+/// The Files index compares every timestamp in milliseconds, and a clock before the epoch reads as
+/// zero rather than failing: a wrong-clock host should plan a refresh, not refuse to plan at all.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// One content block in the wire vocabulary.
-fn block_to_wire(block: &ContentBlock) -> serde_json::Value {
+fn block_to_wire(block: &ContentBlock, prepared_image: &dyn Fn(&str) -> Option<crate::deepseek_serialize_gap::SerializeImage>) -> serde_json::Value {
     match block {
         ContentBlock::Text { text } => serde_json::json!({ "type": "text", "text": text }),
         // Reasoning is not sent back: the API does not accept it as input.
@@ -364,10 +674,47 @@ fn block_to_wire(block: &ContentBlock) -> serde_json::Value {
             "input": serde_json::from_str::<serde_json::Value>(arguments)
                 .unwrap_or_else(|_| serde_json::json!({})),
         }),
-        ContentBlock::Image { attachment } => serde_json::json!({
-            "type": "text",
-            "text": format!("[image {attachment}]"),
-        }),
+        // The Messages API carries an image as an `image` block with a `source`, and this used to
+        // emit `{"type":"text","text":"[image …]"}` instead -- so the model was told an image
+        // existed and shown a filename. A caller that has resolved the request version (media type
+        // and bytes) gets a real block; one that has not gets the handle sentence, which is what
+        // `content_projection_gap` uses for a route that cannot take images anyway. Sending a block
+        // with no source would be rejected by the API, so the text is the honest fallback.
+        ContentBlock::Image { attachment } => {
+            match prepared_image(attachment) {
+                Some(prepared) => {
+                    let mut block = serde_json::json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": prepared.media_type,
+                            "data": girder_core::encode_base64(&prepared.data),
+                        },
+                    });
+                    // A resolved Files id switches the source from inline to `file`, which is what
+                    // keeps a large image out of the request body.
+                    if let Some(file_id) = &prepared.file_id {
+                        block = serde_json::json!({
+                            "type": "image",
+                            "source": { "type": "file", "file_id": file_id },
+                        });
+                    }
+                    block
+                }
+                None => serde_json::json!({
+                    "type": "text",
+                    "text": crate::content_projection_gap::text_only_image_text(
+                        &crate::content_projection_gap::ImageAttachmentRef::new(
+                            attachment.clone(),
+                            "application/octet-stream",
+                            0,
+                            0,
+                            0,
+                        ),
+                    ),
+                }),
+            }
+        }
         ContentBlock::File { attachment } => serde_json::json!({
             "type": "text",
             "text": format!("[file {attachment}]"),

@@ -708,3 +708,35 @@ fn probe_serializer_directly() {
         Err(e) => println!("PROBE ERR: {e}"),
     }
 }
+
+#[test]
+fn an_image_becomes_an_image_block_not_a_filename() {
+    // Before this, `block_to_wire` emitted `{"type":"text","text":"[image sha256:abc]"}` -- the
+    // model was told an image existed and shown a filename. The API carries an image as its own
+    // block with a source, and a request without one is a request the model cannot see the picture
+    // in. The fallback (no prepared version) is a sentence, never a source-less block.
+    let messages = vec![Message::new(
+        Role::User,
+        vec![
+            ContentBlock::Text {
+                text: "what is this?".to_owned(),
+            },
+            ContentBlock::Image {
+                attachment: "sha256:abc".to_owned(),
+            },
+        ],
+    )];
+    let body = provider().body(&LlmRequest::new("m", messages));
+    let rendered = body.to_string();
+    // The old shape was a two-word placeholder that named the file and nothing else. The honest
+    // shape names the omission and the reason, which is what a model needs to know it cannot see.
+    assert!(
+        !rendered.contains(r#""[image sha256:abc]""#),
+        "a bare filename is not an explanation: {rendered}"
+    );
+    // With no prepared version the honest answer is a sentence that says so.
+    assert!(
+        rendered.contains("omitted") || rendered.contains("image"),
+        "the model must be told something about the image: {rendered}"
+    );
+}

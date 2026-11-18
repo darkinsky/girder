@@ -678,7 +678,8 @@ pub use llm::{
     LlmProvider, LlmRequest, Message, Role, StreamChunk, TokenUsage, ToolSchema,
 };
 pub use llm_deepseek::{
-    DeepSeekConfig, DeepSeekProvider, SseEvent, SseParser, Translator, provider_from_env,
+    DeepSeekConfig, DeepSeekProvider, ImageUploadPlan, SseEvent, SseParser, Translator,
+    UploadDecision, provider_from_env,
 };
 pub use llm_gap::{
     Dimensions as ImageDimensions, ImageRequestPrice, MAX_IMAGE_TOKENS, MIN_PIXELS, PATCH_SIZE,
