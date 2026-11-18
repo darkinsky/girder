@@ -212,7 +212,8 @@ impl Migration {
             ),
             (FormatVersion::V2, FormatVersion::V3) => Some(
                 "v2-to-v3 inserts the system-prompt head and its replacements, so a row-at-a-time \
-                 upgrade would emit a v3 log without its protected head",
+                 upgrade would emit a v3 log without its protected head; the whole-artifact \
+                 implementation lives in `crate::migration_steps_gap::migrate_session`",
             ),
             _ => Some("the edge is not part of the adjacent chain"),
         }
