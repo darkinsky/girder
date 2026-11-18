@@ -153,6 +153,10 @@ pub mod deepseek_serialize_gap;
 pub mod hmr_gap;
 mod home_paths;
 pub mod host_gap;
+pub use host_gap::{
+    BindAddress, bind_url_host, is_loopback_host, is_wildcard_host, normalize_bind_address,
+    parse_bind_address,
+};
 mod host_rpc;
 mod image_block;
 mod inbox;

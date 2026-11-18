@@ -148,13 +148,33 @@ async fn main() -> Result<()> {
 }
 
 /// Serves the RPC endpoint with the Remote methods this build implements.
+/// The address `--bind` names, normalized and checked.
+///
+/// Through the host module's parser rather than straight to the kernel: `TcpListener::bind` accepts
+/// forms this build cannot serve and its error names the syscall rather than the argument. The
+/// parser answers the normalized host or says which part is wrong, and it knows the wildcard and
+/// loopback cases the banner has to distinguish.
+fn resolve_bind(bind: &str) -> Result<String> {
+    let (host, port) = bind.rsplit_once(':').unwrap_or((bind, "8080"));
+    let normalized = girder_core::normalize_bind_address(host)
+        .map_err(|error| anyhow::anyhow!("`--bind {bind}`: {error}"))?;
+    // An empty host is the wildcard, which the parser reports as no address at all.
+    let host = if normalized.is_empty() {
+        "0.0.0.0"
+    } else {
+        &normalized
+    };
+    Ok(format!("{host}:{port}"))
+}
+
 async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Checked before binding: a deployment that cannot work should say so once instead of serving one error per
     // client. Only a fatal finding refuses to start, because a missing provider is the offline path and a missing
     // desktop is normal on a server.
     boot_check(&cli)?;
     let bus = Arc::new(EventBus::new());
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let endpoint = resolve_bind(&bind)?;
+    let listener = tokio::net::TcpListener::bind(&endpoint).await?;
     let address = listener.local_addr()?;
 
     // Resolved before the banner so the banner reports what is actually forwarded: printing "no events
