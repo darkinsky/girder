@@ -143,6 +143,13 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("the boot report found a fatal finding"));
             }
         }
+        // The audit of what the process actually mounted. A component line says a registry was built;
+        // this says whether the entries that registry is supposed to carry are in it, which is the
+        // difference between "started" and "can answer".
+        let names = probe_tool_names();
+        if let Some(audit) = audit_tool_report(&names) {
+            print!("{audit}");
+        }
         return Ok(());
     }
 
@@ -162,6 +169,25 @@ async fn main() -> Result<()> {
 }
 
 /// Serves the RPC endpoint with the Remote methods this build implements.
+/// Says where this server listens, and what it forwards.
+///
+/// One function because the two facts belong in one line: a client reading the banner needs both the
+/// URL to dial and whether the events it wants will arrive.
+fn print_banner(address: std::net::SocketAddr, selected: &[&str]) {
+    if selected.is_empty() {
+        println!(
+            "girder rpc listening on ws://{address}{} (no events forwarded)",
+            girder_rpc::REMOTE_STREAM_MUX_PATH
+        );
+    } else {
+        println!(
+            "girder rpc listening on ws://{address}{} (watching: {})",
+            girder_rpc::REMOTE_STREAM_MUX_PATH,
+            selected.join(", ")
+        );
+    }
+}
+
 /// The address `--bind` names, normalized and checked.
 ///
 /// Through the host module's parser rather than straight to the kernel: `TcpListener::bind` accepts
@@ -206,18 +232,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         resolve_watched(&watch)
     };
 
-    if selected.is_empty() {
-        println!(
-            "girder rpc listening on ws://{address}{} (no events forwarded)",
-            girder_rpc::REMOTE_STREAM_MUX_PATH
-        );
-    } else {
-        println!(
-            "girder rpc listening on ws://{address}{} (watching: {})",
-            girder_rpc::REMOTE_STREAM_MUX_PATH,
-            selected.join(", ")
-        );
-    }
+    print_banner(address, &selected);
 
     let catalog = session_catalog();
     let provider = resolve_provider(&cli);
@@ -1134,10 +1149,8 @@ fn read_env_layer(
 /// Returns the fatal finding for a layer that may not be applied, or that cannot be read.
 fn boot_env_layers() -> Result<EnvLayers, girder_core::Finding> {
     use girder_core::boot_app_gap as env;
-    let dir = std::env::current_dir().map_or_else(
-        |_| ".".to_owned(),
-        |path| path.display().to_string(),
-    );
+    let dir =
+        std::env::current_dir().map_or_else(|_| ".".to_owned(), |path| path.display().to_string());
     let home = harness_home();
     let project = read_env_layer(&dir, &home)?;
     // `layer_env` documents this case: a harness home that *is* the invoking directory would read the
@@ -1168,9 +1181,7 @@ fn boot_env_layers() -> Result<EnvLayers, girder_core::Finding> {
 fn boot_env_report(layers: &EnvLayers) -> Option<String> {
     use std::fmt::Write as _;
 
-    use girder_core::boot_app_gap::{
-        EnvSource, is_bootstrap_only, is_home_layer_route_name,
-    };
+    use girder_core::boot_app_gap::{EnvSource, is_bootstrap_only, is_home_layer_route_name};
 
     if layers.project.is_none() && layers.home.is_none() {
         return None;
@@ -1226,6 +1237,168 @@ fn boot_env_report(layers: &EnvLayers) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// The tool names the server would mount, assembled without starting it.
+///
+/// The audit needs the registry `serve` builds, and `serve` cannot be called to ask: it binds a socket
+/// and never returns. Building the same list here is deliberate rather than lazy — the two functions
+/// register through [`register_tools`] and [`register_capability_tools`], so a name added to either is
+/// in this list too, and the audit cannot describe a harness the server does not run.
+///
+/// The registries behind the tools are throwaway: a `JobRegistry` and a `GoalState` that nobody reads.
+/// Nothing is executed, so an empty one costs nothing and reports the same names a live one would.
+fn probe_tool_names() -> Vec<String> {
+    let tools = girder_core::ToolRegistry::new();
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // `serve` registers `list` and `bash` before the shared set, and `list` is only there: a run that
+    // audited `register_tools` alone would report the server's own extra tool as absent.
+    tools.register(list_tool());
+    register_tools(&tools, &workspace);
+    let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
+    register_capability_tools(&tools, &workspace, &goals);
+    girder_core::register_job_tools(&tools, Arc::new(girder_core::JobRegistry::new(64 * 1024)));
+    tools.names()
+}
+
+/// Audits the settled tool set against the entries this build says a usable application has.
+///
+/// `boot_app_gap` implements upstream's `auditStartupEntries` as a pure function over the *inactive*
+/// rows a loader reported: a required entry that did not activate is fatal, and the same list carried
+/// as a warning when only optional ones are inactive. The loader this build has is not a Cordis entry
+/// tree, so the rows have to be derived — one row per
+/// [`girder_core::boot_app_gap::REQUIRED_STARTUP_ENTRY_IDS`] id whose tools this build registers.
+///
+/// The mapping is the point. Each id names a capability the list is *for*: `tool-executor-native` is
+/// the native tools, `tool-executor-ptc` the programmatic ones, `webserver` the job tools,
+/// `agent-loop` the loop's own. When the registry holds none of an id's tools, that id is inactive —
+/// the state a person needs to see, because the alternative is a server that starts and then answers
+/// "no tool named" one call at a time.
+///
+/// The two kinds of inactivity are kept apart, because conflating them is how this audit would become
+/// noise nobody reads:
+///
+/// - [`Expect::Registered`] — a capability this build mounts unconditionally. Its absence is a build
+///   defect, so the row is `required` with a `Failed` outcome and the verdict is an error.
+/// - [`Expect::Waiting`] — a capability whose tools are mounted only when a collaborator exists. The
+///   web tools need a web provider (`GIRDER_FETCH_ENDPOINT` unset means the deployment chose no web),
+///   and the subagent tools need a `LoopContext`, which only a prompt run builds — `register_capability_tools`'
+///   own comment says so. Those rows are `Pending` with the missing service named, and the verdict is
+///   a warning. Reporting them as fatal would make every credential-free start look broken, which is
+///   the exact mistake the audit's two severities exist to avoid.
+///
+/// Ids this build has no capability for at all (`acp`, `modules`, `connection`, `sdk-jsonrpc-server`)
+/// are not audited: reporting a capability the deployment never offered would make every start look
+/// broken for a reason nobody can fix.
+fn audit_tool_surface(tool_names: &[String]) -> girder_core::boot_app_gap::StartupVerdict {
+    use girder_core::boot_app_gap::{InactiveEntry, InactiveOutcome, REQUIRED_STARTUP_ENTRY_IDS};
+
+    /// What an entry id's inactivity means.
+    #[derive(Clone, Copy)]
+    enum Expect {
+        /// The tools are mounted unconditionally; absence is a defect.
+        Registered,
+        /// The tools are mounted when a collaborator exists; absence is that collaborator, named.
+        Waiting(&'static [&'static str]),
+    }
+
+    /// The id, what it stands for, the tools that prove it active, and what its absence means.
+    ///
+    /// The tool list is a set rather than a count: an entry is active when *any* of its tools is
+    /// registered, because a deployment that registered only `read` still has a working executor.
+    const ENTRIES: &[(&str, &str, &[&str], Expect)] = &[
+        (
+            "agent-loop",
+            "the loop's own tools",
+            &["todo_write", "instructions", "skill"],
+            Expect::Registered,
+        ),
+        (
+            "tool-executor-native",
+            "the native file and shell tools",
+            &["bash", "read", "write", "edit", "glob", "grep"],
+            Expect::Registered,
+        ),
+        (
+            "tool-executor-ptc",
+            "the programmatic tools",
+            &["apply_patch", "workflow_run"],
+            Expect::Registered,
+        ),
+        (
+            "webserver",
+            "the server's job tools",
+            &["job_start", "job_list", "job_output"],
+            Expect::Registered,
+        ),
+        (
+            "web-runtime",
+            "the web tools",
+            &["web_fetch", "web_search"],
+            Expect::Waiting(&["a web provider (set GIRDER_FETCH_ENDPOINT)"]),
+        ),
+        (
+            "headless-runner",
+            "the subagent tools",
+            &["subagent", "subagent_list"],
+            Expect::Waiting(&["a loop context (only a prompt run builds one)"]),
+        ),
+    ];
+
+    let mut inactive = Vec::new();
+    for (id, purpose, tools, expect) in ENTRIES {
+        debug_assert!(
+            REQUIRED_STARTUP_ENTRY_IDS.contains(id),
+            "{id} is not a required id"
+        );
+        if tools
+            .iter()
+            .any(|tool| tool_names.iter().any(|name| name == tool))
+        {
+            continue;
+        }
+        let registered = matches!(expect, Expect::Registered);
+        let detail = format!(
+            "none of {} is registered",
+            tools
+                .iter()
+                .map(|tool| format!("`{tool}`"))
+                .collect::<Vec<String>>()
+                .join(", ")
+        );
+        inactive.push(InactiveEntry {
+            id: (*id).to_owned(),
+            module: (*purpose).to_owned(),
+            required: registered,
+            outcome: match expect {
+                Expect::Registered => InactiveOutcome::Failed {
+                    phase: None,
+                    detail,
+                },
+                Expect::Waiting(missing) => InactiveOutcome::Pending {
+                    missing: missing.iter().map(|name| (*name).to_owned()).collect(),
+                },
+            },
+        });
+    }
+    girder_core::boot_app_gap::audit_startup_entries("girder", &inactive)
+}
+
+/// Renders the startup audit's verdict as lines, or `None` when every claimed entry activated.
+///
+/// The text is the module's own, not a rewrite: [`girder_core::boot_app_gap::startup_diagnostic`] and
+/// [`girder_core::boot_app_gap::activation_diagnostic`] are what the upstream suites pin verbatim, and
+/// a second phrasing here would be the copy that drifts.
+fn audit_tool_report(tool_names: &[String]) -> Option<String> {
+    let verdict = audit_tool_surface(tool_names);
+    if let Some(error) = verdict.error {
+        return Some(format!(
+            "startup audit: a claimed capability did not activate\n{error}\n"
+        ));
+    }
+    verdict
+        .warning
+        .map(|warning| format!("startup audit: {warning}"))
 }
 
 /// Checks that this deployment can start, and answers with the `.env` section of the report.
