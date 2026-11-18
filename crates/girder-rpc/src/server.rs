@@ -823,6 +823,42 @@ pub async fn serve_with(
     if let Some(remote) = remote {
         server = server.with_remote(remote);
     }
+    serve_server(listener, server, cancel).await
+}
+
+/// Serves with peer identity enforced.
+///
+/// The separate entry point rather than a flag on [`serve_with`]: turning admission on changes what
+/// a client must send, and a deployment that gets it half-right has connections that fail in ways
+/// the caller cannot diagnose from a boolean. A caller that wants admission calls this one and knows
+/// it did.
+///
+/// # Errors
+///
+/// The listener's error, as [`serve_with`] reports it.
+pub async fn serve_with_peers(
+    listener: tokio::net::TcpListener,
+    bus: Arc<EventBus>,
+    watch: Vec<&'static str>,
+    remote: Option<Arc<girder_core::RemoteRegistry>>,
+    directory: Arc<girder_core::gateway_gap::PeerDirectory>,
+    cancel: CancellationToken,
+) -> std::io::Result<()> {
+    let mut server = RpcServer::new(bus)
+        .watching(watch)
+        .with_peer_directory(directory);
+    if let Some(remote) = remote {
+        server = server.with_remote(remote);
+    }
+    serve_server(listener, server, cancel).await
+}
+
+/// Runs one assembled server to graceful shutdown.
+async fn serve_server(
+    listener: tokio::net::TcpListener,
+    server: RpcServer,
+    cancel: CancellationToken,
+) -> std::io::Result<()> {
     axum::serve(listener, server.router())
         .with_graceful_shutdown(async move { cancel.cancelled().await })
         .await

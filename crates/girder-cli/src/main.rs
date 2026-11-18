@@ -359,14 +359,28 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
             .join(", ")
     );
 
-    girder_rpc::serve_with(
-        listener,
-        bus,
-        selected,
-        Some(remote),
-        CancellationToken::new(),
-    )
-    .await?;
+    // Peer identity is enforced only when this deployment says who its callers are. A credential
+    // scheme is a deployment decision -- a shared token, a proxy header, mTLS in front -- and
+    // inventing one here would be guessing at the environment. `GIRDER_REQUIRE_PEER=1` turns it on,
+    // and the directory's defaults then refuse rather than admit, which is the safe direction: a
+    // connection that cannot prove itself is not served.
+    let directory = match std::env::var("GIRDER_REQUIRE_PEER").as_deref() {
+        Ok("1" | "true" | "yes") => {
+            println!("peer identity: required (a connection must present a credential)");
+            Some(Arc::new(girder_core::gateway_gap::PeerDirectory::new()))
+        }
+        _ => None,
+    };
+    let cancel = CancellationToken::new();
+    match directory {
+        Some(directory) => {
+            girder_rpc::serve_with_peers(listener, bus, selected, Some(remote), directory, cancel)
+                .await?;
+        }
+        None => {
+            girder_rpc::serve_with(listener, bus, selected, Some(remote), cancel).await?;
+        }
+    }
     Ok(())
 }
 

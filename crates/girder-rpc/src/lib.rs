@@ -30,7 +30,7 @@ mod web;
 
 pub use server::{
     ClientAnswer, ClientHandle, INVOKE_PATH, RpcServer, TransportError, forward_events, serve,
-    serve_on, serve_with,
+    serve_on, serve_with, serve_with_peers,
 };
 
 use std::collections::HashMap;
