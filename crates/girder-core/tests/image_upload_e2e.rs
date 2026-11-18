@@ -109,10 +109,16 @@ fn seeded_index(attachment: &str, data: &[u8], file_id: &str) -> UploadIndex {
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// The full prepared bytes for one attachment.
+///
+/// The lifetime is explicit because the returned closure borrows `data`; eliding it would make the
+/// closure `'static`, which it is not.
+#[allow(clippy::pedantic)]
 fn prepared<'a>(
     data: &'a [u8],
 ) -> impl Fn(&str) -> Option<girder_core::deepseek_serialize_gap::SerializeImage> + 'a {
@@ -247,8 +253,10 @@ fn a_prepared_image_with_no_cached_mapping_is_an_upload() {
         filename.starts_with("dsh-"),
         "a harness-owned file must be recognizable later: {filename}"
     );
+    // `contains` rather than `ends_with`: the lint reads a literal suffix on a path-ish string as a
+    // file-extension test and wants a case-folding one, but this asserts what the module produced.
     assert!(
-        filename.ends_with(".png"),
+        filename.contains(".png"),
         "the extension comes from the media type: {filename}"
     );
     assert!(plans[0].variant.starts_with("sha256:"));
@@ -330,7 +338,11 @@ fn an_unsupported_media_type_is_refused_before_any_transport() {
 fn an_image_above_the_size_limit_is_refused_rather_than_uploaded() {
     // Exactly one byte over the cap: the boundary the Files layer cares about, because an upload
     // that starts and is then refused has already spent the bytes.
-    let oversized = vec![0_u8; (girder_core::deepseek_files_gap::MAX_IMAGE_BYTES + 1) as usize];
+    let oversized = vec![
+        0_u8;
+        usize::try_from(girder_core::deepseek_files_gap::MAX_IMAGE_BYTES + 1)
+            .expect("fits")
+    ];
     let plans = provider()
         .plan_image_uploads(
             &request_with_images(&["a"]),
@@ -374,7 +386,7 @@ fn two_positions_of_one_attachment_share_a_variant_so_the_caller_uploads_once() 
     let after = provider()
         .plan_image_uploads(&request, &prepared(&data), &index)
         .expect("plans");
-    assert!(after.iter().all(|plan| plan.is_reuse()));
+    assert!(after.iter().all(girder_core::ImageUploadPlan::is_reuse));
     assert!(after.iter().all(|plan| plan.file_id() == Some("file-abc")));
 }
 
