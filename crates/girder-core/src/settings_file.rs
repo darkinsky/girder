@@ -28,9 +28,17 @@ use serde_json::Value;
 use crate::settings_rpc::SettingsStore;
 
 /// Settings held in one JSON document on disk.
+/// What a reload compares: length plus the modified time at nanosecond resolution.
+///
+/// Both halves are needed. A same-length rewrite (`"a"` to `"b"`) changes neither the path nor the
+/// count, and a one-second filesystem clock reports two edits within a second as one.
+type Stamp = (u64, Option<(u64, u32)>);
+
 pub struct FileSettingsStore {
     /// Where the document lives.
     path: PathBuf,
+    /// The size and modified time last read, so a reload can tell "changed" from "unchanged".
+    stamp: Mutex<Option<Stamp>>,
     /// The last read, kept so a `get` does not touch the disk.
     ///
     /// Held behind a mutex rather than re-read per call because a prompt path reads several settings in a row, and the
@@ -53,7 +61,59 @@ impl FileSettingsStore {
         Self {
             path,
             document: Mutex::new(document),
+            stamp: Mutex::new(None),
         }
+    }
+
+    /// Re-reads the file when it changed on disk, and reports whether it did.
+    ///
+    /// The point of a settings *file* is that something else can edit it: a person with an editor, a
+    /// provisioning script, another process. Without this the store answers from the snapshot it
+    /// took at [`Self::open`] until the process restarts, so an edit looks ignored.
+    ///
+    /// A file that vanished is left alone: a half-written document is a fact the next write
+    /// resolves, and clearing it here would erase settings a rename is about to restore.
+    ///
+    /// # Errors
+    ///
+    /// The parse error, when the file is readable but not a settings document. The snapshot is
+    /// kept, so a bad edit does not silently reset the deployment to defaults.
+    pub fn reload_if_changed(&self) -> Result<bool, String> {
+        // Length *and* modified time, because a filesystem with one-second granularity reports two
+        // edits within the same second as one, and a same-length rewrite (`"a"` to `"b"`) changes
+        // neither the path nor the count.
+        let current: Option<Stamp> = std::fs::metadata(&self.path).ok().map(|meta| {
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| (since.as_secs(), since.subsec_nanos()));
+            (meta.len(), modified)
+        });
+        let changed = match (
+            &*self
+                .stamp
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &current,
+        ) {
+            // Nothing to reload in three cases: the file is absent now, it is unchanged, or this is
+            // the first observation after `open` (whose document was read from this same file a
+            // moment ago). Only a genuine difference between two observations reloads.
+            (_, None) | (None, Some(_)) => false,
+            (Some(before), Some(now)) => before != now,
+        };
+        if let Ok(mut held) = self.stamp.lock() {
+            *held = current;
+        }
+        if !changed {
+            return Ok(false);
+        }
+        let document = read_document(&self.path)?;
+        if let Ok(mut held) = self.document.lock() {
+            *held = document;
+        }
+        Ok(true)
     }
 
     /// The settings file this store writes.
@@ -95,6 +155,11 @@ fn read_document(path: &Path) -> Result<BTreeMap<String, Value>, String> {
 
 impl SettingsStore for FileSettingsStore {
     fn get(&self, key: &str) -> Option<Value> {
+        // A read is the only moment this store is touched by a request path, so it is where an
+        // edit made by someone else gets noticed. A reload that fails leaves the last good document
+        // in place: a half-written file must not read as "every setting is gone", which is what a
+        // cleared map would tell every caller at once.
+        let _ = self.reload_if_changed();
         self.document
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
