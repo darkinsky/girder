@@ -134,6 +134,7 @@ mod goal;
 mod goal_rpc;
 mod goal_tool;
 mod health_trend;
+pub mod migration_steps_gap;
 
 pub mod account_gap;
 pub mod boot_app_gap;
