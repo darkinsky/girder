@@ -254,6 +254,10 @@ pub fn namespaced_path(path: &str) -> String {
 ///
 /// `canonicalize` is the injected `realpath`; `Ok` answers the resolved path and `Err` means the
 /// path does not exist, which is the only error upstream retries through.
+#[allow(
+    clippy::result_unit_err,
+    reason = "the error is the *absence* of a realpath and carries no detail; an Option would express the same thing but the injected `realpath` seam answers a Result, so keeping it a Result means the caller's closure and this function share one shape"
+)]
 pub fn canonical_path(
     path: &str,
     canonicalize: &dyn Fn(&str) -> Result<String, ()>,
@@ -434,6 +438,10 @@ pub fn classify_change(state: &WatchState<'_>, event_path: &str) -> ClassifiedCh
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the signature is the injectable `realpath` slot, which reports absence as `Err`; this implementation never does"
+)]
+#[allow(
+    clippy::result_unit_err,
+    reason = "same shape as `canonical_path`, whose injected realpath answers a Result with no detail"
 )]
 pub fn identity_path(path: &str) -> Result<String, ()> {
     Ok(path.to_owned())
