@@ -129,6 +129,20 @@ async fn main() -> Result<()> {
         for (component, reason) in booted.report.failures() {
             eprintln!("[boot] {component} failed: {reason}");
         }
+        // The report is the one place a deployment says what it assembled, so it is also the place the
+        // `.env` layers belong. Under every other mode they are stderr noise around a prompt, and a
+        // deployment that wants the report was previously unable to see them at all.
+        match boot_check(&cli) {
+            Ok(Some(env)) => print!("{env}"),
+            Ok(None) => {}
+            // A refusal is the report's most important line, so it is printed rather than returned: a
+            // failed start would otherwise print the component report and then an error with no
+            // `.env` section saying which layer was refused.
+            Err(error) => {
+                eprintln!("{error}");
+                return Err(anyhow::anyhow!("the boot report found a fatal finding"));
+            }
+        }
         return Ok(());
     }
 
@@ -171,7 +185,14 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Checked before binding: a deployment that cannot work should say so once instead of serving one error per
     // client. Only a fatal finding refuses to start, because a missing provider is the offline path and a missing
     // desktop is normal on a server.
-    boot_check(&cli)?;
+    //
+    // The `.env` section goes to stderr rather than into the banner stream: stdout carries the one line a client
+    // parses to learn the endpoint, and a multi-line prefix in front of it would break that parse. Nothing is
+    // dropped — a server that started from a `.env` layer and never said so leaves an operator reading the exported
+    // environment and finding none of the values actually in force.
+    if let Some(env) = boot_check(&cli)? {
+        eprint!("{env}");
+    }
     let bus = Arc::new(EventBus::new());
     let endpoint = resolve_bind(&bind)?;
     let listener = tokio::net::TcpListener::bind(&endpoint).await?;
@@ -1028,7 +1049,202 @@ fn call_config_table() -> girder_core::ConfigTable {
     calls
 }
 
-fn boot_check(cli: &Cli) -> Result<()> {
+/// The `.env` layers a start would apply, ranked the way `layer_env` ranks them.
+///
+/// `boot_app_gap` implements upstream's `readEnvLayer`/`loadLayeredEnv` as pure functions: the text is
+/// read here, and every judgement about whether a file may set a variable is made by
+/// [`girder_core::boot_app_gap::check_env_layer`]. That split is why the refusal can be tested at all,
+/// and why this type carries values rather than reopening the files when it reports them.
+struct EnvLayers {
+    /// The variables this run would see, ranked process > project > harness home.
+    snapshot: girder_core::boot_app_gap::EnvSnapshot,
+    /// The invoking directory's layer, when it has a `.env`.
+    project: Option<girder_core::boot_app_gap::EnvLayer>,
+    /// The harness home's layer, when it has a `.env` and is not the invoking directory.
+    home: Option<girder_core::boot_app_gap::EnvLayer>,
+}
+
+/// The harness home, spelled the way the rest of the harness resolves it.
+///
+/// The same fallback as [`sessions_root`], for the same reason: a relative `GIRDER_HOME` is refused by
+/// `HomePaths`, and falling back to the default is better than refusing to start over a path.
+fn harness_home() -> String {
+    let home = std::env::var("HOME").ok();
+    let override_home = std::env::var("GIRDER_HOME").ok();
+    girder_core::HomePaths::from_environment(home.as_deref(), override_home.as_deref())
+        .map_or_else(
+            |_| std::env::temp_dir().join("girder"),
+            |paths| paths.root().to_path_buf(),
+        )
+        .display()
+        .to_string()
+}
+
+/// Reads one directory's `.env` and submits it to the bootstrap-only policy.
+///
+/// A missing file is no layer — that is what a fresh clone looks like, and reporting it would make
+/// every clone look misconfigured. Everything else is decided by
+/// [`girder_core::boot_app_gap::check_env_layer`], including the rule that matters: a `.env` travels
+/// with a repository, so it may not set a variable that decides how the process starts, where its code
+/// and instructions load from, or where its requests go. `LD_PRELOAD` is the example the policy names —
+/// a clone that could set it would choose which shared library loads into the parent process — and the
+/// same rule covers `PATH`, `NODE_OPTIONS`, `GIT_SSH_COMMAND`, `HTTP_PROXY`, and every `DSH_` name.
+///
+/// A refusal is returned as a [`girder_core::Finding`] rather than as an error so the caller renders it
+/// through [`girder_core::boot_report`], which is the same report a broken deployment gets: one shape
+/// for every reason this build will not start.
+fn read_env_layer(
+    dir: &str,
+    home: &str,
+) -> Result<Option<girder_core::boot_app_gap::EnvLayer>, girder_core::Finding> {
+    let path = std::path::Path::new(dir).join(".env");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // Not `Refused`: nothing about the contents is known. A file that cannot be inspected must not
+        // be applied either, which is the same conclusion reached the other way round.
+        Err(error) => {
+            return Err(girder_core::Finding::fatal(
+                format!("`{}` cannot be read", path.display()),
+                format!("{error}; this build will not start from an environment it cannot inspect"),
+            ));
+        }
+    };
+    girder_core::boot_app_gap::check_env_layer(dir, home, &text)
+        .map(Some)
+        .map_err(|refusal| match refusal.kind {
+            girder_core::boot_app_gap::EnvErrorKind::Refused => girder_core::Finding::fatal(
+                format!(
+                    "`{}` sets `{}`, which only the launching environment may set",
+                    refusal.path, refusal.name
+                ),
+                refusal.remedy,
+            ),
+            girder_core::boot_app_gap::EnvErrorKind::Unreadable => girder_core::Finding::fatal(
+                format!("`{}` cannot be read", refusal.path),
+                refusal.remedy,
+            ),
+        })
+}
+
+/// Reads and validates both `.env` layers, and layers them over the inherited environment.
+///
+/// # Errors
+///
+/// Returns the fatal finding for a layer that may not be applied, or that cannot be read.
+fn boot_env_layers() -> Result<EnvLayers, girder_core::Finding> {
+    use girder_core::boot_app_gap as env;
+    let dir = std::env::current_dir().map_or_else(
+        |_| ".".to_owned(),
+        |path| path.display().to_string(),
+    );
+    let home = harness_home();
+    let project = read_env_layer(&dir, &home)?;
+    // `layer_env` documents this case: a harness home that *is* the invoking directory would read the
+    // same file twice, and the second copy would shadow the first one's attribution. The file is the
+    // home layer then, because that is the more permissive of the two and the one it actually is.
+    let user = if env::join_path("", &home) == env::join_path("", &dir) {
+        None
+    } else {
+        read_env_layer(&home, &home)?
+    };
+    let inherited: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let snapshot = env::layer_env(&inherited, project.as_ref(), user.as_ref());
+    Ok(EnvLayers {
+        snapshot,
+        project,
+        home: user,
+    })
+}
+
+/// Renders the `.env` layers a start would use, or `None` when there are none.
+///
+/// The section exists to keep two things visible that would otherwise be invisible. First, which file
+/// supplied a variable — `layer_env`'s whole job, and the fact a person needs when the value in effect
+/// is not the one they wrote. Second, that a value only a file sets does **not** reach this process:
+/// configuration here is read from the launching environment, so a `.env` that looks applied would
+/// otherwise be silently inert. Naming each such variable converts that into one export away from
+/// working.
+fn boot_env_report(layers: &EnvLayers) -> Option<String> {
+    use std::fmt::Write as _;
+
+    use girder_core::boot_app_gap::{
+        EnvSource, is_bootstrap_only, is_home_layer_route_name,
+    };
+
+    if layers.project.is_none() && layers.home.is_none() {
+        return None;
+    }
+    let mut out = String::from("env: .env layers\n");
+    for (layer, label) in [(&layers.project, "project"), (&layers.home, "harness home")] {
+        if let Some(layer) = layer {
+            let _ = writeln!(
+                out,
+                "  {}: {} variable(s) ({label} layer)",
+                layer.path,
+                layer.values.len()
+            );
+        }
+    }
+    // A name the process also sets is not listed: the process outranks every file, so the file's copy
+    // is not what the run uses and saying otherwise would be wrong.
+    let mut file_only: Vec<(&str, &str)> = Vec::new();
+    for name in layers.snapshot.names() {
+        let Some(value) = layers.snapshot.get(name) else {
+            continue;
+        };
+        if value.source == EnvSource::Process {
+            continue;
+        }
+        file_only.push((name, value.path.as_deref().unwrap_or("a .env file")));
+    }
+    file_only.sort_unstable();
+    for (name, path) in file_only {
+        let _ = writeln!(
+            out,
+            "  {name}: set by {path} only; export it, because this build reads configuration from the \
+             launching environment"
+        );
+    }
+    // Bootstrap-only names the home layer was nonetheless allowed to set, and why: a proxy or an
+    // endpoint is a route the user owns, and that file does not travel with a repository.
+    if let Some(layer) = &layers.home {
+        let mut allowed: Vec<&str> = layer
+            .values
+            .keys()
+            .filter(|name| is_bootstrap_only(name) && is_home_layer_route_name(name))
+            .map(String::as_str)
+            .collect();
+        allowed.sort_unstable();
+        for name in allowed {
+            let _ = writeln!(
+                out,
+                "  {name}: allowed in {} because a route name the harness home sets does not travel \
+                 with a repository",
+                layer.path
+            );
+        }
+    }
+    Some(out)
+}
+
+/// Checks that this deployment can start, and answers with the `.env` section of the report.
+///
+/// # Errors
+///
+/// Returns an error when a finding is fatal: a `.env` layer the bootstrap-only policy refuses, or a
+/// deployment check that says the process cannot work.
+fn boot_check(cli: &Cli) -> Result<Option<String>> {
+    // The `.env` layers are judged before the deployment is looked at. A file that may not be applied
+    // stops the start on its own, and a workspace problem discovered after it would bury the one
+    // finding that is about a repository deciding how this process runs.
+    let layers = match boot_env_layers() {
+        Ok(layers) => layers,
+        Err(refusal) => anyhow::bail!(
+            "this deployment cannot start:\n{}",
+            girder_core::boot_report(&[refusal])
+        ),
+    };
     let workspace = std::env::current_dir().ok();
     let deployment = girder_core::Deployment {
         provider: girder_core::provider_from_environment().is_ok(),
@@ -1060,7 +1276,7 @@ fn boot_check(cli: &Cli) -> Result<()> {
         }
     }
     let _ = cli;
-    Ok(())
+    Ok(boot_env_report(&layers))
 }
 
 /// Registers the `goal` namespace.
