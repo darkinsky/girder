@@ -25,9 +25,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use girder_core::EventBus;
+use girder_core::gateway_gap::{
+    Connection, ConnectionOutcome, Credential, Peer, PeerDirectory, Rejection,
+};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +39,16 @@ use crate::{
     DownlinkFrame, PendingWaterfalls, REMOTE_STREAM_MUX_PATH, RemoteEventId, RemoteEventOutcome,
     RemoteEventRejection, RemoteEventResult, SessionState,
 };
+
+/// The request header naming the API Peer a caller speaks for, in strict mode.
+///
+/// A header rather than the wire's own `peer` field: a body field is written by whoever sent the
+/// body, so admitting on it would make the identity a claim again. This mirrors upstream, where the
+/// credential is the socket's handshake, not the request payload.
+///
+/// A deployment that terminates a proxy or a browser session in front of this server is the one that
+/// sets this header; nothing in this crate mints a credential.
+pub const PEER_HEADER: &str = "x-girder-peer";
 
 /// Counts connection generations across the process, so two clients never share an id.
 static GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -224,6 +238,14 @@ pub struct RpcServer {
     watch: Arc<Vec<&'static str>>,
     /// Remote methods, when the caller supplied them.
     remote: Option<Arc<girder_core::RemoteRegistry>>,
+    /// The admitted Peers, when this server verifies identity. `None` keeps the legacy path, where
+    /// the request's own `peer` string is carried unverified — see [`RpcServer::with_peer_directory`]
+    /// for why that switch is a builder and not a default.
+    directory: Option<Arc<PeerDirectory>>,
+    /// Origins outside loopback that may reach a strict server, spelled as a browser sends them.
+    trusted_origins: Arc<Vec<String>>,
+    /// Whether a trusted request with no credential speaks for the local owner.
+    local_owner: bool,
 }
 
 impl RpcServer {
@@ -234,6 +256,9 @@ impl RpcServer {
             bus,
             watch: Arc::new(Vec::new()),
             remote: None,
+            directory: None,
+            trusted_origins: Arc::new(Vec::new()),
+            local_owner: false,
         }
     }
 
@@ -248,6 +273,50 @@ impl RpcServer {
     #[must_use]
     pub fn with_remote(mut self, remote: Arc<girder_core::RemoteRegistry>) -> Self {
         self.remote = Some(remote);
+        self
+    }
+
+    /// Installs a [`PeerDirectory`], which turns on verified identity.
+    ///
+    /// Without this, the server behaves exactly as it did before: `request.peer` is copied into the
+    /// call and nothing checks it. With it, every request must be admitted by the directory first,
+    /// the admitted [`Peer`] supplies the call's identity, and the wire's `peer` field can only
+    /// agree or be refused — it cannot promote anyone. The switch is a builder rather than a default
+    /// because the unverified mode is what every existing client and test speaks; flipping the
+    /// default would have been a protocol change disguised as a security fix.
+    ///
+    /// See [`RpcServer::trusting_origins`] and [`RpcServer::allowing_local_owner`] for the two
+    /// decisions a deployment still has to make.
+    #[must_use]
+    pub fn with_peer_directory(mut self, directory: Arc<PeerDirectory>) -> Self {
+        self.directory = Some(directory);
+        self
+    }
+
+    /// Allows these origins through the Host/Origin fence, in addition to loopback.
+    ///
+    /// A browser sends `Origin` on every cross-origin request, and the fence is what turns a page
+    /// that rebounded onto this port into a 403. Loopback origins are trusted without configuration
+    /// because a page served from `127.0.0.1` *is* this host; anything else — a GUI served from a
+    /// LAN address, a reverse proxy — has to be named here. Entries are compared against the
+    /// `Origin` header exactly (case-insensitively, trailing `/` ignored), because guessing at
+    /// normalisation is how an allowlist stops being one.
+    #[must_use]
+    pub fn trusting_origins(mut self, origins: Vec<String>) -> Self {
+        self.trusted_origins = Arc::new(origins);
+        self
+    }
+
+    /// Lets a trusted credential-less request speak as the local owner.
+    ///
+    /// This is the browser case: a page served from this host has no API credential, and upstream
+    /// answers it with the shared owner Peer after checking its cookie. This crate does not
+    /// implement cookies, so it cannot tell that page from any other local client — hence off by
+    /// default. A deployment whose only clients are local (a desktop app, a loopback-bound GUI) can
+    /// turn it on deliberately; one behind a proxy should set a credential header instead.
+    #[must_use]
+    pub fn allowing_local_owner(mut self, allow: bool) -> Self {
+        self.local_owner = allow;
         self
     }
 
@@ -299,10 +368,20 @@ async fn web_index() -> impl axum::response::IntoResponse {
 pub const INVOKE_PATH: &str = "/api/remote.invoke";
 
 /// Handles one unary Remote call.
+///
+/// # Two modes, one handler
+///
+/// Without a [`PeerDirectory`] this is the legacy path: `request.peer` is copied into the call and
+/// carried unverified, which is what every client of this crate speaks today. With a directory the
+/// request is admitted first, the admitted [`Peer`] builds the call through
+/// [`admitted_call`](girder_core::gateway_gap::admitted_call), and `request.peer` is only ever
+/// compared — never used. The two modes are one handler so a deployment cannot end up running a
+/// different code path than the one its tests exercised.
 async fn invoke(
     State(server): State<RpcServer>,
+    headers: HeaderMap,
     axum::Json(request): axum::Json<crate::InvokeRemoteRequest>,
-) -> impl IntoResponse {
+) -> Response {
     use axum::http::StatusCode;
 
     let Some(remote) = &server.remote else {
@@ -316,12 +395,57 @@ async fn invoke(
                     details: None,
                 },
             }),
-        );
+        )
+            .into_response();
     };
 
-    let call = girder_core::RemoteCall {
-        args: serde_json::Value::Object(request.args),
-        peer: request.peer,
+    // The claim, if there is one. `""` means "no claim" because the request type requires the field
+    // and this crate does not own that type's serde attributes.
+    let claimed = Some(request.peer.as_str()).filter(|peer| !peer.is_empty());
+
+    let call = match &server.directory {
+        None => girder_core::RemoteCall {
+            args: serde_json::Value::Object(request.args),
+            peer: request.peer,
+        },
+        Some(directory) => {
+            let peer = match admit(directory, &server, &headers) {
+                Ok(peer) => peer,
+                Err(rejection) => {
+                    return rejection_response(
+                        status_of(rejection),
+                        format!(
+                            "the request was not admitted to `{}.{}`: {rejection:?}",
+                            request.namespace, request.method
+                        ),
+                    );
+                }
+            };
+            // Only now, with an identity the transport chose, is the wire field worth looking at:
+            // it must agree. A disagreement is refused rather than resolved in the Peer's favour,
+            // because the caller believes it is someone else and silently serving the request would
+            // leave that belief intact.
+            if let Some(claimed) = claimed {
+                if claimed != peer.id().as_str() {
+                    return rejection_response(
+                        StatusCode::FORBIDDEN,
+                        format!(
+                            "the request claims peer `{claimed}` but was admitted as `{}`",
+                            peer.id()
+                        ),
+                    );
+                }
+            }
+            match girder_core::gateway_gap::admitted_call(
+                &peer,
+                serde_json::Value::Object(request.args),
+            ) {
+                Ok(call) => call,
+                Err(error) => {
+                    return rejection_response(StatusCode::FORBIDDEN, error.to_string());
+                }
+            }
+        }
     };
 
     let response = match remote
@@ -341,10 +465,176 @@ async fn invoke(
 
     // A method that ran and reported a domain failure is a successful HTTP exchange: the transport
     // did its job. A 500 would make a client retry a call that already has an answer.
-    (StatusCode::OK, axum::Json(response))
+    (StatusCode::OK, axum::Json(response)).into_response()
 }
 
-async fn upgrade(ws: WebSocketUpgrade, State(server): State<RpcServer>) -> impl IntoResponse {
+/// A JSON refusal, so a strict-mode client sees the same envelope as any other answer.
+///
+/// The status carries the admission outcome and the body carries the reason: a client that only
+/// checks the status still learns *that* it was refused, and one that reads the body learns why.
+fn rejection_response(status: axum::http::StatusCode, message: String) -> Response {
+    (
+        status,
+        axum::Json(crate::InvokeResponse::Error {
+            error: crate::RemoteEventRejection {
+                name: "AccessDenied".to_owned(),
+                message,
+                code: Some("remote-access/denied".to_owned()),
+                details: None,
+            },
+        }),
+    )
+        .into_response()
+}
+
+/// Admits one request, or reports that it was refused.
+///
+/// The two inputs [`PeerDirectory::admit`] takes are decided here in the order upstream decides
+/// them: the Host/Origin fence, then the credential. The credential is a header, never the body: the
+/// body's `peer` is a claim, and admitting on it would restore exactly what this path removes. The
+/// caller compares the claim afterwards, once an identity exists to compare it against.
+fn admit(
+    directory: &PeerDirectory,
+    server: &RpcServer,
+    headers: &HeaderMap,
+) -> Result<Peer, Rejection> {
+    let trusted = origin_is_trusted(headers, &server.trusted_origins);
+    let credential = match headers
+        .get(PEER_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        Some(id) => Credential::Api(id),
+        // A credential-less request is the browser case. It is only allowed to be the owner when the
+        // deployment said so; otherwise `Credential::None` makes the directory answer 401 rather
+        // than guessing.
+        None if server.local_owner => Credential::Browser,
+        None => Credential::None,
+    };
+    directory.admit(trusted, credential).into()
+}
+
+/// Whether the request passed the Host/Origin fence.
+///
+/// A missing `Origin` is trusted: browsers attach it to cross-origin POSTs, so its absence means the
+/// caller is not a page — and a page is the only thing that can be rebound onto this port. A present
+/// `Origin` is trusted when it is loopback (a page served by this host) or when the deployment named
+/// it in [`RpcServer::trusting_origins`]. Everything else, including the literal `null` a sandboxed
+/// frame sends, is refused.
+fn origin_is_trusted(headers: &HeaderMap, trusted_origins: &[String]) -> bool {
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return true;
+    };
+    let trimmed = origin.trim_end_matches('/');
+    if trusted_origins
+        .iter()
+        .any(|allowed| allowed.trim_end_matches('/').eq_ignore_ascii_case(trimmed))
+    {
+        return true;
+    }
+    let Some((_scheme, authority)) = trimmed.split_once("://") else {
+        return false;
+    };
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _port)| host);
+    // `localhost` is a name, not an address, so the literal parser does not accept it — but it is
+    // the spelling a page served from this machine most often sends, and refusing it would make the
+    // loopback rule unusable in practice.
+    host.eq_ignore_ascii_case("localhost") || girder_core::is_loopback_host(host)
+}
+
+/// Rewrites one uplink control to speak for the admitted Peer, or refuses it.
+///
+/// [`SubscriptionHub`](crate::SubscriptionHub) reads the identity from the request it is handed, and
+/// that type belongs to the protocol layer rather than this one. Rather than teaching the hub about
+/// Peers, the transport admits the control here and then *replaces* the claimed identity with the
+/// admitted one: after this function returns, there is no path by which a subscription can speak for
+/// a Peer other than the socket's.
+///
+/// `None` means the control was refused and a [`SubscribeResult`](crate::DownlinkFrame::SubscribeResult)
+/// with `ok: false` has already been sent. The socket stays open — one bad request must not cost the
+/// client its session, which is the same rule the hub applies to its own refusals.
+///
+/// A `subscribe` that names no Peer is accepted: the identity it would otherwise carry is the
+/// connection's, and requiring a redundant echo would break clients that never sent one.
+fn admit_control(
+    peer: &Peer,
+    handle: &ClientHandle,
+    control: crate::SubscriptionControl,
+) -> Option<crate::SubscriptionControl> {
+    let crate::SubscriptionControl::Subscribe(mut request) = control else {
+        // `unsubscribe` carries an id and nothing else, so there is no identity to check.
+        return Some(control);
+    };
+    let claimed = request.peer.clone();
+    let refused = if !claimed.is_empty() && claimed.as_str() != peer.id().as_str() {
+        Some(format!(
+            "this connection was admitted as `{}`, not `{claimed}`",
+            peer.id()
+        ))
+    } else {
+        peer.assert_live(&request.qualified())
+            .err()
+            .map(|error| error.to_string())
+    };
+    if let Some(reason) = refused {
+        handle.send(crate::DownlinkFrame::SubscribeResult {
+            id: request.id,
+            ok: false,
+            error: Some(reason),
+        });
+        return None;
+    }
+    peer.id().as_str().clone_into(&mut request.peer);
+    Some(crate::SubscriptionControl::Subscribe(request))
+}
+
+/// Admits one socket, returning its [`Connection`] or the status to refuse the upgrade with.
+///
+/// The upgrade is refused *before* the socket is established: a client that was never admitted must
+/// not observe a `ready` frame, because `ready` is the server saying "you are connected".
+fn admit_socket(
+    server: &RpcServer,
+    headers: &HeaderMap,
+) -> Result<Option<Connection>, axum::http::StatusCode> {
+    let Some(directory) = &server.directory else {
+        return Ok(None);
+    };
+    let trusted = origin_is_trusted(headers, &server.trusted_origins);
+    let credential = match headers
+        .get(PEER_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        Some(id) => Credential::Api(id),
+        None if server.local_owner => Credential::Browser,
+        None => Credential::None,
+    };
+    match ConnectionOutcome::into(directory.admit_connection(trusted, credential)) {
+        Ok(connection) => Ok(Some(connection)),
+        Err(rejection) => Err(status_of(rejection)),
+    }
+}
+
+/// The HTTP status a refusal is written with.
+fn status_of(rejection: Rejection) -> axum::http::StatusCode {
+    axum::http::StatusCode::from_u16(rejection.status())
+        .unwrap_or(axum::http::StatusCode::FORBIDDEN)
+}
+
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(server): State<RpcServer>,
+    headers: HeaderMap,
+) -> Response {
+    let connection = match admit_socket(&server, &headers) {
+        Ok(connection) => connection,
+        Err(status) => return status.into_response(),
+    };
     ws.on_upgrade(move |socket| async move {
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
         let client_id = format!("gen-{generation}");
@@ -354,9 +644,11 @@ async fn upgrade(ws: WebSocketUpgrade, State(server): State<RpcServer>) -> impl 
             state,
             server.watch.as_ref().clone(),
             server.remote.clone(),
+            connection,
         )
         .await;
     })
+    .into_response()
 }
 
 /// Runs one connection to completion.
@@ -365,18 +657,27 @@ async fn upgrade(ws: WebSocketUpgrade, State(server): State<RpcServer>) -> impl 
 /// Without a Remote registry there is nothing to subscribe to, so this is [`serve_full`] with the
 /// subscription path turned off.
 pub async fn serve(socket: WebSocket, state: Arc<SessionState>, watch: Vec<&'static str>) {
-    serve_full(socket, state, watch, None).await;
+    serve_full(socket, state, watch, None, None).await;
 }
 
-/// Runs one connection with an optional subscription hub.
+/// Runs one connection with an optional subscription hub and an optional admitted Peer.
 ///
 /// One reader loop serves both uplinks because the socket is the same: dispatching on `type` costs a
 /// field read, while a second reader would need the socket split and would race for the frames.
+///
+/// # The Peer is the connection's, not the frame's
+///
+/// `connection` is `Some` exactly when this server was built with a [`PeerDirectory`]
+/// *and* the socket was admitted. When it is, every subscription the socket opens speaks for that
+/// Peer: [`admitted_call`] builds the call, a disposed Peer
+/// stops the poller, and the `peer` field on each `subscribe` frame is refused if it disagrees. When
+/// it is `None` the legacy behaviour is unchanged — the frame's own `peer` string is carried.
 async fn serve_full(
     socket: WebSocket,
     state: Arc<SessionState>,
     watch: Vec<&'static str>,
     remote: Option<Arc<girder_core::RemoteRegistry>>,
+    connection: Option<Connection>,
 ) {
     use futures::stream::StreamExt as _;
 
@@ -391,6 +692,13 @@ async fn serve_full(
         pending: Arc::clone(&state.pending),
         next_id: Arc::new(AtomicU64::new(1)),
     };
+
+    // The Peer this socket speaks for. A clone is kept for the teardown so "the socket closed" and
+    // "the Peer is gone" stay one event; `SubscriptionHub` gets its own clone, which shares the same
+    // lifetime because every `Peer` clone shares one.
+    let peer = connection
+        .as_ref()
+        .map(|connection| connection.peer().clone());
 
     // Built before the first frame is written so a client that subscribes immediately after `ready`
     // finds a hub rather than a race. Absent when the server exposes no methods: a subscription to a
@@ -437,7 +745,11 @@ async fn serve_full(
             // A subscription control is recognised by its `type` before the result parse: both are
             // tagged, and attempting the result shape first would log every `subscribe` as garbage.
             if let Ok(control) = serde_json::from_str::<crate::SubscriptionControl>(&text) {
-                if let Some(hub) = hub.as_ref() {
+                let control = match peer.as_ref() {
+                    Some(peer) => admit_control(peer, &handle, control),
+                    None => Some(control),
+                };
+                if let (Some(control), Some(hub)) = (control, hub.as_ref()) {
                     hub.handle(control);
                 }
                 continue;
@@ -465,6 +777,17 @@ async fn serve_full(
     let abandoned = state.pending.lock().await.drain();
     if abandoned > 0 {
         tracing::debug!(abandoned, "connection closed with pending waterfalls");
+    }
+    // The Peer was the socket's, so the socket ending disposes it. Done after the hub shutdown so a
+    // poller that was mid-call is aborted before its Peer is refused, rather than racing it.
+    //
+    // `release` retires a published Peer from its directory as well as disposing it, which is
+    // `gateway_gap`'s rule: a Peer's lifetime is a socket's lifetime, and an operator identity that
+    // came back after its socket closed would be a new identity anyway. A deployment that expects
+    // reconnects under one credential publishes a fresh Peer per connection; this crate does not
+    // mint or recycle them.
+    if let Some(connection) = connection {
+        connection.release();
     }
     writer.abort();
     forwarder.abort();
