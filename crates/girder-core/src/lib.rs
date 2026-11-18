@@ -183,6 +183,7 @@ pub mod llm_extra_gap;
 pub mod llm_final_gap;
 mod llm_gap;
 mod llm_openai;
+pub mod llm_remote;
 pub mod llm_retry_event_gap;
 mod llm_stats;
 pub mod llm_stream_gap;
@@ -241,6 +242,7 @@ mod questions_rpc;
 mod registry;
 mod remote;
 mod remote_access_gap;
+pub mod remote_service;
 pub mod request_header_gap;
 mod response_cache;
 mod result_paging;
@@ -694,6 +696,7 @@ pub use llm_openai::{
     SseParser as OpenAiSseParser, Translator as OpenAiTranslator,
     provider_from_env as provider_from_environment,
 };
+pub use llm_remote::{LlmRuntimeKey, register_llm_remote};
 pub use llm_stats::Stats as LlmStats;
 pub use log_compact::{Compacted, compact as compact_log, is_compactable};
 pub use log_integrity::{Integrity as LogIntegrity, inspect as inspect_log_integrity};
@@ -839,6 +842,9 @@ pub use remote_access_gap::{
     CallRequest as AccessCallRequest, MethodAccessResolver, NO_ALLOW, RESOURCE_INVALID,
     Refused as AccessRefused, Resolved, ResolvedResource, ResourceIds, all_allowed, declaration,
     kinds_of, reader, resolve_event_resources,
+};
+pub use remote_service::{
+    Endpoint, Handler as RemoteHandler, RemoteService, endpoint_names, register_remote_service,
 };
 pub use response_cache::{
     Cache as ResponseCache, CachedResponse, CachingProvider, DEFAULT_CAPACITY as CACHE_CAPACITY,
