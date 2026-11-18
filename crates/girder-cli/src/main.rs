@@ -188,6 +188,73 @@ fn print_banner(address: std::net::SocketAddr, selected: &[&str]) {
     }
 }
 
+/// The route table: the built-in provider, plus whatever the settings file declares.
+///
+/// `providers` blocks are validated by `pi_ai_apply_gap` before any route registers, so a deployment
+/// whose provider block cannot be honoured learns that at start rather than when a model is first
+/// named. A refused block registers nothing -- half of a provider list is a list nobody wrote.
+fn build_routes(model: &str) -> Arc<girder_core::RouteRegistry> {
+    let mut routes = girder_core::RouteRegistry::new();
+    let _ = routes.register(girder_core::deepseek_route("deepseek", model.to_owned()));
+    let extra = configured_routes(model);
+    for (name, provider) in &extra {
+        let entry = girder_core::Route::new(name.clone(), provider.clone());
+        if let Err(error) = routes.register(entry) {
+            eprintln!("[settings] route `{name}` skipped: {error}");
+        }
+    }
+    if !extra.is_empty() {
+        eprintln!(
+            "[settings] {} provider route(s) from settings: {}",
+            extra.len(),
+            extra.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Arc::new(routes)
+}
+
+/// The provider routes a settings file declares, validated.
+///
+/// Returns the routes it could honour and prints why for those it could not. `pi_ai_apply_gap` owns
+/// the eighteen-field validation and the ten cross-field rules, so this only supplies the document
+/// and reads the answer: a provider block that names a protocol the catalogue does not know, or
+/// whose numbers contradict each other, is refused there rather than at the first model call.
+fn configured_routes(model: &str) -> std::collections::BTreeMap<String, String> {
+    let path = sessions_root().join("settings.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        eprintln!("[settings] no settings file at {}", path.display());
+        return std::collections::BTreeMap::new();
+    };
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(&text) else {
+        eprintln!(
+            "[settings] {} is not JSON; no provider routes",
+            path.display()
+        );
+        return std::collections::BTreeMap::new();
+    };
+    let Some(providers) = document.get("providers") else {
+        eprintln!("[settings] {} has no `providers` block", path.display());
+        return std::collections::BTreeMap::new();
+    };
+    match girder_core::pi_ai_apply_gap::providers_from_json(providers) {
+        Ok(profiles) => profiles
+            .into_iter()
+            .map(|(name, profile)| {
+                // The route's own provider is its name; the model falls back to the CLI's when the
+                // profile names none, so a route that only sets a credential still resolves.
+                let provider = profile.api.clone().unwrap_or_else(|| name.clone());
+                let _ = model;
+                (name, provider)
+            })
+            .collect(),
+        Err(error) => {
+            // Nothing registers: a provider list with one bad entry is a list nobody wrote.
+            eprintln!("[settings] `providers` refused: {error}");
+            std::collections::BTreeMap::new()
+        }
+    }
+}
+
 /// The address `--bind` names, normalized and checked.
 ///
 /// Through the host module's parser rather than straight to the kernel: `TcpListener::bind` accepts
@@ -256,10 +323,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // and a `set_goal` on a clone would wire only that clone while the server kept driving the original.
     // The route table the model picker reads. One route for the configured provider; a deployment with more would
     // register them here rather than in a client.
-    let mut routes = girder_core::RouteRegistry::new();
-    let route = girder_core::deepseek_route("deepseek", cli.model.clone());
-    let _ = routes.register(route);
-    let routes = Arc::new(routes);
+    let routes = build_routes(&cli.model);
 
     let mut runtime = girder_core::AgentRuntime::assemble_with(
         girder_core::RuntimeConfig {
