@@ -102,14 +102,14 @@ async fn tree(
     registry: &RemoteRegistry,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, RemoteError> {
-    registry.dispatch("workspace", "tree", call(args)).await
+    registry.dispatch("workspaceFiles", "changes", call(args)).await
 }
 
 async fn read_file(
     registry: &RemoteRegistry,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, RemoteError> {
-    registry.dispatch("workspace", "readFile", call(args)).await
+    registry.dispatch("workspaceFiles", "readBytes", call(args)).await
 }
 
 /// The `path` values of a tree's entries, in the order they were returned.

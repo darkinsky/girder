@@ -319,27 +319,32 @@ const DECLARED: &[Declared] = &[
     },
     // ---- workspace -------------------------------------------------------------------------
     Declared {
-        method: "workspace.tree",
-        registration: "register_workspace_file_methods",
-        capability: Some("FileSystem + WorkspaceRegistry"),
-    },
-    Declared {
-        method: "workspace.readFile",
-        registration: "register_workspace_file_methods",
-        capability: Some("FileSystem + WorkspaceRegistry"),
-    },
-    Declared {
-        method: "workspace.stat",
+        method: "workspaceFiles.list",
         registration: "register_workspace_file_extras",
         capability: Some("FileSystem + WorkspaceRegistry"),
     },
     Declared {
-        method: "workspace.read",
+        method: "workspaceFiles.changes",
+        registration: "register_workspace_file_methods",
+        capability: Some("FileSystem + WorkspaceRegistry"),
+    },
+    Declared {
+        method: "workspaceFiles.readBytes",
+        registration: "register_workspace_file_methods",
+        capability: Some("FileSystem + WorkspaceRegistry"),
+    },
+    Declared {
+        method: "workspaceFiles.stat",
         registration: "register_workspace_file_extras",
         capability: Some("FileSystem + WorkspaceRegistry"),
     },
     Declared {
-        method: "workspace.search",
+        method: "workspaceFiles.read",
+        registration: "register_workspace_file_extras",
+        capability: Some("FileSystem + WorkspaceRegistry"),
+    },
+    Declared {
+        method: "workspaceFiles.search",
         registration: "register_workspace_file_extras",
         capability: Some("FileSystem + WorkspaceRegistry"),
     },

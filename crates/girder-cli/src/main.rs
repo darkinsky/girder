@@ -758,6 +758,20 @@ fn register_workspace_file_surface(
     // Task-graph validation, so a client can refuse a cyclic plan before submitting it: every
     // individual edit in such a graph is valid, and the plan then never starts.
     girder_core::register_team_graph_method(remote);
+    // The rest of the `workspace` surface -- renaming, ordering, pinning, archiving. The module has
+    // held all seven of upstream's mutations since it was written and nothing called it, so
+    // `workspace.rename` and `workspace.archiveSession` were declared in the schema and absent from
+    // the server.
+    girder_core::register_workspace_extra_methods(
+        remote,
+        workspaces,
+        &{
+            let preferences: Arc<dyn girder_core::WorkspacePreferences> =
+                Arc::new(girder_core::InMemoryPreferences::new());
+            preferences
+        },
+        &session_catalog(),
+    );
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);

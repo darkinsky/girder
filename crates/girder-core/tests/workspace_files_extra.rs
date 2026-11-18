@@ -54,7 +54,7 @@ async fn stat_reports_a_file_size() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "stat",
             call(json!({"workspaceId": id_of(&registry), "path": "a.txt"})),
         )
@@ -74,7 +74,7 @@ async fn stat_on_a_missing_path_says_it_is_missing() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "stat",
             call(json!({"workspaceId": id_of(&registry), "path": "absent.txt"})),
         )
@@ -94,7 +94,7 @@ async fn list_puts_directories_before_files() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "list",
             call(json!({"workspaceId": id_of(&registry), "path": ""})),
         )
@@ -113,7 +113,7 @@ async fn read_returns_text_and_reports_the_total() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "read",
             call(json!({"workspaceId": id_of(&registry), "path": "a.txt"})),
         )
@@ -134,7 +134,7 @@ async fn read_says_when_it_cut_the_content() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "read",
             call(json!({"workspaceId": id_of(&registry), "path": "a.txt", "limit": 4})),
         )
@@ -155,7 +155,7 @@ async fn read_cuts_on_a_character_boundary() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "read",
             call(json!({"workspaceId": id_of(&registry), "path": "a.txt", "limit": 4})),
         )
@@ -176,7 +176,7 @@ async fn a_path_outside_the_workspace_is_refused() {
 
     let error = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "stat",
             call(json!({"workspaceId": id_of(&registry), "path": "../../etc/passwd"})),
         )
@@ -196,7 +196,7 @@ async fn search_finds_a_name_anywhere_in_the_name() {
 
     let value = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "search",
             call(json!({"workspaceId": id_of(&registry), "path": "", "query": "rs"})),
         )
@@ -215,7 +215,7 @@ async fn search_without_a_query_is_refused() {
 
     let error = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "search",
             call(json!({"workspaceId": id_of(&registry), "path": ""})),
         )
@@ -232,7 +232,7 @@ async fn an_unknown_workspace_is_refused() {
 
     let error = registry
         .dispatch(
-            "workspace",
+            "workspaceFiles",
             "stat",
             call(json!({"workspaceId": "no-such", "path": "a.txt"})),
         )

@@ -68,10 +68,15 @@ use girder_core::{
 
 /// The namespace both methods live under.
 ///
-/// The same `workspace` namespace as `list`/`create`/`delete`, because a client that has a workspace
-/// row is exactly the client that will ask what is inside it; a second namespace would make the
-/// browser look up an id twice.
-const NAMESPACE: &str = "workspace";
+/// `workspaceFiles`, which is the namespace upstream serves this surface under.
+///
+/// This was `workspace`, on the reasoning that a client holding a workspace row is the client that
+/// will ask what is inside it. That reasoning is sound and the conclusion was still wrong: upstream
+/// keeps the two surfaces apart (`packages/api/workspace-files` declares
+/// `super(ctx, 'workspaceFiles')`), so a client written against upstream calls
+/// `workspaceFiles.list` and would find `workspace.list` answering a different question entirely --
+/// the registry's rows rather than a directory's entries.
+const NAMESPACE: &str = "workspaceFiles";
 
 /// How many entries `workspace.tree` returns when the caller does not say.
 ///
@@ -118,7 +123,7 @@ pub fn register_workspace_file_methods(
 ) {
     let tree_fs = Arc::clone(fs);
     let tree_workspaces = Arc::clone(workspaces);
-    registry.register(NAMESPACE, "tree", move |call: RemoteCall| {
+    registry.register(NAMESPACE, "changes", move |call: RemoteCall| {
         let fs = Arc::clone(&tree_fs);
         let workspaces = Arc::clone(&tree_workspaces);
         Box::pin(async move { tree(&call, fs.as_ref(), workspaces.as_ref()).await })
@@ -126,7 +131,7 @@ pub fn register_workspace_file_methods(
 
     let read_fs = Arc::clone(fs);
     let read_workspaces = Arc::clone(workspaces);
-    registry.register(NAMESPACE, "readFile", move |call: RemoteCall| {
+    registry.register(NAMESPACE, "readBytes", move |call: RemoteCall| {
         let fs = Arc::clone(&read_fs);
         let workspaces = Arc::clone(&read_workspaces);
         Box::pin(async move { read_file(&call, fs.as_ref(), workspaces.as_ref()).await })
@@ -306,7 +311,7 @@ async fn tree(
     fs: &dyn FileSystem,
     workspaces: &WorkspaceRegistry,
 ) -> Result<Value, RemoteError> {
-    const METHOD: &str = "tree";
+    const METHOD: &str = "changes";
 
     let workspace_id = required_str(&call.args, "workspaceId", METHOD)?;
     let workspace = registered(workspaces, workspace_id, METHOD)?;
@@ -363,7 +368,7 @@ async fn read_file(
     fs: &dyn FileSystem,
     workspaces: &WorkspaceRegistry,
 ) -> Result<Value, RemoteError> {
-    const METHOD: &str = "readFile";
+    const METHOD: &str = "readBytes";
 
     let workspace_id = required_str(&call.args, "workspaceId", METHOD)?;
     let workspace = registered(workspaces, workspace_id, METHOD)?;
@@ -533,7 +538,7 @@ fn depth_arg(args: &Value) -> Result<u32, RemoteError> {
             let depth = value
                 .as_u64()
                 .and_then(|raw| u32::try_from(raw).ok())
-                .ok_or_else(|| invalid("tree", "`depth` must be a non-negative integer"))?;
+                .ok_or_else(|| invalid("changes", "`depth` must be a non-negative integer"))?;
             if depth == 0 || depth > MAX_TREE_DEPTH {
                 return Err(invalid(
                     "tree",
@@ -553,7 +558,7 @@ fn limit_arg(args: &Value) -> Result<usize, RemoteError> {
             let limit = value
                 .as_u64()
                 .and_then(|raw| usize::try_from(raw).ok())
-                .ok_or_else(|| invalid("tree", "`limit` must be a non-negative integer"))?;
+                .ok_or_else(|| invalid("changes", "`limit` must be a non-negative integer"))?;
             if limit == 0 || limit > MAX_TREE_ENTRY_LIMIT {
                 return Err(invalid(
                     "tree",

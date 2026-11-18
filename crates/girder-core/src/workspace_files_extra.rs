@@ -25,8 +25,12 @@ use crate::remote::{RemoteCall, RemoteError, RemoteRegistry};
 use crate::workspace_path::{normalize as normalize_path, relative_to};
 use girder_core::api_config::WorkspaceRegistry;
 
-/// The namespace these methods register under.
-pub const NAMESPACE: &str = "workspace";
+/// The namespace these methods register under: `workspaceFiles`, as upstream serves it.
+///
+/// `packages/api/workspace-files/src/index.ts` declares `super(ctx, 'workspaceFiles')`. The
+/// `workspace` namespace belongs to the session-orchestration controller, which answers about
+/// registered workspaces rather than about the files inside one.
+pub const NAMESPACE: &str = "workspaceFiles";
 
 /// How much of a file `read` returns when the caller names no limit.
 ///
