@@ -655,7 +655,10 @@ fn now_millis() -> u64 {
 }
 
 /// One content block in the wire vocabulary.
-fn block_to_wire(block: &ContentBlock, prepared_image: &dyn Fn(&str) -> Option<crate::deepseek_serialize_gap::SerializeImage>) -> serde_json::Value {
+fn block_to_wire(
+    block: &ContentBlock,
+    prepared_image: &dyn Fn(&str) -> Option<crate::deepseek_serialize_gap::SerializeImage>,
+) -> serde_json::Value {
     match block {
         ContentBlock::Text { text } => serde_json::json!({ "type": "text", "text": text }),
         // Reasoning is not sent back: the API does not accept it as input.
