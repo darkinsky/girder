@@ -319,6 +319,7 @@ mod subagent;
 pub mod subagent_deep_gap;
 mod subagent_depth;
 pub mod subagent_extra_gap;
+pub mod subagent_final_gap;
 mod subagent_interrupt;
 mod subagent_pool;
 mod subagent_providers;
