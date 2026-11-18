@@ -346,6 +346,23 @@ impl DeepSeekProvider {
         body
     }
 
+    /// What one image of these dimensions costs this request, in image tokens.
+    ///
+    /// `llm_gap` owns the arithmetic: the two-dimensional resize, the 28-pixel patch grid, and the
+    /// cap. It is exposed here because a caller that is deciding whether to resize an image before
+    /// uploading needs the same number the billing will use, and a second implementation in the
+    /// caller is how the two come to disagree.
+    ///
+    /// Returns `None` for dimensions the catalogue cannot price, rather than a zero: a zero reads as
+    /// "free" and would make an unpriceable image look cheap.
+    #[must_use]
+    pub fn image_token_cost(width: u32, height: u32) -> Option<u64> {
+        let price = crate::llm_gap::price_request_image(width, height);
+        // A zero-dimension image is the refusal case: no patch grid, no tokens, and the pricing
+        // module reports it as zero rather than failing.
+        (width > 0 && height > 0).then_some(price.tokens)
+    }
+
     /// Plans the file uploads a request needs, so a caller knows what to send before it sends it.
     ///
     /// This is the caller of `deepseek_files_gap::plan_upload`. That module holds the Files API

@@ -45,6 +45,15 @@ struct Cli {
     #[arg(long, default_value_t = 16)]
     max_turns: u32,
 
+    /// What the shell tool may read and write: `read-only`, `workspace-write` or
+    /// `danger-full-access`.
+    ///
+    /// Parsed by `sandbox_gap`, which owns the closed set: a mode name can arrive from a config file
+    /// or a replayed log, neither of which the type system has vetted, so an unknown name is refused
+    /// here rather than silently falling back to the widest.
+    #[arg(long, default_value = "workspace-write")]
+    sandbox: String,
+
     /// Print what boot mounted, skipped, or failed, then exit without sending a prompt.
     ///
     /// The report is the whole point of having a boot step: a process that starts and then
@@ -253,6 +262,40 @@ fn explain_spec(spec: &str) -> Result<()> {
     Ok(())
 }
 
+/// The shell tool's path policy for a named sandbox mode.
+///
+/// `sandbox_gap` owns the mode vocabulary and the escalation ladder; this maps the three modes onto
+/// the two sets `PathPolicy` actually enforces. `read-only` gets an empty writable set rather than a
+/// flag, because a mode that could still write would be a mode whose name lies.
+///
+/// # Errors
+///
+/// An unknown mode name. Failing is the point: falling back to the widest mode would turn a typo in
+/// a config file into a shell with full access.
+fn path_policy(mode: &str, workspace: &std::path::Path) -> Result<girder_core::PathPolicy> {
+    let parsed = girder_core::parse_mode(mode).ok_or_else(|| {
+        anyhow::anyhow!(
+            "`--sandbox {mode}` is not a mode; expected one of read-only, workspace-write, danger-full-access"
+        )
+    })?;
+    let mut policy = girder_core::PathPolicy::new(workspace);
+    match parsed {
+        girder_core::SandboxMode::ReadOnly => {
+            // Nothing writable, and the workspace stays readable: the point of read-only is to look.
+            policy.writable.clear();
+        }
+        girder_core::SandboxMode::WorkspaceWrite => {
+            // `PathPolicy::new` is already this: the workspace, writable.
+        }
+        girder_core::SandboxMode::Full => {
+            // A root of `/` is the honest spelling of "no confinement" in a set-of-roots model.
+            policy.readable.insert(std::path::PathBuf::from("/"));
+            policy.writable.insert(std::path::PathBuf::from("/"));
+        }
+    }
+    Ok(policy)
+}
+
 /// The route table: the built-in provider, plus whatever the settings file declares.
 ///
 /// `providers` blocks are validated by `pi_ai_apply_gap` before any route registers, so a deployment
@@ -372,9 +415,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
 
     let tools = girder_core::ToolRegistry::new();
     tools.register(list_tool());
-    tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
+    tools.register(girder_core::bash_tool(path_policy(
+        &cli.sandbox,
         &workspace,
-    )));
+    )?));
 
     // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
     // loop still believed was open. Defined before the runtime because the runtime takes the same `Arc`: built
@@ -601,10 +645,12 @@ fn discovered_skills(workspace: &std::path::Path) -> girder_core::SkillRegistry 
     registry
 }
 
-fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path) {
-    tools.register(girder_core::bash_tool(girder_core::PathPolicy::new(
-        workspace,
-    )));
+fn register_tools(
+    tools: &girder_core::ToolRegistry,
+    workspace: &std::path::Path,
+    sandbox: &str,
+) -> Result<()> {
+    tools.register(girder_core::bash_tool(path_policy(sandbox, workspace)?));
     tools.register(girder_core::read_tool(workspace.to_path_buf()));
     tools.register(girder_core::write_tool(workspace.to_path_buf()));
     tools.register(girder_core::edit_tool(workspace.to_path_buf()));
@@ -640,6 +686,7 @@ fn register_tools(tools: &girder_core::ToolRegistry, workspace: &std::path::Path
         tools.register(girder_core::fetch_tool(Arc::clone(&web)));
         tools.register(girder_core::search_tool(web));
     }
+    Ok(())
 }
 
 /// Registers the host-facing methods: handing a workspace path to the desktop.
@@ -820,7 +867,7 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         Some("tools-mcp" | "tools-openai") => {
             let tools = girder_core::ToolRegistry::new();
             let workspace = std::env::current_dir()?;
-            register_tools(&tools, &workspace);
+            register_tools(&tools, &workspace, "workspace-write")?;
             // The capability tools are the other half of the tool list: a document that showed fourteen of
             // thirty-one would describe a smaller harness than the one being documented.
             let goals =
@@ -1397,7 +1444,10 @@ fn probe_tool_names() -> Vec<String> {
     // `serve` registers `list` and `bash` before the shared set, and `list` is only there: a run that
     // audited `register_tools` alone would report the server's own extra tool as absent.
     tools.register(list_tool());
-    register_tools(&tools, &workspace);
+    // The audit asks what this build *has*, not what a run was configured with, so the mode is the
+    // default one; a policy that refused here would make the audit report a tool list it could not
+    // build rather than the one it ships.
+    register_tools(&tools, &workspace, "workspace-write").expect("the default mode parses");
     let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
     register_capability_tools(&tools, &workspace, &goals);
     girder_core::register_job_tools(&tools, Arc::new(girder_core::JobRegistry::new(64 * 1024)));
@@ -1772,7 +1822,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     // `&ToolRegistry`, and converting first would leave the traced `subagent` tool unregistered while the plain one it
     // replaces is absent too.
     let tools = Arc::new(ToolRegistry::new());
-    register_tools(&tools, &workspace);
+    register_tools(&tools, &workspace, &cli.sandbox)?;
     // The capability tools need a goal state; a prompt run gets its own, which is the same lifetime as the run.
     let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
     register_capability_tools(&tools, &workspace, &goals);
