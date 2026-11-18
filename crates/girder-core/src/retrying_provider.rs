@@ -142,6 +142,15 @@ fn classify_provider(message: &str) -> &'static str {
     if classified.context_window_exceeded {
         return FailureCode::CONTEXT_WINDOW_EXCEEDED;
     }
+    // The finer classifier: it gates on the *leading* status rather than scanning the whole line,
+    // so `500 upstream error: 401 Unauthorized` is a server failure and not an auth failure, and it
+    // orders 413 before 400 because a gateway may report both in one message. A code it knows but
+    // this policy does not is still a better answer than the ladder below could give, so it is
+    // consulted first and only its "unknown" falls through.
+    let finer = crate::pi_ai_runtime_gap::classify_pi_ai_error(message);
+    if finer != crate::pi_ai_runtime_gap::PI_AI_ERROR {
+        return finer;
+    }
     let lowered = message.to_lowercase();
     for (needle, code) in [
         ("429", FailureCode::RATE_LIMIT),

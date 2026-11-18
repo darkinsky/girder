@@ -339,6 +339,11 @@ pub mod subprocess_gap;
 mod system_prompt;
 mod table_tools;
 pub mod team_gap;
+pub mod team_rpc_extra;
+pub use team_rpc_extra::{
+    MAX_TASKS as TEAM_MAX_TASKS, METHOD as TEAM_GRAPH_METHOD, graph_ids,
+    register_team_extra_methods as register_team_graph_method,
+};
 mod terminal;
 mod terminal_attach;
 mod terminal_attach_rpc;

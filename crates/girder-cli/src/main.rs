@@ -509,6 +509,9 @@ fn register_workspace_file_surface(
     register_goal_surface(remote);
     register_workflow_surface(remote);
     register_question_surface(remote);
+    // Task-graph validation, so a client can refuse a cyclic plan before submitting it: every
+    // individual edit in such a graph is valid, and the plan then never starts.
+    girder_core::register_team_graph_method(remote);
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);
