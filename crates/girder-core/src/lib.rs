@@ -1198,6 +1198,10 @@ pub use tools::{
     ToolExecute, ToolExecution, ToolPostExecute, ToolPreExecute, ToolRegistry, ToolRegistryView,
     ToolResult, ToolRunContext, ToolValue, ToolsKey,
 };
+pub use tools_final_gap::{
+    ApprovalOutcome, TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, aborted_outcome,
+    aborted_outcome_advising, to_tool_result,
+};
 pub use trace_span::{Span as TraceSpan, Tracer};
 pub use transcript_import::{
     IMPORTED_PROVIDER, ImportError as TranscriptImportError, Imported as ImportedTranscript,

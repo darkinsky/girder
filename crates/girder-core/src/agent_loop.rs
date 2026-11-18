@@ -1479,13 +1479,15 @@ fn invalidate_after(context: &LoopContext, execution: &ToolExecution) {
     girder_core::apply_cache_effect(&effect, &mut cache);
 }
 
-/// What to tell a model whose tool was stopped by its deadline.
+/// What to tell a model whose tool ran out of time.
 ///
-/// A free function because `dispatch` is at the length the linter enforces, and because the decision -- whether repeating
-/// the call is safe -- deserves to be visible next to the wording it produces.
+/// The plan decides the wording, because the three answers are genuinely different instructions: retry the call, stop and
+/// tell the user, or stop and ask whether to try again. A single "it timed out" makes the model choose, and it chooses
+/// retry.
 fn stopped_message(tool: &str) -> String {
-    // A timeout is the one failure that carries real uncertainty: the tool may have run halfway. What to do about it
-    // depends on whether repeating it is safe, which is a question the tool's name answers and this line does not guess.
+    // A timeout is the one failure that carries real uncertainty: the tool may have run halfway.
+    // What to do about it depends on whether repeating it is safe, which is a question the tool's
+    // name answers and this line does not guess.
     let idempotent = matches!(
         girder_core::tool_idempotency(tool),
         girder_core::Idempotency::Safe
@@ -1499,11 +1501,6 @@ fn stopped_message(tool: &str) -> String {
     timeout_message(tool, &plan)
 }
 
-/// What to tell a model whose tool ran out of time.
-///
-/// The plan decides the wording, because the three answers are genuinely different instructions: retry the call, stop and
-/// tell the user, or stop and ask whether to try again. A single "it timed out" makes the model choose, and it chooses
-/// retry.
 fn timeout_message(tool: &str, plan: &girder_core::RetryPlan) -> String {
     match plan {
         girder_core::RetryPlan::Retry { after_ms, .. } => format!(
@@ -1619,7 +1616,17 @@ pub async fn dispatch(
     let Some(result) =
         run_with_deadline(context, &execution, Arc::clone(&tool), cancel.clone()).await
     else {
-        return Ok(ToolResult::error(stopped_message(&execution.name)));
+        // The deadline fired after the body had started, so the tool may have changed something.
+        // `stopped_message` derives whether a retry is safe from the tool's idempotency and says so;
+        // `tools_final_gap` supplies the outcome kind and the abort identity. Neither alone is
+        // enough: the kind without the advice lets a model duplicate a side effect, and the advice
+        // without the identity is a sentence no client can branch on.
+        return Ok(crate::tools_final_gap::to_tool_result(
+            crate::tools_final_gap::aborted_outcome_advising(
+                None,
+                &stopped_message(&execution.name),
+            ),
+        ));
     };
 
     note_phase(

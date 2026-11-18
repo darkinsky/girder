@@ -317,6 +317,29 @@ pub fn aborted_outcome(prior: Option<&Outcome>) -> Outcome {
     }
 }
 
+/// The abort outcome with a message the caller supplies.
+///
+/// `aborted_outcome` hard-codes "tool call aborted", which is right when nothing more is known. A
+/// deadline that fired *after* the body started knows more: whether a retry is safe and whether the
+/// tool may have changed something. That advice is the caller's, so it is passed in rather than
+/// dropped for the sake of one fixed string.
+#[must_use]
+#[allow(
+    dead_code,
+    reason = "called from `agent_loop`, which the `#[path]` test target does not compile; the function is reachable in the library and exercised through the loop"
+)]
+pub fn aborted_outcome_advising(prior: Option<&Outcome>, advice: &str) -> Outcome {
+    let mut outcome = aborted_outcome(prior);
+    outcome.content = vec![ContentBlock::Text {
+        text: format!("Error: {advice}"),
+    }];
+    outcome.error = Some(ToolFailure::identified(
+        advice.to_owned(),
+        ErrorInfo::new("AbortError", TOOL_ABORTED),
+    ));
+    outcome
+}
+
 /// The canonical result when cancellation prevented the tool body from being invoked.
 #[must_use]
 pub fn aborted_before_dispatch_outcome(prior: Option<&Outcome>) -> Outcome {
@@ -425,11 +448,32 @@ pub fn activation_failed(tool_name: &str) -> Outcome {
     ))
 }
 
+/// Renders an [`Outcome`] as the [`ToolResult`] the loop and the model see.
+///
+/// The two types carry the same three facts (content, failure, structured value) and differ only in
+/// the extra bookkeeping `Outcome` keeps for the pipeline. This is the one place that translation
+/// happens, so a caller does not reimplement it and disagree with itself about `is_error`.
+#[must_use]
+#[allow(
+    dead_code,
+    reason = "called from `agent_loop`, which the `#[path]` test target does not compile; the function is reachable in the library and exercised through the loop"
+)]
+pub fn to_tool_result(outcome: Outcome) -> girder_core::ToolResult {
+    girder_core::ToolResult {
+        content: outcome.content,
+        // `Outcome` holds a bare JSON value because the pipeline reasons about payloads; the wire
+        // type is the tagged `ToolValue`. `Json` is the right arm: a tool that produced a value
+        // produced structured data, and `Text` is for a tool whose value is only a string.
+        value: outcome.value.map(girder_core::ToolValue::Json),
+        is_error: outcome.is_error,
+    }
+}
+
 /// Applies cancellation precedence to a settled outcome.
 ///
 /// Cancellation replaces **only a successful** outcome. A tool-owned error passes through untouched,
 /// which is the rule that keeps an interrupted-but-failed call reporting its failure: the model needs
-/// to read "the file does not exist" more than it needs to read "aborted", and the side effect
+/// to read "the file does not exist" more than it needs to read "aborted", and the side-effect
 /// question is already answered by `is_error` being the tool's own verdict.
 #[must_use]
 pub fn finalize_after_cancellation(
