@@ -64,7 +64,7 @@ async fn list_reports_every_command() {
         .expect("registered");
 
     let value = registry(&commands)
-        .dispatch("command", "list", call(json!({})))
+        .dispatch("commands", "list", call(json!({})))
         .await
         .expect("listed");
 
@@ -84,7 +84,7 @@ async fn a_command_with_no_input_reports_none() {
         .expect("registered");
 
     let value = registry(&commands)
-        .dispatch("command", "list", call(json!({})))
+        .dispatch("commands", "list", call(json!({})))
         .await
         .expect("listed");
 
@@ -110,8 +110,8 @@ async fn running_a_command_returns_its_message() {
 
     let value = registry(&commands)
         .dispatch(
-            "command",
-            "run",
+            "commands",
+            "execute",
             call(json!({"name": "echo", "arguments": "hi"})),
         )
         .await
@@ -131,8 +131,8 @@ async fn a_failing_command_is_a_result_not_a_transport_error() {
 
     let value = registry(&commands)
         .dispatch(
-            "command",
-            "run",
+            "commands",
+            "execute",
             call(json!({"name": "nope", "arguments": null})),
         )
         .await
@@ -161,8 +161,8 @@ async fn a_wrong_argument_kind_is_reported_to_the_person() {
 
     let value = registry(&commands)
         .dispatch(
-            "command",
-            "run",
+            "commands",
+            "execute",
             call(json!({"name": "rename", "arguments": ["a.txt"]})),
         )
         .await
@@ -190,8 +190,8 @@ async fn an_array_argument_becomes_files() {
 
     let value = registry(&commands)
         .dispatch(
-            "command",
-            "run",
+            "commands",
+            "execute",
             call(json!({"name": "attach", "arguments": ["a.png", "b.png"]})),
         )
         .await
@@ -206,7 +206,7 @@ async fn a_missing_name_is_a_remote_error() {
     let commands = Arc::new(CommandRegistry::new());
 
     let error = registry(&commands)
-        .dispatch("command", "run", call(json!({})))
+        .dispatch("commands", "execute", call(json!({})))
         .await
         .expect_err("missing name");
 
@@ -222,8 +222,8 @@ async fn a_bad_argument_shape_is_a_remote_error() {
 
     let error = registry(&commands)
         .dispatch(
-            "command",
-            "run",
+            "commands",
+            "execute",
             call(json!({"name": "x", "arguments": {"a": 1}})),
         )
         .await
@@ -248,12 +248,12 @@ async fn the_plain_registry_offers_the_command_surface() {
     assert!(
         names
             .iter()
-            .any(|(namespace, method)| namespace == "command" && method == "list")
+            .any(|(namespace, method)| namespace == "commands" && method == "list")
     );
     assert!(
         names
             .iter()
-            .any(|(namespace, method)| namespace == "command" && method == "run")
+            .any(|(namespace, method)| namespace == "commands" && method == "execute")
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

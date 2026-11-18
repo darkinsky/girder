@@ -48,9 +48,9 @@ use girder_core::{
 use serde_json::{Value, json};
 
 use goal_rpc::{
-    BLOCK_METHOD, CLEAR_METHOD, COMPLETE_METHOD, CREATE_METHOD, EDIT_METHOD, GET_METHOD,
-    LIST_METHOD, MemoryGoalStore, NAMESPACE, PAUSE_METHOD, RESUME_METHOD, STARTS_ROUNDS,
-    UPDATE_METHOD, UnavailableGoalStore, register_goal_methods,
+    CLEAR_METHOD, COMPLETE_METHOD, CREATE_METHOD, EDIT_METHOD, GET_METHOD, LIST_METHOD,
+    MemoryGoalStore, NAMESPACE, PAUSE_METHOD, RESUME_METHOD, STARTS_ROUNDS, UnavailableGoalStore,
+    register_goal_methods,
 };
 
 // ---- fixtures ---------------------------------------------------------------------------------
@@ -186,14 +186,6 @@ async fn a_stale_revision_is_refused_on_every_mutation() {
         (RESUME_METHOD, json!({"id": id, "revision": 99})),
         (COMPLETE_METHOD, json!({"id": id, "revision": 99})),
         (
-            BLOCK_METHOD,
-            json!({"id": id, "revision": 99, "code": "x", "message": "y"}),
-        ),
-        (
-            UPDATE_METHOD,
-            json!({"id": id, "revision": 99, "objective": "new"}),
-        ),
-        (
             EDIT_METHOD,
             json!({"id": id, "revision": 99, "objective": "new"}),
         ),
@@ -325,7 +317,7 @@ async fn the_lifecycle_rules_are_the_domains() {
             json!({"id": id, "revision": revision_of(&completed)}),
         ),
         (
-            UPDATE_METHOD,
+            EDIT_METHOD,
             json!({"id": id, "revision": revision_of(&completed), "objective": "new"}),
         ),
     ] {
@@ -337,53 +329,27 @@ async fn the_lifecycle_rules_are_the_domains() {
 }
 
 #[tokio::test]
-async fn block_requires_a_readable_reason_and_a_reason_belongs_to_blocked() {
+async fn edit_requires_a_change_and_refuses_a_blank_one() {
+    // `block` is a state-machine transition upstream does not expose as an endpoint, so what is
+    // worth testing here is the endpoint upstream *does* serve: an edit with nothing to change and
+    // one whose objective is blank are both refused before any revision is bumped.
     let (registry, _) = registry();
     let created = create(&registry, "objective").await;
     let id = id_of(&created);
 
-    // A blank message is refused before any change: a block nobody can read is a goal that stopped
-    // for no visible reason.
-    let error = dispatch(
-        &registry,
-        BLOCK_METHOD,
-        json!({"id": id, "revision": 1, "code": "awaiting-input", "message": "   "}),
-    )
-    .await
-    .expect_err("a blank block message is refused");
+    let error = dispatch(&registry, EDIT_METHOD, json!({"id": id, "revision": 1}))
+        .await
+        .expect_err("an empty edit is refused");
     assert_eq!(error.code(), "INVALID_ARGUMENTS");
 
-    // A missing code is refused too — both halves of the reason are required.
     let error = dispatch(
         &registry,
-        BLOCK_METHOD,
-        json!({"id": id, "revision": 1, "message": "waiting on a decision"}),
+        EDIT_METHOD,
+        json!({"id": id, "revision": 1, "objective": "   "}),
     )
     .await
-    .expect_err("a reason needs a code");
-    assert!(error.to_string().contains("code"));
-
-    let blocked = dispatch(
-        &registry,
-        BLOCK_METHOD,
-        json!({"id": id, "revision": 1, "code": "awaiting-input", "message": "waiting on a decision"}),
-    )
-    .await
-    .expect("a readable reason blocks");
-    assert_eq!(blocked["phase"], "blocked");
-    assert_eq!(blocked["blockedReason"]["code"], "awaiting-input");
-    assert_eq!(blocked["blockedReason"]["message"], "waiting on a decision");
-    assert_eq!(blocked["activation"], "disarmed");
-
-    // A blocked goal resumes, and the reason must not survive into a phase it does not describe.
-    let resumed = dispatch(&registry, RESUME_METHOD, reference_of(&blocked))
-        .await
-        .expect("a blocked goal resumes");
-    assert_eq!(resumed["phase"], "active");
-    assert!(
-        resumed.get("blockedReason").is_none(),
-        "a stale reason must not be shown on a goal that is no longer blocked, got {resumed}"
-    );
+    .expect_err("a blank objective is refused");
+    assert_eq!(error.code(), "INVALID_ARGUMENTS");
 }
 
 #[tokio::test]
@@ -461,7 +427,7 @@ async fn update_and_edit_are_one_handler() {
 
     let updated = dispatch(
         &registry,
-        UPDATE_METHOD,
+        EDIT_METHOD,
         json!({"id": id_of(&created), "revision": 1, "objective": "second objective"}),
     )
     .await
@@ -487,7 +453,7 @@ async fn update_and_edit_are_one_handler() {
     // and break every other client's compare-and-set.
     let error = dispatch(
         &registry,
-        UPDATE_METHOD,
+        EDIT_METHOD,
         json!({"id": id_of(&created), "revision": 3}),
     )
     .await
@@ -506,7 +472,7 @@ async fn update_and_edit_are_one_handler() {
     // A blank objective is refused by the domain, not stored.
     let error = dispatch(
         &registry,
-        UPDATE_METHOD,
+        EDIT_METHOD,
         json!({"id": id_of(&created), "revision": 3, "objective": "  "}),
     )
     .await
@@ -572,14 +538,14 @@ async fn the_declarations_match_what_each_method_does() {
     for (method, args) in [
         (CREATE_METHOD, json!({"objective": "nope"})),
         (
-            UPDATE_METHOD,
+            EDIT_METHOD,
             json!({"id": "x", "revision": 1, "objective": "nope"}),
         ),
         (PAUSE_METHOD, json!({"id": "x", "revision": 1})),
         (RESUME_METHOD, json!({"id": "x", "revision": 1})),
         (COMPLETE_METHOD, json!({"id": "x", "revision": 1})),
         (
-            BLOCK_METHOD,
+            EDIT_METHOD,
             json!({"id": "x", "revision": 1, "code": "c", "message": "m"}),
         ),
         (CLEAR_METHOD, json!({"id": "x", "revision": 1})),

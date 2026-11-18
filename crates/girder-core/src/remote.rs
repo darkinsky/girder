@@ -2128,7 +2128,7 @@ pub fn register_command_methods(
     commands: &Arc<crate::commands::Registry>,
 ) {
     let catalog = Arc::clone(commands);
-    registry.register("command", "list", move |_call: RemoteCall| {
+    registry.register("commands", "list", move |_call: RemoteCall| {
         let catalog = Arc::clone(&catalog);
         Box::pin(async move {
             let definitions: Vec<serde_json::Value> = catalog
@@ -2155,7 +2155,7 @@ pub fn register_command_methods(
     });
 
     let run = Arc::clone(commands);
-    registry.register("command", "run", move |call: RemoteCall| {
+    registry.register("commands", "execute", move |call: RemoteCall| {
         let run = Arc::clone(&run);
         Box::pin(async move {
             let name = call
@@ -2163,7 +2163,7 @@ pub fn register_command_methods(
                 .get("name")
                 .and_then(Value::as_str)
                 .ok_or_else(|| RemoteError::InvalidArguments {
-                    namespace: "command".to_owned(),
+                    namespace: "commands".to_owned(),
                     method: "run".to_owned(),
                     message: "`name` is required".to_owned(),
                 })?
@@ -2185,7 +2185,7 @@ pub fn register_command_methods(
                 ),
                 Some(other) => {
                     return Err(RemoteError::InvalidArguments {
-                        namespace: "command".to_owned(),
+                        namespace: "commands".to_owned(),
                         method: "run".to_owned(),
                         message: format!("`arguments` must be a string or an array, got {other}"),
                     });

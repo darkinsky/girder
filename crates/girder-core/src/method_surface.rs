@@ -208,12 +208,12 @@ const DECLARED: &[Declared] = &[
     // Registered by `register_session_core`, because a slash command is available wherever a
     // session is; listed here rather than under `session` because the wire name says `command`.
     Declared {
-        method: "command.list",
+        method: "commands.list",
         registration: "register_command_methods",
         capability: None,
     },
     Declared {
-        method: "command.run",
+        method: "commands.execute",
         registration: "register_command_methods",
         capability: None,
     },
@@ -436,52 +436,42 @@ const DECLARED: &[Declared] = &[
     },
     // ---- goal ------------------------------------------------------------------
     Declared {
-        method: "goal.get",
+        method: "goals.get",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.list",
+        method: "goals.list",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.create",
+        method: "goals.create",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.update",
+        method: "goals.edit",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.edit",
+        method: "goals.pause",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.pause",
+        method: "goals.resume",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.resume",
+        method: "goals.complete",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },
     Declared {
-        method: "goal.complete",
-        registration: "register_goal_methods",
-        capability: Some("GoalStore"),
-    },
-    Declared {
-        method: "goal.block",
-        registration: "register_goal_methods",
-        capability: Some("GoalStore"),
-    },
-    Declared {
-        method: "goal.clear",
+        method: "goals.clear",
         registration: "register_goal_methods",
         capability: Some("GoalStore"),
     },

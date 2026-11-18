@@ -103,14 +103,17 @@ use serde_json::{Map, Value, json};
 // `extern crate self as girder_core`, so one spelling compiles in both places and the tests exercise
 // the source as written instead of a copy.
 use girder_core::{
-    Activation, BlockReason, Declaration, Goal, GoalError, GoalId, GoalRef, GoalState, Phase,
-    RemoteCall, RemoteError, RemoteRegistry, check_goal_reference, now_millis,
+    Activation, Declaration, Goal, GoalError, GoalId, GoalRef, GoalState, Phase, RemoteCall,
+    RemoteError, RemoteRegistry, check_goal_reference, now_millis,
 };
 
 // ---- surface constants ------------------------------------------------------------------------
 
 /// The namespace every method here is served under.
-pub const NAMESPACE: &str = "goal";
+///
+/// Plural, because upstream declares `super(ctx, 'goals')` in `packages/goal/goal/src/index.ts`.
+/// The singular spelling is what a client written against upstream would not find.
+pub const NAMESPACE: &str = "goals";
 
 /// Creates a goal.
 pub const CREATE_METHOD: &str = "create";
@@ -122,9 +125,10 @@ pub const LIST_METHOD: &str = "list";
 pub const GET_METHOD: &str = "get";
 
 /// Edits an existing goal's objective or round cap.
-pub const UPDATE_METHOD: &str = "update";
-
-/// Upstream's spelling of [`UPDATE_METHOD`].
+///
+/// Upstream serves this as `edit`. A `update` alias was registered here and is gone: an endpoint
+/// upstream does not serve is one a client written against upstream cannot call, so it is not a
+/// superset of the API but a second, incompatible one.
 pub const EDIT_METHOD: &str = "edit";
 
 /// Stops a goal without completing it.
@@ -135,9 +139,6 @@ pub const RESUME_METHOD: &str = "resume";
 
 /// Marks a goal done.
 pub const COMPLETE_METHOD: &str = "complete";
-
-/// Marks a goal blocked, with a reason.
-pub const BLOCK_METHOD: &str = "block";
 
 /// Discards the goal.
 pub const CLEAR_METHOD: &str = "clear";
@@ -150,12 +151,10 @@ pub const METHODS: &[&str] = &[
     CREATE_METHOD,
     LIST_METHOD,
     GET_METHOD,
-    UPDATE_METHOD,
     EDIT_METHOD,
     PAUSE_METHOD,
     RESUME_METHOD,
     COMPLETE_METHOD,
-    BLOCK_METHOD,
     CLEAR_METHOD,
 ];
 
@@ -378,12 +377,10 @@ impl GoalStore for UnavailableGoalStore {
 pub fn register_goal_methods(registry: &mut RemoteRegistry, goals: &Arc<dyn GoalStore>) {
     for method in [
         CREATE_METHOD,
-        UPDATE_METHOD,
         EDIT_METHOD,
         PAUSE_METHOD,
         RESUME_METHOD,
         COMPLETE_METHOD,
-        BLOCK_METHOD,
     ] {
         registry.declare(NAMESPACE, method, Declaration::write(RESOURCE_KIND));
     }
@@ -417,11 +414,9 @@ pub fn register_goal_methods(registry: &mut RemoteRegistry, goals: &Arc<dyn Goal
         Box::pin(async move { get(&call.args, &store) })
     });
 
-    let update_store = Arc::clone(goals);
-    registry.register(NAMESPACE, UPDATE_METHOD, move |call: RemoteCall| {
-        let store = Arc::clone(&update_store);
-        Box::pin(async move { update(&call.args, &store) })
-    });
+    // `update` and `block` are deliberately not registered: upstream serves `edit` and has no
+    // "blocked" transition at all. The functions stay because the state machine has the concepts and
+    // their own tests cover them, but an endpoint upstream does not serve would be a second API.
 
     // The same handler under upstream's spelling, not a forward to the first: forwarding would mean
     // a second `RemoteCall` and a second chance for the two paths to differ.
@@ -447,12 +442,6 @@ pub fn register_goal_methods(registry: &mut RemoteRegistry, goals: &Arc<dyn Goal
     registry.register(NAMESPACE, COMPLETE_METHOD, move |call: RemoteCall| {
         let store = Arc::clone(&complete_store);
         Box::pin(async move { complete(&call.args, &store) })
-    });
-
-    let block_store = Arc::clone(goals);
-    registry.register(NAMESPACE, BLOCK_METHOD, move |call: RemoteCall| {
-        let store = Arc::clone(&block_store);
-        Box::pin(async move { block(&call.args, &store) })
     });
 
     let clear_store = Arc::clone(goals);
@@ -557,19 +546,19 @@ fn get(args: &Value, store: &Arc<dyn GoalStore>) -> Result<Value, RemoteError> {
 /// [`GoalError::InvalidTransition`], a blank objective with [`GoalError::EmptyObjective`], and a
 /// stale or foreign revision by [`GoalState::check`] before either.
 fn update(args: &Value, store: &Arc<dyn GoalStore>) -> Result<Value, RemoteError> {
-    let (reference, mut state) = current(args, store, UPDATE_METHOD)?;
-    let objective = optional_string(args, "objective", UPDATE_METHOD)?;
-    let max_rounds = optional_u32(args, "maxRounds", UPDATE_METHOD)?;
+    let (reference, mut state) = current(args, store, EDIT_METHOD)?;
+    let objective = optional_string(args, "objective", EDIT_METHOD)?;
+    let max_rounds = optional_u32(args, "maxRounds", EDIT_METHOD)?;
     if objective.is_none() && max_rounds.is_none() {
         return Err(invalid(
-            UPDATE_METHOD,
+            EDIT_METHOD,
             "an edit requires `objective` and/or `maxRounds`; an empty edit would bump the revision \
              for a change nobody made",
         ));
     }
     let goal = state
         .edit(&reference, objective, max_rounds)
-        .map_err(|error| goal_error(UPDATE_METHOD, &error))?;
+        .map_err(|error| goal_error(EDIT_METHOD, &error))?;
     commit(store, state.activation(), &goal)
 }
 
@@ -634,32 +623,6 @@ fn complete(args: &Value, store: &Arc<dyn GoalStore>) -> Result<Value, RemoteErr
     let goal = state
         .complete(&reference)
         .map_err(|error| goal_error(COMPLETE_METHOD, &error))?;
-    commit(store, state.activation(), &goal)
-}
-
-/// `goal.block`: marks an active goal blocked, with a reason.
-///
-/// Upstream's `block` is public on the service but carries no `@Remote` decorator, so it is outside
-/// upstream's remote surface. It is served here because [`GoalState::block`] exists and a blocked
-/// goal is otherwise unreachable over the wire: without it, a client that knows why progress
-/// stopped can only pause, and a pause carries no reason.
-///
-/// Both parts of the reason are required and validated: [`BlockReason::new`] refuses a blank
-/// message, and [`GoalState::block`] refuses a non-active phase.
-fn block(args: &Value, store: &Arc<dyn GoalStore>) -> Result<Value, RemoteError> {
-    let (reference, mut state) = current(args, store, BLOCK_METHOD)?;
-    let code = required_str(args, "code", BLOCK_METHOD)?;
-    let message = required_str(args, "message", BLOCK_METHOD)?;
-    let reason = BlockReason::new(code, message).ok_or_else(|| {
-        invalid(
-            BLOCK_METHOD,
-            "a blocked goal needs a non-empty `message`; a block nobody can read is a goal that \
-             stopped for no visible reason",
-        )
-    })?;
-    let goal = state
-        .block(&reference, reason)
-        .map_err(|error| goal_error(BLOCK_METHOD, &error))?;
     commit(store, state.activation(), &goal)
 }
 
