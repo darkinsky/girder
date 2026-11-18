@@ -1299,7 +1299,16 @@ fn bridges_a_durable_llm_request() {
             "input_schema": { "type": "object" },
         }])
     );
-    assert_eq!(value["messages"], json!([]));
+    // The history travels. It used to arrive here as `[]` because the shim passed an empty slice,
+    // so a real request serialized to a body about nothing while its system prompt and tools were
+    // correct -- the shape the API refuses.
+    assert_eq!(
+        value["messages"],
+        json!([{
+            "role": "user",
+            "content": [{ "type": "text", "text": "hello" }],
+        }])
+    );
 }
 
 /// Rule 11's separator, and `serialize_llm_request`'s empty-history path.

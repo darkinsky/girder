@@ -172,7 +172,74 @@ impl DeepSeekProvider {
     /// Exposed so a test can assert the wire shape without a server, which is the part most likely
     /// to drift from the API.
     #[must_use]
+    /// The Messages request body.
+    ///
+    /// Delegates to `deepseek_serialize_gap`, which owns all 26 rules of `serialize.ts`: promoting a
+    /// reasoning block back into a `thinking` block, declaring `thinking` so the API accepts a
+    /// history that contains one, merging parallel tool results into a single user turn, hoisting a
+    /// late system prompt, and the four refusal families. A hand-rolled body here had two of them
+    /// and got both wrong -- it turned reasoning into an empty text block and never declared
+    /// `thinking`, which makes a multi-turn conversation with reasoning a malformed request.
+    ///
+    /// Falls back to the local shape only when serialization refuses, so a caller sees a body rather
+    /// than a panic; the refusal itself is surfaced by [`Self::body_result`].
     pub fn body(&self, request: &LlmRequest) -> serde_json::Value {
+        // The serializer refuses a conversation it cannot express and *drops* turns it cannot pair --
+        // an orphan tool result, for instance. Dropping is right for the wire, but a body with no
+        // messages is a request about nothing, so a non-empty input that serialized to nothing falls
+        // back to the per-message shape: the provider's refusal then names the orphan, which is a
+        // better diagnostic than an empty request.
+        //
+        // The condition is "the serializer produced turns", not "it did not error". The serializer
+        // validates the conversation as a whole -- an unanswered `tool_use` or an orphan
+        // `tool_result` is dropped rather than sent -- so a single-message probe legitimately
+        // produces nothing. Falling back then keeps this method's contract: it returns a body for
+        // whatever it is given, and the provider's refusal names the defect precisely.
+        match self.body_result(request) {
+            Ok(body) if !body["messages"].as_array().is_some_and(Vec::is_empty) => body,
+            _ => self.body_fallback(request),
+        }
+    }
+
+    /// The Messages request body, or why it cannot be built.
+    ///
+    /// # Errors
+    ///
+    /// [`SerializeError`] when the request cannot be expressed, which is a fact about the
+    /// conversation rather than about the transport.
+    pub fn body_result(
+        &self,
+        request: &LlmRequest,
+    ) -> Result<serde_json::Value, crate::deepseek_serialize_gap::SerializeError> {
+        let route = crate::deepseek_serialize_gap::SerializeRoute::new(
+            if request.model.is_empty() {
+                &self.config.default_model
+            } else {
+                &request.model
+            },
+            request
+                .max_tokens
+                .or_else(|| self.limits(&request.model).max_tokens)
+                .unwrap_or(self.config.max_tokens),
+        );
+        // A history that carries a reasoning block *requires* the declaration: the Messages API
+        // rejects a thinking block that the request did not announce, so this is not a preference.
+        // Derived from the content rather than configured, because the content is what makes it
+        // true.
+        let carries_reasoning = request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Reasoning { .. }))
+        });
+        let route = route.with_thinking_enabled(carries_reasoning);
+        crate::deepseek_serialize_gap::serialize_llm_request(route, request)
+    }
+
+    /// The pre-serializer body, kept for the one caller that must not fail: a request this build
+    /// cannot express still has to reach the provider, and the provider's refusal names the field
+    /// more precisely than a local error would.
+    fn body_fallback(&self, request: &LlmRequest) -> serde_json::Value {
         let messages: Vec<serde_json::Value> = request
             .messages
             .iter()

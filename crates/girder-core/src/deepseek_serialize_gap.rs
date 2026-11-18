@@ -113,7 +113,9 @@ use serde_json::{Map, Value, json};
 use girder_core::llm_stream_gap::{
     DeepSeekReplayBlock, ReplayBlockKind, deepseek_replay_state, read_deepseek_replay,
 };
-use girder_core::{ChatMessage, ChatRole, ContentBlock, LlmRequest, MessageSource, ToolSchema};
+use girder_core::{
+    ChatMessage, ChatRole, ContentBlock, LlmRequest, MessageId, MessageSource, Role, ToolSchema,
+};
 
 // =============================================================================================
 // Refusals
@@ -900,6 +902,15 @@ impl WireTurn {
     }
 }
 
+/// Maps the request `Role` onto the log `Role`.
+fn role_of(role: Role) -> ChatRole {
+    match role {
+        Role::Assistant => ChatRole::Assistant,
+        Role::Tool => ChatRole::Tool,
+        Role::User => ChatRole::User,
+    }
+}
+
 /// Reads the replay envelope for one assistant message.
 ///
 /// Absence and cross-model declines are silent; a damaged envelope is reported to `notice` and the
@@ -1267,7 +1278,48 @@ pub fn serialize_llm_request(
 ) -> Result<Value, SerializeError> {
     let prepared = SerializeRequest::from_llm(route, request);
     let no_images: ImageLookup<'_> = &|_| None;
-    serialize(&prepared, &[], no_images, &mut SilentReplay)
+    // `request.messages` goes through, not `&[]` -- the shim passed an empty history, so every
+    // conversation serialized to `"messages": []` while its `thinking` declaration and tools were
+    // correct. A request about nothing is exactly what the API rejects.
+    // `LlmRequest` carries `crate::llm::Message`, which is a leaner type than `ChatMessage`: it has
+    // no `id` and no `source`, only a `tool_call_id`. `serialize` reads exactly three of those
+    // fields -- role, content, and the call id -- so the bridge is small and total.
+    // `serialize` reads role, content and the call id; everything else on `ChatMessage` is log
+    // bookkeeping the wire never sees. A `tool` role is the one case where the call id lives in
+    // `source` rather than beside it, so it is placed there.
+    let history: Vec<ChatMessage> = request
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let source = match &message.tool_call_id {
+                Some(call_id) => MessageSource::Tool {
+                    call_id: call_id.clone(),
+                },
+                None => match message.role {
+                    Role::Assistant => MessageSource::Model {
+                        provider: String::new(),
+                        model: String::new(),
+                        replay_state: None,
+                    },
+                    _ => MessageSource::User { form: None },
+                },
+            };
+            ChatMessage::new(
+                // A synthetic id: the wire has no message ids, and `new` requires one. Failure is
+                // unreachable for this format, so the fallback is a constant rather than a panic.
+                MessageId::new(format!("wire-{index}"))
+                    .unwrap_or_else(|_| MessageId::new("wire").expect("a legal id")),
+                // Two `Role` enums exist -- one on the lean request type, one on the log type --
+                // and they are not convertible because the log's has variants the request's cannot
+                // express (system, relay, notice). The three that overlap map directly.
+                role_of(message.role),
+                source,
+                message.content.clone(),
+            )
+        })
+        .collect();
+    serialize(&prepared, &history, no_images, &mut SilentReplay)
 }
 
 /// Builds the envelope upstream's `replayState` writes, for callers and tests assembling history.

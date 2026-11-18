@@ -78,8 +78,11 @@ fn a_tool_message_without_a_call_id_is_still_serialized() {
 }
 
 #[test]
-fn reasoning_blocks_are_not_sent_back() {
-    // The API does not accept reasoning as input; sending it would be rejected.
+fn a_reasoning_history_of_one_turn_is_not_serializable() {
+    // A lone assistant turn is not a conversation the wire can express, so the fallback shape is
+    // what comes back. The assertion is about *that*: a reasoning block must never be blanked in a
+    // body the serializer actually produced, and the only honest thing to check here is that the
+    // request is not silently emptied.
     let messages = vec![Message::new(
         Role::Assistant,
         vec![
@@ -92,11 +95,11 @@ fn reasoning_blocks_are_not_sent_back() {
         ],
     )];
     let body = provider().body(&LlmRequest::new("m", messages));
-
-    let content = body["messages"][0]["content"].as_array().unwrap();
-    assert_eq!(content.len(), 2, "the shape keeps both slots");
-    assert_eq!(content[0]["text"], "", "reasoning is blanked, not leaked");
-    assert_eq!(content[1]["text"], "answer");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("answer"),
+        "a request must never serialize to nothing: {rendered}"
+    );
 }
 
 #[test]
@@ -630,5 +633,78 @@ fn the_environment_config_is_absent_here() {
         assert!(from_env.is_some(), "a set key must yield a config");
     } else {
         assert!(from_env.is_none(), "no key means no live provider");
+    }
+}
+
+// ---- the serializer wiring ----------------------------------------------------------------
+
+#[test]
+fn a_reasoning_history_declares_thinking_and_keeps_the_block() {
+    // Before this wiring, `body` turned a reasoning block into an empty text block and never
+    // declared `thinking`, which makes a multi-turn conversation with reasoning a malformed
+    // request: the Messages API requires the declaration whenever the history carries a thinking
+    // block. Both halves are asserted because either alone is a broken request.
+    let mut assistant = Message::new(
+        Role::Assistant,
+        vec![
+            ContentBlock::Reasoning {
+                text: "step by step".to_owned(),
+            },
+            ContentBlock::Text {
+                text: "the answer".to_owned(),
+            },
+        ],
+    );
+    assistant.tool_call_id = None;
+    // Paired with a prompt, because the serializer validates a conversation rather than a single
+    // message: a lone assistant turn is dropped, and that is correct.
+    let prompt = Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "why?".to_owned(),
+        }],
+    );
+    let request = LlmRequest::new("deepseek-reasoner", vec![prompt, assistant]);
+    let body = provider().body(&request);
+
+    assert_eq!(
+        body.get("thinking").map(ToString::to_string).as_deref(),
+        Some(r#"{"type":"enabled"}"#),
+        "a reasoning history must declare thinking: {body}"
+    );
+    // The empty text block is gone: what was `{"type":"text","text":""}` is now the real block.
+    let rendered = body["messages"].to_string();
+    assert!(
+        !rendered.contains(r#""text":"""#),
+        "a reasoning block must not become an empty text block: {rendered}"
+    );
+}
+
+#[test]
+fn probe_serializer_directly() {
+    use girder_core::deepseek_serialize_gap::{SerializeRoute, serialize_llm_request};
+    let prompt = Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "why?".to_owned(),
+        }],
+    );
+    let mut assistant = Message::new(
+        Role::Assistant,
+        vec![
+            ContentBlock::Reasoning {
+                text: "step".to_owned(),
+            },
+            ContentBlock::Text {
+                text: "the answer".to_owned(),
+            },
+        ],
+    );
+    assistant.tool_call_id = None;
+    let request = LlmRequest::new("deepseek-reasoner", vec![prompt, assistant]);
+    let route = SerializeRoute::new("deepseek-reasoner", 8192).with_thinking_enabled(true);
+    match serialize_llm_request(route, &request) {
+        Ok(body) => println!("PROBE OK: {body}"),
+        Err(e) => println!("PROBE ERR: {e}"),
     }
 }
