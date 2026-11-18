@@ -31,6 +31,12 @@ use crate::tools::{ToolDefinition, ToolResult, ToolRunContext};
 /// 200: enough to see a pattern across a project and far below the point where a model can read the list.
 pub const DEFAULT_LIMIT: usize = 200;
 
+/// How much of one matched line a model is shown.
+///
+/// A single minified line can be hundreds of kilobytes; a preview keeps the match identifiable
+/// without spending the whole budget on one hit.
+pub const GREP_PREVIEW_BYTES: usize = 400;
+
 /// How deep a walk descends before it gives up.
 ///
 /// A guard against a symlink loop, which would otherwise run until the limit happened to stop it.
@@ -394,7 +400,11 @@ fn grep_in_process(
         pattern.to_lowercase()
     };
 
-    let mut matches: Vec<String> = Vec::new();
+    // Matches are collected as records rather than pre-formatted lines, because the presentation
+    // half (`fs_gap`) needs the path, the line number and the text separately: it truncates the
+    // text per line, groups by file, and reports `Found K of N` from the counts it is given.
+    let mut matches: Vec<crate::fs_gap::GrepMatch> = Vec::new();
+    let mut seen: usize = 0;
     let mut truncated = false;
 
     let mut files = Vec::new();
@@ -407,44 +417,49 @@ fn grep_in_process(
     }
 
     for file in files {
-        if matches.len() >= limit {
-            truncated = true;
-            break;
-        }
+        // No early exit on the cap: `seen` has to count every hit in the tree, not the hits before
+        // the first file that filled the page. Stopping here is what made `Found 12 of 100` claim
+        // the tree held 100 when it held 300.
         let Ok(text) = std::fs::read_to_string(&file) else {
             // A binary or unreadable file is skipped rather than reported: the caller asked where a pattern appears,
             // not which files could not be decoded.
             continue;
         };
         for (index, line) in text.lines().enumerate() {
-            if matches.len() >= limit {
-                truncated = true;
-                break;
-            }
             let haystack = if case_sensitive {
                 line.to_owned()
             } else {
                 line.to_lowercase()
             };
-            if haystack.contains(&needle) {
-                matches.push(format!(
-                    "{}:{}:{}",
-                    crate::workspace_path::display(Some(workspace), &file),
-                    index + 1,
-                    line
-                ));
+            if !haystack.contains(&needle) {
+                continue;
             }
+            // Counted before the cap is applied, so `seen` stays a fact about the tree while `kept`
+            // is a fact about the answer. Collapsing them is what makes a model believe a partial
+            // result is complete.
+            seen += 1;
+            if matches.len() >= limit {
+                truncated = true;
+                continue;
+            }
+            matches.push(crate::fs_gap::GrepMatch {
+                path: crate::workspace_path::display(Some(workspace), &file),
+                line_number: index as u64 + 1,
+                line: line.to_owned(),
+            });
         }
     }
 
-    if matches.is_empty() {
-        return ToolResult::text(format!("no matches for `{pattern}`"));
-    }
-    let mut out = matches.join("\n");
-    out.push('\n');
-    if truncated {
-        use std::fmt::Write as _;
-        let _ = write!(out, "\n(stopped after {limit} matches)\n");
-    }
-    ToolResult::text(out)
+    // Through `fs_gap` rather than a local join: that module owns the bounded presentation — the
+    // per-line preview, the file grouping, the `Found K of N` header, and the zero-result wording.
+    // A second join here is what made a truncated search read as a complete one.
+    let mut retained = crate::fs_gap::retain_grep_matches(matches, limit, GREP_PREVIEW_BYTES);
+    // The retainer only sees what was collected, so its `seen` counts the matches it was handed.
+    // The walk above saw more: it counted every hit before the cap bit. The larger number is the
+    // fact about the tree, and the header has to report that one.
+    retained.seen = retained.seen.max(seen as u64);
+    retained.truncated |= truncated;
+    // `format_retained_grep` rather than `format_grep_output`: the former names a zero-result
+    // search as an answer ("No matches found") instead of a count that reads like a failure.
+    ToolResult::text(crate::fs_gap::format_retained_grep(&retained, None))
 }

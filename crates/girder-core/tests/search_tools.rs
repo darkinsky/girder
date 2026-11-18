@@ -164,7 +164,13 @@ async fn a_pattern_is_found_with_its_file_and_line() {
     let out = run_grep(&dir, serde_json::json!({"pattern": "needle"})).await;
 
     assert!(out.contains("a.txt"), "{out}");
-    assert!(out.contains(":2:"), "the line number is one-based: {out}");
+    // The presentation half groups by file and prefixes each hit with `Line N:`, which carries the
+    // same one-based line number the old `a.txt:2:` prefix did.
+    assert!(
+        out.contains("Line 2:"),
+        "the line number is one-based: {out}"
+    );
+    assert!(out.contains("needle here"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -202,7 +208,8 @@ async fn grep_of_no_match_says_so() {
 
     let out = run_grep(&dir, serde_json::json!({"pattern": "absent"})).await;
 
-    assert!(out.contains("no matches"), "{out}");
+    // A zero-result search is an answer, not a failure: `Found 0 matches` reads like the latter.
+    assert!(out.contains("No matches found"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

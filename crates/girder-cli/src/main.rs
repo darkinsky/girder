@@ -667,6 +667,13 @@ fn apply_model_limits(
         .max_tokens
         .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
     girder_core::AgentRuntime::set_model_limits(runtime, resolved.context_window, output);
+    // The route states which modalities it takes. A text-only route given an image does not fail --
+    // it drops the block and answers about what it never saw -- so this is read here rather than
+    // discovered from a provider's complaint.
+    let images = resolved
+        .input_modalities
+        .contains(&girder_core::Modality::Image);
+    girder_core::AgentRuntime::set_accepts_images(runtime, images);
 }
 
 /// Prints how healthy this deployment's sessions are.

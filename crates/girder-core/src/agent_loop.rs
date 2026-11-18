@@ -194,6 +194,13 @@ pub struct LoopContext {
     /// and re-resolving mid-step would let a concurrent model switch change a request that has
     /// already started.
     pub model: String,
+    /// Whether the route accepts image input.
+    ///
+    /// Read from the route's declared modalities at construction rather than assumed: a text-only
+    /// model handed an image does not fail, it silently ignores the block, and then answers a
+    /// question about what it never saw. `content_projection_gap` replaces the image with a
+    /// sentence saying it was omitted and why, which is the only honest option.
+    pub accepts_images: bool,
 
     /// What this turn may spend on tokens.
     ///
@@ -324,6 +331,16 @@ pub struct LoopContext {
 }
 
 impl LoopContext {
+    /// Declares whether the route accepts image input.
+    ///
+    /// Defaults to `false`, which is the safe direction: a text-only route given an image drops it
+    /// silently, so assuming the capability is the error that cannot be noticed.
+    #[must_use]
+    pub fn with_images(mut self, accepts: bool) -> Self {
+        self.accepts_images = accepts;
+        self
+    }
+
     /// Builds a context.
     #[must_use]
     pub fn new(
@@ -340,6 +357,7 @@ impl LoopContext {
             session,
             bus,
             model: model.into(),
+            accepts_images: false,
             agent: None,
             goal: None,
             agent_id,
@@ -1088,7 +1106,15 @@ fn turn_stream<'a>(
             return;
         }
 
-        let request = LlmRequest::new(context.model.clone(), messages.clone())
+        // A route that cannot see images must be told the image is there and omitted, rather than
+        // handed a block it will silently drop. `project_images_for_text_model` does exactly that
+        // replacement, and it is a no-op on a route that accepts images.
+        let projected = if context.accepts_images {
+            messages.clone()
+        } else {
+            crate::content_projection_gap::project_images_for_text_model(messages)
+        };
+        let request = LlmRequest::new(context.model.clone(), projected)
             .with_tools(tool_schemas);
         let stream = match context.provider.stream(request, cancel.clone()).await {
             Ok(stream) => stream,

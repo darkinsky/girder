@@ -144,6 +144,8 @@ pub struct AgentRuntime {
     context_window: Option<u64>,
     /// The output limit to ask for, which is subtracted from the window before the input is measured.
     max_output_tokens: Option<u32>,
+    /// Whether the route accepts image input, read from its declared modalities.
+    accepts_images: bool,
     config: RuntimeConfig,
     /// Where an oversized tool result is saved, when this deployment has storage for it.
     spill: Option<Arc<dyn crate::spill::Store>>,
@@ -253,6 +255,7 @@ impl AgentRuntime {
             // name, and a guessed window would make the budget check refuse requests the model would accept.
             context_window: None,
             max_output_tokens: None,
+            accepts_images: false,
         })
     }
 
@@ -264,6 +267,17 @@ impl AgentRuntime {
         if let Some(inner) = Arc::get_mut(this) {
             inner.context_window = window;
             inner.max_output_tokens = output;
+        }
+    }
+
+    /// Declares whether the route accepts image input.
+    ///
+    /// Separate from [`Self::set_model_limits`] because the two facts come from different parts of a
+    /// route: a limit is a number, a modality is a set. Both are read once at assembly, so the loop
+    /// never has to guess from a provider's error.
+    pub fn set_accepts_images(this: &mut Arc<Self>, accepts: bool) {
+        if let Some(inner) = Arc::get_mut(this) {
+            inner.accepts_images = accepts;
         }
     }
 
@@ -416,6 +430,7 @@ impl AgentRuntime {
             }),
         );
         context.max_turns = self.config.max_turns;
+        context.accepts_images = self.accepts_images;
         context.budget = self.config.token_budget;
         context.spill = self.spill.clone();
         context.spill_limit = self.spill_limit;
