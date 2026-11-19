@@ -2,47 +2,55 @@
 
 Generated from upstream itself: every class extending `TypertRemoteService`, the
 `super(ctx, key, { namespace })` line that names its namespace, and every `@Remote` marker.
+This build's side is read from a running `girder serve`, not from source, so it is what a
+client can actually call.
 
 Upstream: **183** endpoints across **35** namespaces.
-Present here: **67**.
+Present here: **74** (40%).
+
+## By namespace
 
 | Namespace | Upstream | Here | Missing |
 | --- | --- | --- | --- |
-| `forgePanel` | 30 | 0 | 30 |
-| `pluginManager` | 15 | 0 | 15 |
-| `dynamicCordisRunner` | 12 | 0 | 12 |
-| `account` | 11 | 0 | 11 |
-| `schedule` | 9 | 3 | 6 |
-| `speech` | 5 | 0 | 5 |
-| `pluginMarket` | 4 | 0 | 4 |
-| `agentPresets` | 3 | 0 | 3 |
-| `messageFeedback` | 3 | 0 | 3 |
-| `claudeCodeMods` | 2 | 0 | 2 |
-| `cotTranslation` | 2 | 0 | 2 |
-| `mcpManager` | 2 | 0 | 2 |
-| `officeKit` | 2 | 0 | 2 |
-| `productAnalytics` | 2 | 0 | 2 |
+| `forgePanel` — | 30 | 0 | 30 |
+| `pluginManager` — | 15 | 0 | 15 |
+| `dynamicCordisRunner` — | 12 | 0 | 12 |
+| `account` — | 11 | 0 | 11 |
+| `speech` — | 5 | 0 | 5 |
+| `agentPresets` — | 3 | 0 | 3 |
+| `messageFeedback` — | 3 | 0 | 3 |
+| `schedule` | 9 | 6 | 3 |
+| `claudeCodeMods` — | 2 | 0 | 2 |
+| `cotTranslation` — | 2 | 0 | 2 |
+| `mcpManager` — | 2 | 0 | 2 |
+| `officeKit` — | 2 | 0 | 2 |
+| `productAnalytics` — | 2 | 0 | 2 |
 | `settings` | 5 | 3 | 2 |
-| `subagents` | 2 | 0 | 2 |
+| `subagents` — | 2 | 0 | 2 |
 | `terminal` | 8 | 6 | 2 |
-| `actionCards` | 1 | 0 | 1 |
-| `agentTeams` | 1 | 0 | 1 |
-| `fileUploads` | 1 | 0 | 1 |
-| `permissionPresets` | 1 | 0 | 1 |
-| `pluginInventory` | 1 | 0 | 1 |
-| `pluginRecommendations` | 1 | 0 | 1 |
-| `pluginRegistryProbe` | 1 | 0 | 1 |
-| `sessionFeedback` | 1 | 0 | 1 |
-| `sessionReferenceResolver` | 1 | 0 | 1 |
-| `web` | 1 | 0 | 1 |
+| `actionCards` — | 1 | 0 | 1 |
+| `agentTeams` — | 1 | 0 | 1 |
+| `fileUploads` — | 1 | 0 | 1 |
+| `permissionPresets` — | 1 | 0 | 1 |
+| `pluginInventory` — | 1 | 0 | 1 |
+| `pluginRecommendations` — | 1 | 0 | 1 |
+| `pluginRegistryProbe` — | 1 | 0 | 1 |
+| `sessionFeedback` — | 1 | 0 | 1 |
+| `sessionReferenceResolver` — | 1 | 0 | 1 |
+| `web` — | 1 | 0 | 1 |
 | `workspace` | 10 | 9 | 1 |
 | `commands` ✓ | 2 | 2 | 0 |
 | `goals` ✓ | 7 | 7 | 0 |
 | `job` ✓ | 3 | 3 | 0 |
 | `llm` ✓ | 3 | 3 | 0 |
+| `pluginMarket` ✓ | 4 | 4 | 0 |
 | `session` ✓ | 24 | 24 | 0 |
 | `userQuestions` ✓ | 1 | 1 | 0 |
 | `workspaceFiles` ✓ | 6 | 6 | 0 |
+
+`✓` fully aligned (8): `commands`, `goals`, `job`, `llm`, `pluginMarket`, `session`, `userQuestions`, `workspaceFiles`
+
+`—` no implementation (23): `account`, `actionCards`, `agentPresets`, `agentTeams`, `claudeCodeMods`, `cotTranslation`, `dynamicCordisRunner`, `fileUploads`, `forgePanel`, `mcpManager`, `messageFeedback`, `officeKit`, `permissionPresets`, `pluginInventory`, `pluginManager`, `pluginRecommendations`, `pluginRegistryProbe`, `productAnalytics`, `sessionFeedback`, `sessionReferenceResolver`, `speech`, `subagents`, `web`
 
 ## Missing endpoints
 
@@ -178,13 +186,6 @@ Present here: **67**.
 - `pluginManager.updateBundle`
 - `pluginManager.waitForInstall`
 
-### `pluginMarket` (4)
-
-- `pluginMarket.listIndexes`
-- `pluginMarket.readEntryDetail`
-- `pluginMarket.search`
-- `pluginMarket.setIndexes`
-
 ### `pluginRecommendations` (1)
 
 - `pluginRecommendations.describe`
@@ -198,11 +199,8 @@ Present here: **67**.
 - `productAnalytics.enabled`
 - `productAnalytics.report`
 
-### `schedule` (6)
+### `schedule` (3)
 
-- `schedule.catalog`
-- `schedule.deleteInactive`
-- `schedule.deliveryLimits`
 - `schedule.edit`
 - `schedule.history`
 - `schedule.run`
@@ -271,13 +269,6 @@ difference stays visible rather than being discovered by a client.
 ### `remote`
 
 - `remote.mux`
-
-### `schedule`
-
-- `schedule.delete`
-- `schedule.get`
-- `schedule.pause`
-- `schedule.resume`
 
 ### `session`
 

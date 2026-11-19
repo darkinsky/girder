@@ -7,15 +7,21 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: 66 Remote methods, 31 tools, 3 slash commands, 2,962 tests.** `girder "…"` talks to a
-> DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`) is set and falls back to a
-> scripted provider otherwise, saying which on stderr. The live path is **tested against a mock server,
-> not the real API** — no key exists in this environment, so the wire format is exercised rather than the
-> service.
+> **Status: 104 Remote methods across 35 namespaces, 32 tools, 10,312 tests, 20.6 MB release binary.**
+> `girder "…"` talks to a DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`) is
+> set and falls back to a scripted provider otherwise, saying which on stderr. The live path is
+> **tested against a mock server, not the real API** — no key exists in this environment, so the wire
+> format is exercised rather than the service.
 >
-> Measured against upstream's backend (243,536 lines, excluding `client`, `test-support`, and
-> `experimental`): **26%** by line count and **42%** of the Remote methods. The gap is concentrated in
-> three places, listed at the end of this file rather than left for a reader to discover.
+> Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
+> `@Remote` markers and this build's running server): **74 of 183 endpoints aligned (40%)**, with **8 of
+> 35 namespaces complete**. 230,051 lines of Rust against upstream's ~243,000 in-scope lines.
+>
+> The 40% is not a backlog number. Four namespaces account for 68 of the 109 missing endpoints, and two
+> of them are blocked by a design decision rather than by work: upstream's plugin manager and its
+> dynamic runner read the Cordis entry tree, which this port replaced with `ServiceKey`. That boundary
+> is stated in [`docs/status.md`](docs/status.md) rather than left in the missing list, because a reader
+> deserves to know which gaps close and which do not.
 
 ## Why this repository starts with a plan
 
