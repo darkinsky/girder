@@ -154,6 +154,7 @@ pub mod core_final_gap;
 pub mod deepseek_files_gap;
 pub mod deepseek_options_gap;
 pub mod deepseek_serialize_gap;
+pub mod default_model;
 pub mod hmr_gap;
 mod home_paths;
 pub mod host_gap;

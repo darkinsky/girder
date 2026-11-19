@@ -1495,9 +1495,13 @@ async fn every_constructor_serves_the_same_session_methods() {
     let b = session_methods(&with_runtime);
     let c = session_methods(&plain);
 
-    // The runtime path serves everything except the two model methods, which need a route table.
+    // The runtime path serves everything except the methods that need a route table: two that read
+    // it and one that chooses a default from it. All three answer about a catalogue, so a
+    // constructor without one cannot serve them.
     let mut expected = a.clone();
-    expected.retain(|method| method != "modelCatalog" && method != "selectModel");
+    expected.retain(|method| {
+        method != "modelCatalog" && method != "selectModel" && method != "initializeDefaultModel"
+    });
     assert_eq!(
         b, expected,
         "the runtime path must match the routes path minus the model methods"

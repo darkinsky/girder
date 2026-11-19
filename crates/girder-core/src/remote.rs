@@ -1996,6 +1996,33 @@ pub fn register_select_model(
     routes: &Arc<crate::providers::RouteRegistry>,
 ) {
     let routes = Arc::clone(routes);
+    // `session.initializeDefaultModel`: choose a default when the deployment has none. Idempotent
+    // against a configured deployment, and an error rather than a no-op when nothing can serve a
+    // model -- both of which are upstream's behaviour and both of which a client depends on.
+    let init_routes = Arc::clone(&routes);
+    registry.register(
+        "session",
+        "initializeDefaultModel",
+        move |_call: RemoteCall| {
+            let routes = Arc::clone(&init_routes);
+            Box::pin(async move {
+                if crate::default_model::is_configured(&routes) {
+                    // Already configured: return without touching the operator's choice.
+                    return Ok(serde_json::json!({ "initialized": false }));
+                }
+                let selection = crate::default_model::choose_selection(
+                    &routes,
+                    crate::default_model::PREFERRED_PROVIDER,
+                )
+                .map_err(|error| RemoteError::Failed(error.to_string()))?;
+                Ok(serde_json::json!({
+                    "initialized": true,
+                    "selection": selection.to_wire(),
+                }))
+            })
+        },
+    );
+
     registry.register("session", "selectModel", move |call: RemoteCall| {
         let routes = Arc::clone(&routes);
         Box::pin(async move {

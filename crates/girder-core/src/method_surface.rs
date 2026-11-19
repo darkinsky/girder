@@ -190,6 +190,13 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // Chooses a default model when the deployment has none. Idempotent against a configured
+        // deployment, and an error rather than a no-op when nothing can serve a model.
+        method: "session.initializeDefaultModel",
+        registration: "register_session_core",
+        capability: Some("RouteRegistry"),
+    },
+    Declared {
         // One observation plus the stopping decision. Upstream's `wait` loops an observation until
         // the decision is terminal; here a client calls again, which keeps a long-lived request off
         // this transport.
