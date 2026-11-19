@@ -299,6 +299,14 @@ pub struct LoopContext {
     pub depth: crate::subagent::Depth,
     /// How many nested delegations this agent may make.
     pub max_depth: u32,
+    /// The provider/model routes a subagent may be given.
+    ///
+    /// Empty means "any route the parent uses", which is this build's behaviour when nothing is
+    /// configured: a child that inherits its parent's model needs no allowlist. A non-empty list is
+    /// the deployment's statement of which routes delegation may target, validated at startup by
+    /// `subagent_final_gap::assert_allowed_routes` so a malformed entry fails the boot rather than a
+    /// delegation.
+    pub subagent_models: Vec<crate::subagent_final_gap::AllowedModelRoute>,
     /// Counter for minting message ids.
     ///
     /// A message id must be unique within a session, and a loop-local counter is enough: two loops
@@ -364,6 +372,7 @@ impl LoopContext {
             max_turns: 16,
             depth: crate::subagent::Depth::root(),
             max_depth: 2,
+            subagent_models: Vec::new(),
             message_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             record_prompt: true,
             first_turn: 1,

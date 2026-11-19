@@ -82,6 +82,16 @@ struct Cli {
     /// How many nested subagent delegations are allowed.
     #[arg(long, default_value_t = 2)]
     max_depth: u32,
+
+    /// Provider/model routes a subagent may be given, as `provider/model` pairs.
+    ///
+    /// Each pair is validated through `subagent_final_gap::assert_allowed_routes`, which refuses a
+    /// duplicate, an empty half, or a malformed entry. **Refusing at startup rather than at the first
+    /// delegation** is the point: a deployment that mistyped a route would otherwise discover it when
+    /// a model asked to delegate, and the failure would arrive as a tool error attributed to the
+    /// subagent instead of to the configuration.
+    #[arg(long = "subagent-model", value_name = "PROVIDER/MODEL")]
+    subagent_models: Vec<String>,
 }
 
 /// Subcommands.
@@ -130,6 +140,13 @@ enum Mode {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut cli = Cli::parse();
+    // **Validated here rather than where the routes are used.** `run_prompt` sets them on the loop
+    // context, but `serve` never builds one -- so a bad route would start a server that silently
+    // ignores the flag, and the operator would learn nothing. A flag that cannot take effect is still
+    // a flag the caller gave, and a malformed one is worth refusing before any work begins.
+    // The result is discarded here: this call exists so a malformed route fails *any* mode's
+    // startup, including `serve`, which never builds a loop context to put routes on.
+    validate_subagent_models(&cli.subagent_models)?;
 
     let mode = match (cli.command.take(), cli.prompt.clone()) {
         (Some(Command::Serve { bind, watch }), _) => Mode::Serve { bind, watch },
@@ -1933,6 +1950,33 @@ fn resolve_provider(cli: &Cli) -> Arc<dyn girder_core::LlmProvider> {
 }
 
 /// Runs one prompt through the loop and prints the answer.
+/// Parses and validates `--subagent-model` values.
+///
+/// Each is `PROVIDER/MODEL`. The split is on the **first** `/` because a model id may contain one
+/// (`org/model`) while a provider id does not; splitting on the last would put the org into the
+/// provider and silently target a route nobody configured.
+///
+/// # Errors
+///
+/// A value with no `/`, or a route set `assert_allowed_routes` refuses: an empty half, or a duplicate.
+fn validate_subagent_models(
+    specs: &[String],
+) -> Result<Vec<girder_core::subagent_final_gap::AllowedModelRoute>> {
+    let routes = specs
+        .iter()
+        .map(|spec| {
+            let (provider, model) = spec.split_once('/').ok_or_else(|| {
+                anyhow::anyhow!("`--subagent-model {spec}` must be PROVIDER/MODEL")
+            })?;
+            girder_core::subagent_final_gap::AllowedModelRoute::new(provider, model)
+                .map_err(|error| anyhow::anyhow!("`--subagent-model {spec}`: {error}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    girder_core::subagent_final_gap::assert_allowed_routes(&routes)
+        .map_err(|error| anyhow::anyhow!("`--subagent-model`: {error}"))?;
+    Ok(routes)
+}
+
 async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     // Ctrl-C cancels the loop; every seam below takes the token explicitly.
     let cancel = CancellationToken::new();
@@ -1974,6 +2018,11 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     );
     context.max_turns = cli.max_turns;
     context.max_depth = cli.max_depth;
+    // Validated once, at startup. The routes are parsed into the typed form the module owns rather
+    // than kept as strings: `assert_allowed_routes` is what refuses a duplicate or an empty half, and
+    // running it here is what turns a mistyped route into a startup failure instead of a tool error
+    // attributed to whichever subagent happened to be asked first.
+    context.subagent_models = validate_subagent_models(&cli.subagent_models)?;
     let context = Arc::new(context);
 
     // Registered after the context exists because the tool delegates *from* it. `register` takes

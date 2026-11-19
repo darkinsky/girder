@@ -629,7 +629,7 @@ pub fn unparsed(events: &[SessionEvent]) -> usize {
 mod header_of_tests {
     use super::*;
 
-    fn header_event(config: serde_json::Value) -> SessionEvent {
+    fn header_event(config: &serde_json::Value) -> SessionEvent {
         SessionEvent::RequestHeader {
             header: serde_json::json!({ "config": config }),
         }
@@ -639,8 +639,8 @@ mod header_of_tests {
     fn the_last_header_wins() {
         // The fold's contract: a resumed or changed request supersedes the earlier one.
         let events = vec![
-            header_event(serde_json::json!({ "provider": "a", "model": "one" })),
-            header_event(serde_json::json!({ "provider": "b", "model": "two" })),
+            header_event(&serde_json::json!({ "provider": "a", "model": "one" })),
+            header_event(&serde_json::json!({ "provider": "b", "model": "two" })),
         ];
         let header = request_header_of(&events).expect("a header");
         assert_eq!(header.config.provider, "b");
@@ -661,7 +661,7 @@ mod header_of_tests {
             SessionEvent::RequestHeader {
                 header: serde_json::json!({ "not": "a header" }),
             },
-            header_event(serde_json::json!({ "provider": "a", "model": "one" })),
+            header_event(&serde_json::json!({ "provider": "a", "model": "one" })),
         ];
         assert_eq!(unparsed(&events), 1);
         assert!(request_header_of(&events).is_some());
