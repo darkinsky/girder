@@ -21,16 +21,17 @@ them against a running `girder serve`:
 
 | | Count |
 | --- | --- |
-| Upstream endpoints | 183 |
-| Served here | 74 (40%) |
-| Namespaces fully aligned | 8 of 35 |
-| Namespaces with nothing | 23 of 35 |
+| Upstream endpoints, in scope | 126 |
+| Served here | 74 (**58%**) |
+| Namespaces fully aligned | 8 of 25 |
+| Namespaces with nothing | 13 of 25 |
 
 Fully aligned: `commands`, `goals`, `job`, `llm`, `pluginMarket`, `session`, `userQuestions`,
 `workspaceFiles`.
 
-That 40% is the honest number and it is lower than the line count suggests. The reason is in the
-next section.
+Scope matters more than it looks: an earlier version of this file counted 183 endpoints across 35
+namespaces because it included `client`, `experimental` and `extensions`, which the plan excludes.
+The 58% is measured against what the plan actually promised.
 
 ## Why lines and endpoints disagree
 
@@ -46,24 +47,26 @@ pass their own tests.
 
 ## What is blocked, and by what
 
-The largest gaps are not "not yet done". Four namespaces account for 68 of the 109 missing endpoints,
-and each needs something this build deliberately does not have:
+Most of the 52 missing endpoints are ordinary backlog: `account` (11) needs an account backend,
+`agentPresets` (3) needs a preset registry, `mcpManager` (2) needs MCP server transport. Work, not
+blockage.
 
-| Namespace | Missing | Blocked by |
+**Two namespaces are a boundary instead**, and the distinction is measured rather than assumed:
+
+| Namespace | Missing | Entry-tree uses |
 | --- | --- | --- |
-| `forgePanel` | 30 | A Git forge: network, authentication, worktrees |
-| `pluginManager` | 15 | **The Cordis entry tree** — 12 uses of `composeEntries`, `readProfilePatches`, `ctx.loader.entries()` |
-| `dynamicCordisRunner` | 12 | **The Cordis runtime** |
-| `account` | 11 | An account backend: sign-in, balance, notifications |
+| `pluginManager` | 15 | 22 |
+| `pluginInventory` | 1 | 4 |
 
-The two Cordis ones are the important entry. This port **replaced** Cordis with `ServiceKey` +
-`Fiber` + `EventBus` + `Registry` (~1,900 lines against upstream's 2,811), which was a design
-decision made at the start. A plugin manager that reads the entry tree cannot be ported onto a
-substrate that has no tree: the port would have to invent one, and then the read-only reasons it
-computes (`management-required`, `unaddressable`) would describe a tree nobody has.
+Both read `ctx.loader.entries()`, `composeEntries` or `readProfilePatches`. This port **replaced**
+Cordis with `ServiceKey` + `Fiber` + `EventBus` + `Registry` (~1,900 lines against upstream's 2,811),
+which was a decision made at the start. A plugin manager that enumerates the entry tree cannot be
+ported onto a substrate that has no tree: a port would have to invent one, and then the read-only
+reasons it computes (`management-required`, `unaddressable`) would describe a tree nobody has.
 
-That is the same conclusion `boot_loader_gap` reached independently. It is a boundary of the
-substitution, not a backlog item — and no amount of further porting moves it.
+`boot_loader_gap` reached the same conclusion independently. Counting the uses is what turns it from
+an assumption into a finding — and it also shows `pluginMarket`, which sits beside `pluginManager`,
+has zero, so the boundary is those two packages rather than "plugins".
 
 ## The defect class this series kept finding
 

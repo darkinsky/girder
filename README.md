@@ -14,14 +14,15 @@ consumers, and stay out of the way.
 > format is exercised rather than the service.
 >
 > Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
-> `@Remote` markers and this build's running server): **74 of 183 endpoints aligned (40%)**, with **8 of
-> 35 namespaces complete**. 230,051 lines of Rust against upstream's ~243,000 in-scope lines.
+> `@Remote` markers and this build's running server, in-scope packages only): **74 of 126 endpoints
+> aligned (58%)**, with **8 of 25 namespaces complete**. 230,051 lines of Rust against upstream's
+> ~243,000 in-scope lines.
 >
-> The 40% is not a backlog number. Four namespaces account for 68 of the 109 missing endpoints, and two
-> of them are blocked by a design decision rather than by work: upstream's plugin manager and its
-> dynamic runner read the Cordis entry tree, which this port replaced with `ServiceKey`. That boundary
-> is stated in [`docs/status.md`](docs/status.md) rather than left in the missing list, because a reader
-> deserves to know which gaps close and which do not.
+> Most of the 52 missing endpoints are ordinary work. **Two namespaces are a boundary instead**:
+> `pluginManager` and `pluginInventory` read the Cordis entry tree (22 and 4 uses), which this port
+> replaced with `ServiceKey` by design. A port would have to invent the tree. That distinction — and
+> the count that establishes it — is in [`docs/status.md`](docs/status.md), because a reader deserves
+> to know which gaps close and which do not.
 
 ## Why this repository starts with a plan
 
