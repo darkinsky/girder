@@ -1,50 +1,48 @@
 # Port map: upstream Remote endpoints vs this build
 
-Generated from `packages/**/src/index.ts` — every class extending `TypertRemoteService`,
-its `super(ctx, key, { namespace })` line, and every `@Remote` marker.
+Generated from upstream itself: every class extending `TypertRemoteService`, the
+`super(ctx, key, { namespace })` line that names its namespace, and every `@Remote` marker.
 
-Upstream: **187** endpoints across **37** namespaces.
-Present here: **37**.
+Upstream: **183** endpoints across **35** namespaces.
+Present here: **67**.
 
 | Namespace | Upstream | Here | Missing |
 | --- | --- | --- | --- |
-| `account` | 11 | 0 | 11 |
-| `actionCards` | 1 | 0 | 1 |
-| `agentPresets` | 3 | 0 | 3 |
-| `agentTeams` | 1 | 0 | 1 |
-| `claudeCodeMods` | 2 | 0 | 2 |
-| `commands` | 2 | 0 | 2 |
-| `cotTranslation` | 2 | 0 | 2 |
-| `dynamicCordisRunner` | 12 | 0 | 12 |
-| `fileUploads` | 1 | 0 | 1 |
 | `forgePanel` | 30 | 0 | 30 |
-| `goals` | 7 | 0 | 7 |
-| `job` | 3 | 3 | 0 |
-| `llm` | 3 | 0 | 3 |
-| `mcpManager` | 2 | 0 | 2 |
-| `messageFeedback` | 3 | 0 | 3 |
-| `officeKit` | 2 | 0 | 2 |
-| `permissionPresets` | 1 | 0 | 1 |
-| `pluginInventory` | 1 | 0 | 1 |
 | `pluginManager` | 15 | 0 | 15 |
-| `pluginMarket` | 4 | 0 | 4 |
-| `pluginRecommendations` | 1 | 0 | 1 |
-| `pluginRegistryProbe` | 1 | 0 | 1 |
-| `productAnalytics` | 2 | 0 | 2 |
-| `remoteAccess` | 1 | 0 | 1 |
+| `dynamicCordisRunner` | 12 | 0 | 12 |
+| `account` | 11 | 0 | 11 |
 | `schedule` | 9 | 3 | 6 |
-| `session` | 25 | 19 | 6 |
-| `sessionFeedback` | 1 | 0 | 1 |
-| `sessionReferenceResolver` | 1 | 0 | 1 |
-| `settings` | 5 | 3 | 2 |
 | `speech` | 5 | 0 | 5 |
+| `pluginMarket` | 4 | 0 | 4 |
+| `agentPresets` | 3 | 0 | 3 |
+| `messageFeedback` | 3 | 0 | 3 |
+| `claudeCodeMods` | 2 | 0 | 2 |
+| `cotTranslation` | 2 | 0 | 2 |
+| `mcpManager` | 2 | 0 | 2 |
+| `officeKit` | 2 | 0 | 2 |
+| `productAnalytics` | 2 | 0 | 2 |
+| `settings` | 5 | 3 | 2 |
 | `subagents` | 2 | 0 | 2 |
 | `terminal` | 8 | 6 | 2 |
-| `toolResults` | 1 | 0 | 1 |
-| `userQuestions` | 2 | 1 | 1 |
+| `actionCards` | 1 | 0 | 1 |
+| `agentTeams` | 1 | 0 | 1 |
+| `fileUploads` | 1 | 0 | 1 |
+| `permissionPresets` | 1 | 0 | 1 |
+| `pluginInventory` | 1 | 0 | 1 |
+| `pluginRecommendations` | 1 | 0 | 1 |
+| `pluginRegistryProbe` | 1 | 0 | 1 |
+| `sessionFeedback` | 1 | 0 | 1 |
+| `sessionReferenceResolver` | 1 | 0 | 1 |
 | `web` | 1 | 0 | 1 |
-| `workspace` | 10 | 2 | 8 |
-| `workspaceFiles` | 6 | 0 | 6 |
+| `workspace` | 10 | 9 | 1 |
+| `commands` ✓ | 2 | 2 | 0 |
+| `goals` ✓ | 7 | 7 | 0 |
+| `job` ✓ | 3 | 3 | 0 |
+| `llm` ✓ | 3 | 3 | 0 |
+| `session` ✓ | 24 | 24 | 0 |
+| `userQuestions` ✓ | 1 | 1 | 0 |
+| `workspaceFiles` ✓ | 6 | 6 | 0 |
 
 ## Missing endpoints
 
@@ -80,11 +78,6 @@ Present here: **37**.
 
 - `claudeCodeMods.pressBand`
 - `claudeCodeMods.watchBand`
-
-### `commands` (2)
-
-- `commands.execute`
-- `commands.list`
 
 ### `cotTranslation` (2)
 
@@ -142,22 +135,6 @@ Present here: **37**.
 - `forgePanel.track`
 - `forgePanel.updateBranch`
 - `forgePanel.worktreeCleanup`
-
-### `goals` (7)
-
-- `goals.clear`
-- `goals.complete`
-- `goals.create`
-- `goals.edit`
-- `goals.get`
-- `goals.pause`
-- `goals.resume`
-
-### `llm` (3)
-
-- `llm.discoverModels`
-- `llm.listConfigurableProviders`
-- `llm.listProviders`
 
 ### `mcpManager` (2)
 
@@ -221,10 +198,6 @@ Present here: **37**.
 - `productAnalytics.enabled`
 - `productAnalytics.report`
 
-### `remoteAccess` (1)
-
-- `remoteAccess.if`
-
 ### `schedule` (6)
 
 - `schedule.catalog`
@@ -233,15 +206,6 @@ Present here: **37**.
 - `schedule.edit`
 - `schedule.history`
 - `schedule.run`
-
-### `session` (6)
-
-- `session.initializeDefaultModel`
-- `session.observeEvent`
-- `session.observeProjections`
-- `session.observeState`
-- `session.switch`
-- `session.wait`
 
 ### `sessionFeedback` (1)
 
@@ -274,35 +238,88 @@ Present here: **37**.
 - `terminal.rename`
 - `terminal.retain`
 
-### `toolResults` (1)
-
-- `toolResults.if`
-
-### `userQuestions` (1)
-
-- `userQuestions.if`
-
 ### `web` (1)
 
 - `web.listProviders`
 
-### `workspace` (8)
+### `workspace` (1)
 
-- `workspace.archiveSession`
 - `workspace.initializeDefault`
-- `workspace.insertBefore`
-- `workspace.insertSessionBefore`
-- `workspace.pinSession`
-- `workspace.rename`
-- `workspace.unarchiveSession`
-- `workspace.unpinSession`
 
-### `workspaceFiles` (6)
+## Endpoints upstream does not serve
 
-- `workspaceFiles.changes`
-- `workspaceFiles.list`
-- `workspaceFiles.read`
-- `workspaceFiles.readBytes`
-- `workspaceFiles.search`
-- `workspaceFiles.stat`
+Each is either a rename still to make or a capability this build added. Listed so the
+difference stays visible rather than being discovered by a client.
+
+### `extension`
+
+- `extension.activate`
+- `extension.approve`
+- `extension.deactivate`
+- `extension.list`
+- `extension.status`
+
+### `goals`
+
+- `goals.list`
+
+### `host`
+
+- `host.openPath`
+- `host.revealInFileManager`
+
+### `remote`
+
+- `remote.mux`
+
+### `schedule`
+
+- `schedule.delete`
+- `schedule.get`
+- `schedule.pause`
+- `schedule.resume`
+
+### `session`
+
+- `session.archive`
+- `session.delete`
+- `session.duplicate`
+- `session.export`
+- `session.resume`
+- `session.stream`
+- `session.version`
+- `session.workspaceDesktop`
+
+### `settings`
+
+- `settings.delete`
+- `settings.get`
+- `settings.json`
+- `settings.list`
+- `settings.set`
+
+### `team`
+
+- `team.checkTaskGraph`
+
+### `terminal`
+
+- `terminal.read`
+- `terminal.send`
+
+### `userQuestions`
+
+- `userQuestions.cancel`
+- `userQuestions.list`
+
+### `workflow`
+
+- `workflow.cancel`
+- `workflow.get`
+- `workflow.list`
+- `workflow.start`
+
+### `workspace`
+
+- `workspace.list`
 

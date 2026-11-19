@@ -176,6 +176,63 @@ impl RemoteService for LlmRuntimeKey {
     }
 }
 
+/// An adapter that answers from the route table this deployment built.
+///
+/// Upstream's `LlmRuntime` receives adapters through `registerAdapter`, and each adapter knows its
+/// own provider's facts. This build's facts live in the route table, so the adapter reads it rather
+/// than duplicating it: a second copy would be a second answer to "what models does this provider
+/// serve", and the two would drift the first time a route changed.
+struct RouteTableAdapter {
+    routes: Arc<crate::providers::RouteRegistry>,
+}
+
+impl crate::llm_final_gap::Adapter for RouteTableAdapter {
+    fn provider_info(&self, provider: &str) -> ProviderInfo {
+        // The route's display name when it has one, else the id. `ProviderInfo::named` is the
+        // default for a provider with no marketing name, which is most of them.
+        // `named` sets id and name to the same string, and the runtime refuses an adapter whose
+        // metadata does not preserve the provider id. So the id is the provider and the display name
+        // is what a selector shows -- which is the distinction upstream's `{ ...provider }` spread
+        // carries.
+        let mut info = ProviderInfo::named(provider);
+        if let Ok(route) = self.routes.get(provider) {
+            if !route.display_name.is_empty() {
+                info.name = route.display_name.clone();
+            }
+        }
+        info
+    }
+}
+
+/// Builds a runtime from the routes this deployment registered.
+///
+/// The `llm.*` surface answers about adapters, so a runtime with none would answer `[]` for every
+/// call -- correct and useless. Registering one adapter per route is what makes
+/// `llm.listProviders` report what this deployment actually serves.
+///
+/// # Errors
+///
+/// The registration error for a route the runtime refuses, which is a fact about the route rather
+/// than about the caller.
+pub fn runtime_from_routes(
+    routes: &Arc<crate::providers::RouteRegistry>,
+) -> Result<Arc<Runtime>, crate::llm_final_gap::RuntimeError> {
+    let mut runtime = Runtime::new();
+    for name in routes.names() {
+        let adapter: Arc<dyn crate::llm_final_gap::Adapter> = Arc::new(RouteTableAdapter {
+            routes: Arc::clone(routes),
+        });
+        // One adapter per route, each claiming only its own provider. An adapter that claimed every
+        // route would answer for a provider it knows nothing about.
+        let providers = [name.as_str()];
+        let handle = runtime.register_adapter(&providers, adapter)?;
+        // The handle is dropped deliberately: it exists to withdraw a registration, and this runtime
+        // lives as long as the server does.
+        drop(handle);
+    }
+    Ok(Arc::new(runtime))
+}
+
 /// Registers `llm.*`.
 ///
 /// # Errors

@@ -496,7 +496,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
     // Browsing a workspace: the same filesystem the tools use, so a client sees what a model sees.
     let fs: Arc<dyn girder_core::FileSystem> = Arc::new(girder_core::LocalFileSystem);
-    register_workspace_file_surface(&mut remote, &fs, &workspaces);
+    register_workspace_file_surface(&mut remote, &fs, &workspaces, &routes);
 
     // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
     // the catalog does not show.
@@ -748,6 +748,7 @@ fn register_workspace_file_surface(
     remote: &mut girder_core::RemoteRegistry,
     fs: &Arc<dyn girder_core::FileSystem>,
     workspaces: &Arc<girder_core::api_config::WorkspaceRegistry>,
+    routes: &Arc<girder_core::RouteRegistry>,
 ) {
     // Settings share this function rather than `serve` because they are the other half of what a client configures --
     // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
@@ -762,6 +763,15 @@ fn register_workspace_file_surface(
     // held all seven of upstream's mutations since it was written and nothing called it, so
     // `workspace.rename` and `workspace.archiveSession` were declared in the schema and absent from
     // the server.
+    // `llm.*`: the runtime answers about the adapters this deployment registered. Built here
+    // rather than in `serve` because it is one more thing a client can ask about, and `serve` is at
+    // the length the linter enforces.
+    match girder_core::llm_remote::runtime_from_routes(routes) {
+        Ok(runtime) => {
+            let _ = girder_core::register_llm_remote(remote, &runtime);
+        }
+        Err(error) => eprintln!("[llm] runtime not built: {error}"),
+    }
     girder_core::register_workspace_extra_methods(
         remote,
         workspaces,
