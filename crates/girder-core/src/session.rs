@@ -329,6 +329,21 @@ pub enum SessionEvent {
         updated_at: i64,
     },
 
+    /// A remark about the session as a whole.
+    ///
+    /// Upstream's `feedback/record`, from `packages/feedback/command-feedback`. Distinct from
+    /// [`Self::MessageFeedbackPut`] in what it answers about: this is "something about this session",
+    /// with no message to attach to, which is what the `/feedback` command writes.
+    #[serde(rename = "feedback/record")]
+    SessionFeedbackRecord {
+        /// The remark, omitted when only a category was given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        /// A category, when the caller supplied one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
+    },
+
     /// A message's feedback was withdrawn.
     ///
     /// Upstream's `feedback/message-delete`. A separate event rather than a tombstone: the log is
@@ -366,6 +381,7 @@ impl SessionEvent {
             Self::LlmRetry { .. } => "llm/retry",
             Self::MessageFeedbackPut { .. } => "feedback/message-put",
             Self::MessageFeedbackDelete { .. } => "feedback/message-delete",
+            Self::SessionFeedbackRecord { .. } => "feedback/record",
         }
     }
 
@@ -395,7 +411,8 @@ impl SessionEvent {
             // turn that produced the message, so attributing it to one would be a claim the event
             // does not make.
             | Self::MessageFeedbackPut { .. }
-            | Self::MessageFeedbackDelete { .. } => None,
+            | Self::MessageFeedbackDelete { .. }
+            | Self::SessionFeedbackRecord { .. } => None,
         }
     }
 }

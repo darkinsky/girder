@@ -772,10 +772,17 @@ fn register_workspace_file_surface(
         }
         Err(error) => eprintln!("[llm] runtime not built: {error}"),
     }
+    // `agentPresets.*`: the capability sets a session may start from. This build's presets name
+    // tools and a model rather than a Cordis plugin list, which is stated in the module.
+    girder_core::agent_presets::register_agent_preset_methods(
+        remote,
+        &girder_core::agent_presets::default_registry(),
+    );
     // `messageFeedback.*`: feedback is a log event, so `list` replays and `put`/`delete` need a
     // store this deployment's catalog does not hold -- they answer `store_unavailable` rather than
     // claiming a write.
     girder_core::message_feedback::register_message_feedback_methods(remote, &session_catalog());
+    girder_core::message_feedback::register_session_feedback_methods(remote, &session_catalog());
     // `web.listProviders`: the search and fetch endpoints this deployment registered. Empty when it
     // has none, which is the honest answer rather than an absent method.
     girder_core::web_rpc::register_web_methods(

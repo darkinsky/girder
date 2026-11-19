@@ -379,6 +379,46 @@ pub fn register_message_feedback_methods(
     });
 }
 
+/// Registers `sessionFeedback.record`.
+///
+/// A separate namespace from [`NAMESPACE`] because upstream keeps them apart: message feedback
+/// answers about one message, session feedback about the conversation. A client that merged them
+/// would attach a remark about the session to whichever message happened to be last.
+pub fn register_session_feedback_methods(
+    registry: &mut RemoteRegistry,
+    catalog: &std::sync::Arc<dyn crate::remote::SessionCatalog>,
+) {
+    let listing = std::sync::Arc::clone(catalog);
+    registry.register(SESSION_FEEDBACK_NAMESPACE, "record", move |call: RemoteCall| {
+        let catalog = std::sync::Arc::clone(&listing);
+        Box::pin(async move {
+            let session_id = string_arg(&call.args, "sessionId", "record")?;
+            // Upstream answers `session-not-found` as a result rather than an error: the call
+            // reached a server that does not have that session, which is an answer.
+            if catalog.read(&session_id).await.is_none() {
+                return Ok(json!({
+                    "ok": false,
+                    "error": { "code": "session-not-found", "sessionId": session_id },
+                }));
+            }
+            let text = call.args.get("text").and_then(Value::as_str);
+            let category = call.args.get("category").and_then(Value::as_str);
+            if let Err(refusal) = validate(&session_id, text, category) {
+                return Ok(refusal_to_wire(refusal));
+            }
+            // Appending needs a store the catalogue does not hold; answered rather than claimed.
+            Ok(json!({
+                "ok": false,
+                "code": "store_unavailable",
+                "message": "this deployment's session catalog cannot append; supply a store to enable feedback",
+            }))
+        })
+    });
+}
+
+/// The namespace session-level feedback registers under.
+pub const SESSION_FEEDBACK_NAMESPACE: &str = "sessionFeedback";
+
 /// Reads a required string argument.
 fn string_arg(args: &Value, key: &str, method: &str) -> Result<String, RemoteError> {
     args.get(key)

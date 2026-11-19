@@ -53,6 +53,7 @@
 mod access;
 mod agent;
 mod agent_loop;
+pub mod agent_presets;
 mod agent_scope_gap;
 // The derive emits `::girder_core::…`, which cannot resolve inside `girder-core` itself. This alias
 // lets generated code compile here as well as downstream; it is the supported way to name a crate

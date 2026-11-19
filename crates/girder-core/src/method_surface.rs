@@ -213,6 +213,29 @@ const DECLARED: &[Declared] = &[
         capability: Some("SessionCatalog"),
     },
     Declared {
+        // The capability sets a session may start from. This build's presets name tools and a
+        // model rather than a Cordis plugin list.
+        method: "agentPresets.list",
+        registration: "register_agent_preset_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "agentPresets.read",
+        registration: "register_agent_preset_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "agentPresets.select",
+        registration: "register_agent_preset_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        // Session-level feedback: a remark about the conversation rather than one message.
+        method: "sessionFeedback.record",
+        registration: "register_session_feedback_methods",
+        capability: Some("SessionCatalog"),
+    },
+    Declared {
         method: "messageFeedback.put",
         registration: "register_message_feedback_methods",
         capability: Some("SessionCatalog"),
