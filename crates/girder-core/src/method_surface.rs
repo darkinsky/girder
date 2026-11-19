@@ -207,6 +207,23 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // Upstream's bulk removal of inactive tasks, and the two reads a picker needs before it
+        // schedules anything.
+        method: "schedule.catalog",
+        registration: "register_schedule_methods",
+        capability: Some("ScheduleStore"),
+    },
+    Declared {
+        method: "schedule.deleteInactive",
+        registration: "register_schedule_methods",
+        capability: Some("ScheduleStore"),
+    },
+    Declared {
+        method: "schedule.deliveryLimits",
+        registration: "register_schedule_methods",
+        capability: Some("ScheduleStore"),
+    },
+    Declared {
         // The three endpoints upstream marks `@Remote` on `LlmRuntime`. The adapter answers from
         // this deployment's route table.
         method: "llm.listProviders",
@@ -451,26 +468,6 @@ const DECLARED: &[Declared] = &[
     },
     Declared {
         method: "schedule.view",
-        registration: "register_schedule_methods",
-        capability: Some("ScheduleStore"),
-    },
-    Declared {
-        method: "schedule.get",
-        registration: "register_schedule_methods",
-        capability: Some("ScheduleStore"),
-    },
-    Declared {
-        method: "schedule.delete",
-        registration: "register_schedule_methods",
-        capability: Some("ScheduleStore"),
-    },
-    Declared {
-        method: "schedule.pause",
-        registration: "register_schedule_methods",
-        capability: Some("ScheduleStore"),
-    },
-    Declared {
-        method: "schedule.resume",
         registration: "register_schedule_methods",
         capability: Some("ScheduleStore"),
     },

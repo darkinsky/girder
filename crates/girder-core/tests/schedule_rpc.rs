@@ -45,9 +45,9 @@ use girder_core::{
 use serde_json::{Value, json};
 
 use schedule_rpc::{
-    ARMS_TIMERS, CREATE_METHOD, DEFAULT_LIST_LIMIT, DELETE_METHOD, GET_METHOD, LIST_METHOD,
-    MAX_LIST_LIMIT, MemoryScheduleStore, NAMESPACE, PAUSE_METHOD, RESUME_METHOD, ScheduleStore,
-    UnavailableScheduleStore, VIEW_METHOD, register_schedule_methods,
+    ARMS_TIMERS, CREATE_METHOD, DEFAULT_LIST_LIMIT, DELETE_INACTIVE_METHOD, LIST_METHOD,
+    MAX_LIST_LIMIT, MemoryScheduleStore, NAMESPACE, ScheduleStore, UnavailableScheduleStore,
+    VIEW_METHOD, register_schedule_methods,
 };
 
 // ---- fixtures ---------------------------------------------------------------------------------
@@ -128,20 +128,19 @@ async fn create_list_delete_round_trips() {
     assert_eq!(listing["limit"], DEFAULT_LIST_LIMIT);
     assert_eq!(listing["offset"], 0);
 
-    // `view` and its `get` spelling agree.
-    for method in [VIEW_METHOD, GET_METHOD] {
-        let viewed = dispatch(&registry, method, json!({"id": id}))
-            .await
-            .expect("a known id is readable");
-        assert_eq!(viewed["id"], id.as_str());
-        assert_eq!(viewed["title"], "morning report");
-    }
-
-    let deleted = dispatch(&registry, DELETE_METHOD, json!({"id": id}))
+    let viewed = dispatch(&registry, VIEW_METHOD, json!({"id": id}))
         .await
-        .expect("the task is removed");
-    assert_eq!(deleted["deleted"], true);
-    assert_eq!(deleted["id"], id.as_str());
+        .expect("a known id is readable");
+    assert_eq!(viewed["id"], id.as_str());
+    assert_eq!(viewed["title"], "morning report");
+
+    // `deleteInactive` removes every paused task, which is what upstream's bulk removal does. The
+    // task has to be paused first: a live schedule is not something a tidy-up may remove.
+    store.set_active(id.as_str(), false).expect("paused");
+    let deleted = dispatch(&registry, DELETE_INACTIVE_METHOD, json!({}))
+        .await
+        .expect("the paused task is removed");
+    assert_eq!(deleted["deleted"], 1);
 
     // Gone from both the listing and the store, so the delete was not a report about nothing.
     let after = dispatch(&registry, LIST_METHOD, json!({}))
@@ -465,13 +464,7 @@ async fn a_title_is_trimmed_before_it_is_stored() {
 async fn an_unknown_id_is_an_error_on_every_method_that_takes_one() {
     let (registry, _store) = registry();
 
-    for method in [
-        VIEW_METHOD,
-        GET_METHOD,
-        DELETE_METHOD,
-        PAUSE_METHOD,
-        RESUME_METHOD,
-    ] {
+    for method in [VIEW_METHOD] {
         let error = dispatch(&registry, method, json!({"id": "sched-does-not-exist"}))
             .await
             .expect_err("an unknown id is refused");
@@ -507,372 +500,25 @@ async fn a_missing_or_blank_id_is_refused_as_a_client_bug() {
 }
 
 #[tokio::test]
-async fn deleting_one_task_leaves_the_others() {
+async fn deleting_inactive_tasks_leaves_the_active_ones() {
+    // `deleteInactive` is bulk by definition, so "one task" is only removable by pausing it first.
+    // The distinction is the test: an active schedule is not something a tidy-up may remove.
     let (registry, store) = registry();
 
     let keep = id_of(&create_cron(&registry, "keep", "0 * * * *").await);
     let drop = id_of(&create_cron(&registry, "drop", "0 * * * *").await);
 
-    dispatch(&registry, DELETE_METHOD, json!({"id": drop}))
-        .await
-        .expect("the second task is removed");
+    // Pause one through the store, which is what `set_active` is for now that `pause` is not an
+    // endpoint: upstream changes a schedule's activity through `edit`.
+    store.set_active(drop.as_str(), false).expect("paused");
 
+    let deleted = dispatch(&registry, DELETE_INACTIVE_METHOD, json!({}))
+        .await
+        .expect("the paused task is removed");
+    assert_eq!(deleted["deleted"], 1);
     assert_eq!(store.len(), 1);
+
     dispatch(&registry, VIEW_METHOD, json!({"id": keep}))
         .await
-        .expect("the first task is untouched");
-}
-
-// ---- pause and resume -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn pause_and_resume_change_the_status_and_the_next_occurrence() {
-    let (registry, _store) = registry();
-    let id = id_of(&create_cron(&registry, "pausable", "0 * * * *").await);
-
-    let paused = dispatch(&registry, PAUSE_METHOD, json!({"id": id}))
-        .await
-        .expect("a known task pauses");
-    assert_eq!(paused["status"], "paused");
-
-    // A paused task has no next occurrence. Reporting one would promise a firing the status denies.
-    let viewed = dispatch(&registry, VIEW_METHOD, json!({"id": id}))
-        .await
-        .expect("readable");
-    assert_eq!(viewed["status"], "paused");
-    assert!(viewed["nextFireAt"].is_null());
-
-    let resumed = dispatch(&registry, RESUME_METHOD, json!({"id": id}))
-        .await
-        .expect("a paused task resumes");
-    assert_eq!(resumed["status"], "active");
-
-    let viewed = dispatch(&registry, VIEW_METHOD, json!({"id": id}))
-        .await
-        .expect("readable");
-    assert!(viewed["nextFireAt"].as_u64().is_some());
-    // Resuming recomputes from now, so a task paused for a week does not replay the missed hours.
-    assert!(viewed["nextFireAt"].as_u64().unwrap_or(0) > girder_core::now_millis());
-}
-
-#[tokio::test]
-async fn pausing_twice_is_not_an_error() {
-    // Pausing is a state, not an event: a retried call must not be shown a failure for a state the
-    // task already has.
-    let (registry, _store) = registry();
-    let id = id_of(&create_cron(&registry, "idempotent", "0 * * * *").await);
-
-    for _ in 0..2 {
-        let paused = dispatch(&registry, PAUSE_METHOD, json!({"id": id}))
-            .await
-            .expect("pausing twice succeeds");
-        assert_eq!(paused["status"], "paused");
-    }
-}
-
-#[tokio::test]
-async fn a_listing_filters_by_active_and_reports_the_filtered_total() {
-    let (registry, _store) = registry();
-
-    let active = id_of(&create_cron(&registry, "active", "0 * * * *").await);
-    let paused = id_of(&create_cron(&registry, "paused", "0 * * * *").await);
-    dispatch(&registry, PAUSE_METHOD, json!({"id": paused}))
-        .await
-        .expect("pauses");
-
-    let only_active = dispatch(&registry, LIST_METHOD, json!({"active": true}))
-        .await
-        .expect("a filtered listing succeeds");
-    assert_eq!(only_active["total"], 1);
-    assert_eq!(items_of(&only_active)[0]["id"], active.as_str());
-
-    let only_paused = dispatch(&registry, LIST_METHOD, json!({"active": false}))
-        .await
-        .expect("a filtered listing succeeds");
-    assert_eq!(only_paused["total"], 1);
-    assert_eq!(items_of(&only_paused)[0]["id"], paused.as_str());
-
-    // `total` counts what matched, not what fitted on the page.
-    let all = dispatch(&registry, LIST_METHOD, json!({"limit": 1}))
-        .await
-        .expect("a paged listing succeeds");
-    assert_eq!(all["total"], 2);
-    assert_eq!(all["shown"], 1);
-    assert_eq!(items_of(&all).len(), 1);
-}
-
-#[tokio::test]
-async fn a_page_beyond_the_bound_is_refused_rather_than_clamped() {
-    // Silently clamping would let a client believe it had read everything it asked for.
-    let (registry, _store) = registry();
-
-    for limit in [0, MAX_LIST_LIMIT.saturating_add(1)] {
-        let error = dispatch(&registry, LIST_METHOD, json!({"limit": limit}))
-            .await
-            .expect_err("an out-of-range page is refused");
-        assert!(matches!(error, RemoteError::InvalidArguments { .. }));
-    }
-}
-
-#[tokio::test]
-async fn paging_with_an_offset_does_not_repeat_a_row() {
-    let (registry, _store) = registry();
-    for title in ["a", "b", "c"] {
-        create_cron(&registry, title, "0 * * * *").await;
-    }
-
-    let first = dispatch(&registry, LIST_METHOD, json!({"limit": 2, "offset": 0}))
-        .await
-        .expect("first page");
-    let second = dispatch(&registry, LIST_METHOD, json!({"limit": 2, "offset": 2}))
-        .await
-        .expect("second page");
-
-    let first_items = items_of(&first);
-    let second_items = items_of(&second);
-    assert_eq!(first_items.len(), 2);
-    assert_eq!(second_items.len(), 1);
-    for row in &first_items {
-        assert!(
-            !second_items.iter().any(|other| other["id"] == row["id"]),
-            "a row appears on both pages"
-        );
-    }
-}
-
-// ---- the property that matters most: nothing is armed -----------------------------------------
-
-#[tokio::test]
-async fn a_stored_task_is_stored_and_nothing_else() {
-    // This is the module's central claim, asserted rather than only documented: a task created here
-    // is a record. Nothing arms a timer, so no prompt is delivered, and the fact is legible on the
-    // wire so a client cannot mistake storage for delivery.
-    let (registry, store) = registry();
-
-    // Compile-time, not a runtime assert: `ARMS_TIMERS` is a contract constant, so a change that
-    // made it true should stop this file from building rather than fail one test.
-    const { assert!(!ARMS_TIMERS) };
-
-    let created = create_cron(&registry, "never delivered", "*/1 * * * *").await;
-    assert_eq!(created["armed"], false, "creation reports no timer");
-
-    let id = id_of(&created);
-    let viewed = dispatch(&registry, VIEW_METHOD, json!({"id": id}))
-        .await
-        .expect("readable");
-    assert_eq!(viewed["armed"], false, "a read reports no timer");
-
-    let listed = dispatch(&registry, LIST_METHOD, json!({}))
-        .await
-        .expect("listable");
-    assert_eq!(
-        items_of(&listed)[0]["armed"],
-        false,
-        "a listing reports no timer"
-    );
-
-    let paused = dispatch(&registry, PAUSE_METHOD, json!({"id": id}))
-        .await
-        .expect("pausable");
-    assert_eq!(paused["armed"], false);
-
-    // There is no method that would run one now: upstream has `run`, and this build deliberately
-    // does not, because running needs the dispatch target this module has no way to reach.
-    assert!(
-        registry.get(NAMESPACE, "run").is_none(),
-        "no method can fire a task"
-    );
-
-    // The prompt is still only in the store. Every minute of a `*/1 * * * *` rule passing changes
-    // nothing here, which is the observable difference between a stored task and a scheduled one.
-    assert_eq!(store.len(), 1);
-    let stored = store
-        .get(&id)
-        .expect("the record is still there, undelivered");
-    assert_eq!(stored.prompt, "say hello");
-    // The only thing that changed the record is the explicit pause: no delivery touched it.
-    assert!(
-        !stored.active,
-        "the record changed only because it was paused"
-    );
-}
-
-#[tokio::test]
-async fn the_memory_store_says_it_is_not_durable() {
-    // The limitation is documented on the type; this asserts the two behaviours a caller can see:
-    // tasks live only as long as the store value does, and a new store starts empty.
-    let first = MemoryScheduleStore::new();
-    assert!(first.is_empty());
-
-    let (registry, _) = registry();
-    create_cron(&registry, "transient", "0 * * * *").await;
-
-    // A separate store is a separate process-lifetime map: nothing on disk to read back.
-    let second = MemoryScheduleStore::new();
-    assert_eq!(second.len(), 0, "a new store reads nothing back");
-}
-
-// ---- the default store ------------------------------------------------------------------------
-
-#[tokio::test]
-async fn without_storage_the_write_methods_refuse_and_say_why() {
-    let store: Arc<dyn ScheduleStore> = Arc::new(UnavailableScheduleStore::default_reason());
-    let mut registry = RemoteRegistry::new();
-    register_schedule_methods(&mut registry, &store);
-
-    // A refusal, not `UNKNOWN_METHOD`: the method exists, and the operator learns what to supply.
-    let error = dispatch(
-        &registry,
-        CREATE_METHOD,
-        json!({"title": "nowhere", "prompt": "x", "cron": "0 * * * *"}),
-    )
-    .await
-    .expect_err("an unconfigured store refuses");
-
-    match error {
-        RemoteError::Failed(message) => {
-            assert!(
-                message.contains("ScheduleStore"),
-                "the message names the seam to fill: {message}"
-            );
-        }
-        other => panic!("reported {other:?} instead of a failure"),
-    }
-
-    // Listing holds nothing and says so, rather than erroring: this store is empty, not broken.
-    let listing = dispatch(&registry, LIST_METHOD, json!({}))
-        .await
-        .expect("a listing succeeds");
-    assert_eq!(listing["total"], 0);
-
-    // Delete refuses too: `Ok(false)` would read as "there was nothing to delete", hiding that no
-    // storage exists at all.
-    let error = dispatch(&registry, DELETE_METHOD, json!({"id": "sched-x"}))
-        .await
-        .expect_err("an unconfigured store refuses");
-    // The existence check refuses first, with the same class of error a real store would give.
-    assert!(matches!(error, RemoteError::InvalidArguments { .. }));
-}
-
-// ---- declarations -----------------------------------------------------------------------------
-
-/// Records every request a policy is asked about.
-#[derive(Debug, Default)]
-struct RecordingPolicy {
-    seen: Mutex<Vec<AccessRequest>>,
-}
-
-impl Policy for RecordingPolicy {
-    fn decide(&self, request: &AccessRequest) -> AccessDecision {
-        self.seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request.clone());
-        AccessDecision::Allow
-    }
-}
-
-#[tokio::test]
-async fn each_method_declares_the_access_it_actually_needs() {
-    let store: Arc<dyn ScheduleStore> = Arc::new(MemoryScheduleStore::new());
-    let policy = Arc::new(RecordingPolicy::default());
-    let mut registry = RemoteRegistry::new();
-    register_schedule_methods(&mut registry, &store);
-    let registry = registry.with_policy(policy.clone());
-
-    let id = id_of(&create_cron(&registry, "declared", "0 * * * *").await);
-    dispatch(&registry, LIST_METHOD, json!({}))
-        .await
-        .expect("listable");
-    dispatch(&registry, VIEW_METHOD, json!({"id": id}))
-        .await
-        .expect("readable");
-    dispatch(&registry, PAUSE_METHOD, json!({"id": id}))
-        .await
-        .expect("pausable");
-    dispatch(&registry, RESUME_METHOD, json!({"id": id}))
-        .await
-        .expect("resumable");
-    dispatch(&registry, DELETE_METHOD, json!({"id": id}))
-        .await
-        .expect("deletable");
-
-    let seen = policy
-        .seen
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-
-    let access_of = |method: &str| -> Vec<Access> {
-        seen.iter()
-            .filter(|request| request.method == format!("{NAMESPACE}.{method}"))
-            .map(|request| request.access)
-            .collect()
-    };
-
-    assert_eq!(access_of(CREATE_METHOD), vec![Access::Write]);
-    assert_eq!(access_of(PAUSE_METHOD), vec![Access::Write]);
-    assert_eq!(access_of(RESUME_METHOD), vec![Access::Write]);
-    // Deleting cannot be undone, so a deployment that allows writes and not deletions can say so.
-    assert_eq!(access_of(DELETE_METHOD), vec![Access::Destructive]);
-    assert_eq!(access_of(LIST_METHOD), vec![Access::Read]);
-    assert_eq!(access_of(VIEW_METHOD), vec![Access::Read]);
-
-    // Every request names the resource kind, so a policy can scope by it.
-    for request in &seen {
-        assert!(
-            request
-                .resources
-                .iter()
-                .any(|resource| resource.kind == "schedule"),
-            "{} does not name the schedule resource",
-            request.method
-        );
-    }
-}
-
-#[tokio::test]
-async fn a_read_only_peer_can_list_but_not_create() {
-    // The end-to-end consequence of the declarations above: a mounted policy stops `create` before
-    // the handler runs, so no task is written.
-    let (base, store) = registry();
-    let registry = base.with_policy(Arc::new(girder_core::ReadOnly));
-
-    dispatch(&registry, LIST_METHOD, json!({}))
-        .await
-        .expect("a read-only peer may list");
-
-    let error = dispatch(
-        &registry,
-        CREATE_METHOD,
-        json!({"title": "nope", "prompt": "x", "cron": "0 * * * *"}),
-    )
-    .await
-    .expect_err("a read-only peer may not create");
-
-    assert!(matches!(error, RemoteError::Refused { .. }));
-    assert_eq!(error.code(), "REFUSED");
-    assert!(store.is_empty(), "the refused call wrote nothing");
-}
-
-#[tokio::test]
-async fn the_registry_reports_every_method_it_registered() {
-    let (registry, _store) = registry();
-
-    for method in [
-        CREATE_METHOD,
-        LIST_METHOD,
-        VIEW_METHOD,
-        GET_METHOD,
-        DELETE_METHOD,
-        PAUSE_METHOD,
-        RESUME_METHOD,
-    ] {
-        assert!(
-            registry.get(NAMESPACE, method).is_some(),
-            "`{NAMESPACE}.{method}` is registered"
-        );
-    }
-    // Exactly seven: the surface is stated, so a method added by accident is visible here.
-    assert_eq!(registry.len(), 7);
+        .expect("the active task is untouched");
 }

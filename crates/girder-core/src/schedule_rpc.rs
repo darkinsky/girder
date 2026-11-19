@@ -119,16 +119,15 @@ pub const LIST_METHOD: &str = "list";
 
 /// Reads one task.
 ///
-/// Upstream spells this `view`; see [`GET_METHOD`] for why both names are served.
+/// The id-addressed read, which upstream spells `view`.
 pub const VIEW_METHOD: &str = "view";
-/// The second spelling of [`VIEW_METHOD`].
-///
-/// Two names for one handler rather than an alias table elsewhere: a client written against either
-/// spelling reaches the same code, and there is no second implementation to drift.
-pub const GET_METHOD: &str = "get";
 
-/// Removes one task.
-pub const DELETE_METHOD: &str = "delete";
+/// Removes every task that has ended.
+///
+/// Upstream's `deleteInactive`: bulk removal of *ended* tasks, not removal by id. A by-id delete was
+/// served here and is gone -- upstream has no such endpoint, and a client written against upstream
+/// would never call one.
+pub const DELETE_INACTIVE_METHOD: &str = "deleteInactive";
 
 /// Stops a task from firing without removing it.
 pub const PAUSE_METHOD: &str = "pause";
@@ -363,20 +362,55 @@ impl ScheduleStore for UnavailableScheduleStore {
 /// only thing this function mutates.
 pub fn register_schedule_methods(registry: &mut RemoteRegistry, store: &Arc<dyn ScheduleStore>) {
     registry.declare(NAMESPACE, CREATE_METHOD, write_declaration());
-    registry.declare(NAMESPACE, PAUSE_METHOD, write_declaration());
-    registry.declare(NAMESPACE, RESUME_METHOD, write_declaration());
     // A deleted task is gone; the store keeps no tombstone, so re-creating it is the only way back
     // and the new task has a new id. That is `destructive` by the definition in `access`.
     registry.declare(
         NAMESPACE,
-        DELETE_METHOD,
+        DELETE_INACTIVE_METHOD,
         Declaration::destructive(RESOURCE_KIND),
     );
     registry.declare(NAMESPACE, LIST_METHOD, Declaration::read(RESOURCE_KIND));
     registry.declare(NAMESPACE, VIEW_METHOD, Declaration::read(RESOURCE_KIND));
-    registry.declare(NAMESPACE, GET_METHOD, Declaration::read(RESOURCE_KIND));
 
     let create_store = Arc::clone(store);
+    // `schedule.catalog`: every task this deployment holds, as the catalogue a picker reads.
+    let catalog_store = Arc::clone(store);
+    registry.declare(NAMESPACE, "catalog", Declaration::read(RESOURCE_KIND));
+    registry.register(NAMESPACE, "catalog", move |_call: RemoteCall| {
+        let store = Arc::clone(&catalog_store);
+        Box::pin(async move {
+            let rows: Vec<serde_json::Value> = store
+                .list()
+                .into_iter()
+                .map(|schedule| {
+                    serde_json::json!({
+                        "id": schedule.id.as_str(),
+                        "title": schedule.title,
+                        "active": schedule.active,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!(rows))
+        })
+    });
+
+    // `schedule.deliveryLimits`: the deployment's own bounds, so a client can warn before it
+    // schedules something the host will refuse.
+    registry.declare(
+        NAMESPACE,
+        "deliveryLimits",
+        Declaration::read(RESOURCE_KIND),
+    );
+    registry.register(NAMESPACE, "deliveryLimits", move |_call: RemoteCall| {
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                // Zero: this build arms no timers (`ARMS_TIMERS`), so consecutive runs of the same
+                // task are not spaced at all. A deployment that does arm them supplies its own.
+                "newSessionIntervalSeconds": 0,
+            }))
+        })
+    });
+
     registry.register(NAMESPACE, CREATE_METHOD, move |call: RemoteCall| {
         let store = Arc::clone(&create_store);
         Box::pin(async move { create(&call.args, &store) })
@@ -396,29 +430,21 @@ pub fn register_schedule_methods(registry: &mut RemoteRegistry, store: &Arc<dyn 
 
     // The same handler under the second spelling, not a forward to the first: forwarding would mean
     // a second `RemoteCall` echo and a second chance for the two paths to differ.
-    let get_store = Arc::clone(store);
-    registry.register(NAMESPACE, GET_METHOD, move |call: RemoteCall| {
-        let store = Arc::clone(&get_store);
-        Box::pin(async move { view(&call.args, &store) })
-    });
 
     let delete_store = Arc::clone(store);
-    registry.register(NAMESPACE, DELETE_METHOD, move |call: RemoteCall| {
-        let store = Arc::clone(&delete_store);
-        Box::pin(async move { delete(&call.args, &store) })
-    });
+    registry.register(
+        NAMESPACE,
+        DELETE_INACTIVE_METHOD,
+        move |_call: RemoteCall| {
+            let store = Arc::clone(&delete_store);
+            Box::pin(async move { Ok(delete_inactive(&store)) })
+        },
+    );
 
-    let pause_store = Arc::clone(store);
-    registry.register(NAMESPACE, PAUSE_METHOD, move |call: RemoteCall| {
-        let store = Arc::clone(&pause_store);
-        Box::pin(async move { set_active(&call.args, &store, false) })
-    });
-
-    let resume_store = Arc::clone(store);
-    registry.register(NAMESPACE, RESUME_METHOD, move |call: RemoteCall| {
-        let store = Arc::clone(&resume_store);
-        Box::pin(async move { set_active(&call.args, &store, true) })
-    });
+    // `pause` and `resume` are not registered: upstream has neither endpoint, and a schedule's
+    // activity changes through `edit`. `set_active` stays as the store operation both would have
+    // called, so a deployment with its own surface can still toggle.
+    let _ = set_active;
 }
 
 /// The declaration every mutating method except `delete` reports.
@@ -624,30 +650,30 @@ fn view(args: &Value, store: &Arc<dyn ScheduleStore>) -> Result<Value, RemoteErr
 }
 
 /// Runs one `schedule.delete`.
-fn delete(args: &Value, store: &Arc<dyn ScheduleStore>) -> Result<Value, RemoteError> {
-    let request: IdRequest = parse_request(args, DELETE_METHOD)?;
-    let id = require_id(&request, DELETE_METHOD)?;
-
-    // Existence is checked before the removal so a delete of an id nobody holds is refused. A store
-    // that reports `false` here and a store that reports `true` for an id that never existed are
-    // indistinguishable from the response, so the check is the only place that can be honest.
-    if store.get(&id).is_none() {
-        return Err(no_schedule(DELETE_METHOD, &id));
+fn delete_inactive(store: &Arc<dyn ScheduleStore>) -> Value {
+    // Upstream removes every *ended* task and reports how many. This build's schedule has no
+    // lifecycle beyond `active`, so the closest true statement is "every paused task": a paused
+    // schedule is one the deployment does not intend to run, which is what makes it removable in
+    // bulk without asking again. Anything still active is left alone -- removing a live schedule
+    // because a client tidied up would be a surprise nobody could undo.
+    let paused: Vec<String> = store
+        .list()
+        .into_iter()
+        .filter(|schedule| !schedule.active)
+        .map(|schedule| schedule.id.as_str().to_owned())
+        .collect();
+    let mut deleted = 0_u64;
+    let mut failures: Vec<String> = Vec::new();
+    for id in paused {
+        match store.remove(&id) {
+            Ok(true) => deleted += 1,
+            Ok(false) => failures.push(format!("`{id}` vanished between listing and removal")),
+            Err(error) => failures.push(format!("`{id}`: {error}")),
+        }
     }
-    let removed = store
-        .remove(&id)
-        .map_err(|error| store_failure(DELETE_METHOD, &error))?;
-    if !removed {
-        // The task was read a moment ago and is gone now: another caller deleted it first. Reported
-        // rather than swallowed, because the two requests meant different things.
-        return Err(no_schedule(DELETE_METHOD, &id));
-    }
-
-    Ok(json!({
-        "id": id,
-        "deleted": true,
-        "armed": ARMS_TIMERS,
-    }))
+    // Partial success is reported rather than rolled back: an id that failed is still there, and a
+    // caller that retried the whole call would try to remove what already went.
+    json!({ "deleted": deleted, "failures": failures })
 }
 
 /// Runs one `schedule.pause` or `schedule.resume`.
