@@ -203,6 +203,19 @@ fn register_workspace_file_surface(
     girder_core::register_workspace_file_methods(registry, &fs, &workspaces);
     girder_core::register_workspace_file_extras(registry, &fs, &workspaces);
     girder_core::register_workspace_methods(registry, &workspaces);
+    // `serve` calls these too, so a "serve-shaped" registry must as well: otherwise the declaration
+    // and this helper disagree about a surface that is in fact served.
+    girder_core::register_workspace_initialize_default(registry, &workspaces, None, 0);
+    let preferences: Arc<dyn girder_core::WorkspacePreferences> =
+        Arc::new(girder_core::InMemoryPreferences::new());
+    let workspace_catalog: Arc<dyn girder_core::SessionCatalog> =
+        Arc::new(girder_core::DirectoryCatalog::new(scratch));
+    girder_core::register_workspace_extra_methods(
+        registry,
+        &workspaces,
+        &preferences,
+        &workspace_catalog,
+    );
     girder_core::register_session_query_methods(registry, scratch);
 }
 

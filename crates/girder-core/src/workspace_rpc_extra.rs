@@ -409,6 +409,62 @@ pub fn retain_visible(session_ids: &mut Vec<String>, preferences: &dyn Workspace
 /// `sessions` is needed for the two methods that must refuse an id no session holds: a pin or an
 /// archive for an unknown id is a promise about nothing, would keep hiding whatever later took that
 /// id, and would report a success the caller learns nothing from.
+/// Registers `workspace.initializeDefault`.
+///
+/// Upstream's `initializeDefault`: creates the first workspace, and only when there is none. That
+/// "only when" is the whole point -- a client calls it on every start, so a version that always
+/// created would add a workspace per launch.
+///
+/// The directory comes from `documents`, which is the deployment's decision, not the caller's: a
+/// server that picked a directory itself would be writing into a path nobody chose. A `None` answers
+/// `initialized: false` rather than guessing, which is what upstream does when its documents lookup
+/// times out.
+pub fn register_workspace_initialize_default(
+    registry: &mut RemoteRegistry,
+    workspaces: &Arc<WorkspaceRegistry>,
+    documents: Option<std::path::PathBuf>,
+    now: u64,
+) {
+    let workspaces = Arc::clone(workspaces);
+    registry.register(NAMESPACE, "initializeDefault", move |_call: RemoteCall| {
+        let workspaces = Arc::clone(&workspaces);
+        let documents = documents.clone();
+        Box::pin(async move {
+            // Already has one: return without touching it, and say so.
+            if !workspaces.list().is_empty() {
+                return Ok(serde_json::json!({ "initialized": false }));
+            }
+            let Some(documents) = documents else {
+                return Ok(serde_json::json!({
+                    "initialized": false,
+                    "code": "no_documents_directory",
+                    "message": "this deployment has no documents directory to create a default workspace in",
+                }));
+            };
+            let path = girder_core::default_workspace_path(&documents);
+            // The registry refuses a duplicate path by returning the existing id, which cannot
+            // happen here -- the list was empty a moment ago -- but is handled rather than assumed
+            // away, because a concurrent start would hit it.
+            match workspaces.register("default", &path, None, now) {
+                Ok(workspace) => Ok(serde_json::json!({
+                    "initialized": true,
+                    "workspace": { "id": workspace.id, "path": workspace.path },
+                })),
+                Err(existing) => Ok(serde_json::json!({
+                    "initialized": false,
+                    "code": "already_registered",
+                    "workspaceId": existing,
+                })),
+            }
+        })
+    });
+    registry.declare(
+        NAMESPACE,
+        "initializeDefault",
+        girder_core::Declaration::write("workspace"),
+    );
+}
+
 pub fn register_workspace_extra_methods(
     registry: &mut RemoteRegistry,
     workspaces: &Arc<WorkspaceRegistry>,

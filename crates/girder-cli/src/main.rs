@@ -810,6 +810,15 @@ fn register_workspace_file_surface(
     // `pluginMarket.*`: the market index this build already parses, reachable from a client.
     let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
     girder_core::plugin_market_rpc::register_market_methods(remote, &market);
+    // `workspace.initializeDefault`: creates the first workspace, and only when there is none. The
+    // directory is the deployment's, taken from the same sessions root the catalog reads -- a server
+    // that picked one itself would be writing into a path nobody chose.
+    girder_core::register_workspace_initialize_default(
+        remote,
+        workspaces,
+        Some(sessions_root()),
+        girder_core::now_millis(),
+    );
     girder_core::register_workspace_extra_methods(
         remote,
         workspaces,

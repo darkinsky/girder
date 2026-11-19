@@ -1293,6 +1293,7 @@ pub use workspace_path::{
 pub use workspace_rpc_extra::{
     InMemoryPreferences, UnavailablePreferences, WorkspacePreferences,
     register_workspace_extra_methods, register_workspace_extra_methods_without_preferences,
+    register_workspace_initialize_default,
 };
 
 pub use persistent_shell::{

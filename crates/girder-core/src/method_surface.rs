@@ -25,11 +25,11 @@
 //! have no handler, so they are not part of the surface a client can call; [`reconcile`] compares
 //! against registered methods and would report them as noise forever.
 //!
-//! The optional workspace-preferences surface (`register_workspace_extra_methods`, which adds
-//! `workspace.rename` and `workspace.archiveSession`) is also not listed: `serve` does not call it,
-//! so a client that trusted the declaration over the wire would be told about two methods no
-//! running server answers. [`reconcile`] reports them as `extra` when it is handed the names
-//! `registered_method_names` produces, which is the drift this module exists to make visible.
+//! The workspace-preferences surface (`register_workspace_extra_methods`) **is** listed now that
+//! `serve` calls it. Before that it was deliberately absent, for the right reason: a declaration a
+//! client trusts over the wire must describe a server that answers, and no running server answered
+//! those seven. The same rule applies to every optional surface -- declare it when `serve` calls it,
+//! and not before.
 
 /// One declared method, and what registering it needs.
 ///
@@ -238,6 +238,48 @@ const DECLARED: &[Declared] = &[
         method: "terminal.retain",
         registration: "register_terminal_retain_method",
         capability: Some("TerminalPersistStore"),
+    },
+    Declared {
+        method: "workspace.rename",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        method: "workspace.insertBefore",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        method: "workspace.insertSessionBefore",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        method: "workspace.archiveSession",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        method: "workspace.unarchiveSession",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        method: "workspace.pinSession",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        method: "workspace.unpinSession",
+        registration: "register_workspace_extra_methods",
+        capability: Some("WorkspaceRegistry + WorkspacePreferences"),
+    },
+    Declared {
+        // Creates the first workspace, and only when there is none: a client calls it on every
+        // start, so a version that always created would add a workspace per launch.
+        method: "workspace.initializeDefault",
+        registration: "register_workspace_initialize_default",
+        capability: Some("WorkspaceRegistry"),
     },
     Declared {
         method: "settings.describe",
@@ -733,9 +775,8 @@ pub struct Discrepancy {
     /// anything generated from the declaration -- a document, a typed client, a doctor check --
     /// silently omits it.
     ///
-    /// Also where a method registered by an optional surface lands: `serve` never calls
-    /// `register_workspace_extra_methods`, so `workspace.rename` and `workspace.archiveSession` are
-    /// absent from this declaration even though the catalogue names them.
+    /// Also where a method an optional surface registers lands while `serve` does not call it. An
+    /// empty `extra` means every method a catalogue names is also declared and served.
     pub extra: Vec<String>,
 }
 
