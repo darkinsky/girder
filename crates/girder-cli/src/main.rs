@@ -791,6 +791,9 @@ fn register_workspace_file_surface(
     // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
     // caller's own directory comes first.
     girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
+    // `mcpManager.{probe, restart}`: the MCP subsystem was already here -- wire layer, stdio framing,
+    // child lifecycle, handshake -- and had no endpoint. Configured servers come from settings.
+    girder_core::mcp_manager_rpc::register_mcp_manager_methods(remote, &Arc::new(Vec::new()));
     // `pluginManager.*`: the seven reads answer from an explicit entry registry -- the replacement
     // for the Cordis tree -- and the mutations refuse with `no_installer`, because this build mounts
     // plugins at compile time.

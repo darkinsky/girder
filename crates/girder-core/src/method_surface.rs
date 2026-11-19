@@ -218,6 +218,17 @@ const DECLARED: &[Declared] = &[
         capability: Some("ScheduleStore"),
     },
     Declared {
+        // The MCP subsystem was already here and had no endpoint.
+        method: "mcpManager.probe",
+        registration: "register_mcp_manager_methods",
+        capability: Some("ServerConfig"),
+    },
+    Declared {
+        method: "mcpManager.restart",
+        registration: "register_mcp_manager_methods",
+        capability: Some("ServerConfig"),
+    },
+    Declared {
         method: "pluginInventory.list",
         registration: "register_plugin_inventory_methods",
         capability: Some("Registry"),
