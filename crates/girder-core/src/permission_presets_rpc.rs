@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn an_option_omits_an_empty_description() {
-        let mut catalogue = Catalogue::builtin();
+        let catalogue = Catalogue::builtin();
         let first = catalogue.entries().into_iter().next().expect("one entry");
         let option = option_of(&first);
         if first.preset.description.is_empty() {

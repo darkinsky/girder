@@ -163,6 +163,10 @@ pub const DEFAULT_TIME_ZONE: &str = "UTC";
 
 /// Why a store could not keep or change a task.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "the failure a real store reports; this module's own tests use the in-memory store, and a deployment supplies the failing one"
+)]
 pub enum ScheduleStoreError {
     /// No storage is configured, and the message says what a host must supply.
     #[error("schedule storage is unavailable: {0}")]
@@ -300,10 +304,18 @@ impl ScheduleStore for MemoryScheduleStore {
 /// [`crate::session_lifecycle_rpc::UnavailableArchiveStore`]: the alternative — silently keeping the
 /// record in memory — would report a state the next call cannot confirm.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "a deployment's seam for \"no store configured\"; registered as API even though the tests now exercise the active path"
+)]
 pub struct UnavailableScheduleStore {
     reason: String,
 }
 
+#[allow(
+    dead_code,
+    reason = "constructors for a deployment's \"no store\" seam; unused here because the tests exercise the active path"
+)]
 impl UnavailableScheduleStore {
     /// Creates a store that refuses with `reason`.
     #[must_use]

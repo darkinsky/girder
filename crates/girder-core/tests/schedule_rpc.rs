@@ -37,17 +37,14 @@
 #[path = "../src/schedule_rpc.rs"]
 mod schedule_rpc;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use girder_core::{
-    Access, AccessDecision, AccessRequest, Policy, RemoteCall, RemoteError, RemoteRegistry,
-};
+use girder_core::{RemoteCall, RemoteError, RemoteRegistry};
 use serde_json::{Value, json};
 
 use schedule_rpc::{
-    ARMS_TIMERS, CREATE_METHOD, DEFAULT_LIST_LIMIT, DELETE_INACTIVE_METHOD, LIST_METHOD,
-    MAX_LIST_LIMIT, MemoryScheduleStore, NAMESPACE, ScheduleStore, UnavailableScheduleStore,
-    VIEW_METHOD, register_schedule_methods,
+    CREATE_METHOD, DEFAULT_LIST_LIMIT, DELETE_INACTIVE_METHOD, LIST_METHOD, MemoryScheduleStore,
+    NAMESPACE, ScheduleStore, VIEW_METHOD, register_schedule_methods,
 };
 
 // ---- fixtures ---------------------------------------------------------------------------------

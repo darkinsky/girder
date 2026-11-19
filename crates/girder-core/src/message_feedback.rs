@@ -220,88 +220,6 @@ pub fn category_catalogue() -> Value {
     json!(CATEGORIES)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn put(message_id: &str, rating: Rating, at: i64) -> SessionEvent {
-        SessionEvent::MessageFeedbackPut {
-            message_id: message_id.to_owned(),
-            rating,
-            note: None,
-            category: None,
-            version: format!("v-{at}"),
-            created_at: at,
-            updated_at: at,
-        }
-    }
-
-    #[test]
-    fn a_later_put_replaces_an_earlier_one() {
-        let items = current_items(&[
-            put("m1", Rating::Positive, 1),
-            put("m1", Rating::Negative, 2),
-        ]);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items["m1"].rating, Rating::Negative);
-        assert_eq!(items["m1"].updated_at, 2);
-    }
-
-    #[test]
-    fn a_delete_removes_the_item() {
-        let items = current_items(&[
-            put("m1", Rating::Positive, 1),
-            SessionEvent::MessageFeedbackDelete {
-                message_id: "m1".to_owned(),
-            },
-        ]);
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn a_delete_of_something_never_put_is_harmless() {
-        // The log is append-only and a delete may arrive after a fork dropped its put.
-        let items = current_items(&[SessionEvent::MessageFeedbackDelete {
-            message_id: "m1".to_owned(),
-        }]);
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn a_blank_note_is_refused_before_its_size_is_considered() {
-        // `"   "` is both blank and short; the reason reported is the one a person can act on.
-        assert_eq!(
-            validate("m1", Some("   "), None).expect_err("blank"),
-            Refusal::NoteBlank
-        );
-    }
-
-    #[test]
-    fn an_oversized_note_is_refused() {
-        let note = "x".repeat(MAX_NOTE_BYTES + 1);
-        assert_eq!(
-            validate("m1", Some(&note), None).expect_err("large"),
-            Refusal::NoteTooLarge
-        );
-    }
-
-    #[test]
-    fn an_unknown_category_is_refused() {
-        assert_eq!(
-            validate("m1", None, Some("not-a-category")).expect_err("unknown"),
-            Refusal::UnknownCategory
-        );
-    }
-
-    #[test]
-    fn a_blank_message_id_is_refused() {
-        assert_eq!(
-            validate("  ", None, None).expect_err("blank id"),
-            Refusal::MessageIdBlank
-        );
-    }
-}
-
 /// Registers `messageFeedback.{list, put, delete}`.
 ///
 /// The three share one catalogue read and one event append, so they are registered together: a
@@ -429,4 +347,86 @@ fn string_arg(args: &Value, key: &str, method: &str) -> Result<String, RemoteErr
             method: method.to_owned(),
             message: format!("`{key}` is required"),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put(message_id: &str, rating: Rating, at: i64) -> SessionEvent {
+        SessionEvent::MessageFeedbackPut {
+            message_id: message_id.to_owned(),
+            rating,
+            note: None,
+            category: None,
+            version: format!("v-{at}"),
+            created_at: at,
+            updated_at: at,
+        }
+    }
+
+    #[test]
+    fn a_later_put_replaces_an_earlier_one() {
+        let items = current_items(&[
+            put("m1", Rating::Positive, 1),
+            put("m1", Rating::Negative, 2),
+        ]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items["m1"].rating, Rating::Negative);
+        assert_eq!(items["m1"].updated_at, 2);
+    }
+
+    #[test]
+    fn a_delete_removes_the_item() {
+        let items = current_items(&[
+            put("m1", Rating::Positive, 1),
+            SessionEvent::MessageFeedbackDelete {
+                message_id: "m1".to_owned(),
+            },
+        ]);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn a_delete_of_something_never_put_is_harmless() {
+        // The log is append-only and a delete may arrive after a fork dropped its put.
+        let items = current_items(&[SessionEvent::MessageFeedbackDelete {
+            message_id: "m1".to_owned(),
+        }]);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn a_blank_note_is_refused_before_its_size_is_considered() {
+        // `"   "` is both blank and short; the reason reported is the one a person can act on.
+        assert_eq!(
+            validate("m1", Some("   "), None).expect_err("blank"),
+            Refusal::NoteBlank
+        );
+    }
+
+    #[test]
+    fn an_oversized_note_is_refused() {
+        let note = "x".repeat(MAX_NOTE_BYTES + 1);
+        assert_eq!(
+            validate("m1", Some(&note), None).expect_err("large"),
+            Refusal::NoteTooLarge
+        );
+    }
+
+    #[test]
+    fn an_unknown_category_is_refused() {
+        assert_eq!(
+            validate("m1", None, Some("not-a-category")).expect_err("unknown"),
+            Refusal::UnknownCategory
+        );
+    }
+
+    #[test]
+    fn a_blank_message_id_is_refused() {
+        assert_eq!(
+            validate("  ", None, None).expect_err("blank id"),
+            Refusal::MessageIdBlank
+        );
+    }
 }
