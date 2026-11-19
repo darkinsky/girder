@@ -123,6 +123,9 @@ pub const LIST_METHOD: &str = "list";
 /// a delete is the edit whose patch is everything.
 pub const EDIT_METHOD: &str = "edit";
 
+/// Runs one task now, without consuming or moving its scheduled occurrence.
+pub const RUN_METHOD: &str = "run";
+
 /// Reads one task.
 ///
 /// The id-addressed read, which upstream spells `view`.
@@ -417,6 +420,16 @@ pub fn register_schedule_methods(registry: &mut RemoteRegistry, store: &Arc<dyn 
     });
 
     register_schedule_history(registry, store);
+
+    // `schedule.run`: admits the run if the task exists and no interval forbids it, then reports that
+    // the delivery itself cannot happen -- this build has no resident-agent channel to send through.
+    // Both facts travel, because a client that saw only "admitted" would believe a message was sent.
+    let run_store = Arc::clone(store);
+    registry.declare(NAMESPACE, RUN_METHOD, write_declaration());
+    registry.register(NAMESPACE, RUN_METHOD, move |call: RemoteCall| {
+        let store = Arc::clone(&run_store);
+        Box::pin(async move { run(&call.args, &store) })
+    });
 
     // `schedule.catalog`: every task this deployment holds, as the catalogue a picker reads.
     let catalog_store = Arc::clone(store);
@@ -1089,4 +1102,43 @@ fn register_schedule_history(registry: &mut RemoteRegistry, store: &Arc<dyn Sche
         }))
     })
 });
+}
+
+/// `schedule.run`: admits a run, then reports the delivery it cannot make.
+fn run(args: &Value, store: &Arc<dyn ScheduleStore>) -> Result<Value, RemoteError> {
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(RUN_METHOD, "`id` is required"))?;
+    let Some(schedule) = store.get(id) else {
+        return Ok(json!({ "id": id, "code": "schedule_not_found" }));
+    };
+    // Nothing is executing in this build, and nothing ever delivered, so admission is decided from
+    // the two facts that exist: a paused task does not run, and a task that never delivered has no
+    // interval to wait out.
+    let verdict = if schedule.active {
+        girder_core::ScheduleAdmission::Admitted
+    } else {
+        // A paused task is the one case this build can decide against on its own: upstream's runtime
+        // would find no target, and reporting it as admitted would invite a retry that also fails.
+        return Ok(json!({
+            "id": id,
+            "admitted": false,
+            "code": "schedule_paused",
+            "message": "the task is paused; resume it before running it",
+        }));
+    };
+    if !verdict.is_admitted() {
+        return Ok(json!({ "id": id, "code": verdict.code() }));
+    }
+    // The reminder text is rendered so a caller can see exactly what would have been delivered. That
+    // is the honest middle: the framing is a pure function and portable, the transport is not.
+    let prompt = schedule.prompt.clone();
+    Ok(json!({
+        "id": id,
+        "admitted": false,
+        "code": "no_delivery_channel",
+        "message": "the run was admitted but this build has no resident-agent channel to deliver through",
+        "wouldDeliver": girder_core::render_schedule_reminder(id, &prompt, "now"),
+    }))
 }

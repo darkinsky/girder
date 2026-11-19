@@ -490,6 +490,13 @@ const DECLARED: &[Declared] = &[
         capability: Some("Catalogue"),
     },
     Declared {
+        // Admits a run, then reports the delivery it cannot make. Both facts travel: a client that
+        // saw only "admitted" would believe a message was sent.
+        method: "schedule.run",
+        registration: "register_schedule_methods",
+        capability: Some("ScheduleStore"),
+    },
+    Declared {
         // Update one field or delete the task: upstream's single edit endpoint, because a client
         // edits a task in place and a delete is the edit whose patch is everything.
         method: "schedule.edit",
