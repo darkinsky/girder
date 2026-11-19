@@ -22,8 +22,8 @@ them against a running `girder serve`:
 | | Count |
 | --- | --- |
 | Upstream endpoints, in scope | 126 |
-| Served here | 102 (**80%**) |
-| Namespaces fully aligned | 19 of 25 |
+| Served here | 105 (**83%**) |
+| Namespaces fully aligned | 20 of 25 |
 | Namespaces with nothing | 7 of 25 |
 
 Fully aligned: `commands`, `goals`, `job`, `llm`, `pluginMarket`, `session`, `settings`, `terminal`,
@@ -48,7 +48,7 @@ pass their own tests.
 
 ## What is blocked, and by what
 
-Of the 24 missing endpoints, the split is what matters:
+Of the 21 missing endpoints, the split is what matters:
 
 | Need | Count | Namespaces |
 | --- | --- | --- |

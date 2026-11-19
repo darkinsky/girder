@@ -14,11 +14,11 @@ consumers, and stay out of the way.
 > format is exercised rather than the service.
 >
 > Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
-> `@Remote` markers and this build's running server, in-scope packages only): **102 of 126 endpoints
-> aligned (80%)**, with **19 of 25 namespaces complete**. 232,238 lines of Rust against upstream's
+> `@Remote` markers and this build's running server, in-scope packages only): **105 of 126 endpoints
+> aligned (83%)**, with **20 of 25 namespaces complete**. 232,238 lines of Rust against upstream's
 > ~243,000 in-scope lines.
 >
-> The remaining 24 endpoints split four ways, and the split is the useful part: **15 are a boundary**
+> The remaining 21 endpoints split four ways, and the split is the useful part: **15 are a boundary**
 > (`pluginManager` and `pluginInventory` read the Cordis entry tree, which this port replaced with
 > `ServiceKey` by design — a port would have to invent the tree), **11 need an account backend**,
 > **6 need a subsystem this build lacks**, and **2 are addressed to a running subagent** rather than

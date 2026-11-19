@@ -7,8 +7,8 @@
 
 ## 一句话
 
-**后端 80% 的 Remote 端点、19 个命名空间完全对齐、10,335 个测试通过、二进制可运行。**
-剩下的 24 个端点里，15 个受限于一个设计决策（Cordis 替换），其余各需要本 crate 之外的东西。
+**后端 83% 的 Remote 端点、20 个命名空间完全对齐、10,335 个测试通过、二进制可运行。**
+剩下的 21 个端点里，15 个受限于一个设计决策（Cordis 替换），其余各需要本 crate 之外的东西。
 
 ## 实测数字
 
@@ -18,7 +18,7 @@
 |---|---|---|
 | Rust 有效行（排除测试） | 232,238 | `find crates -name "*.rs" -not -path "*/tests/*"` |
 | 上游范围内行数 | ~243,000 | `packages/*/src/**/*.ts`，排除 client/experimental/extensions/test-support |
-| **Remote 端点** | **102 / 126（80%）** | `docs/port-map.md`，从运行中的 `serve` 读取 |
+| **Remote 端点** | **105 / 126（83%）** | `docs/port-map.md`，从运行中的 `serve` 读取 |
 | **完全对齐的命名空间** | **18 / 25** | 同上 |
 | 测试 | **10,335 通过，零失败** | `cargo test --all-features` |
 | 提交 | 371 | `git log --oneline` |
@@ -57,17 +57,24 @@ girder --require-peer=1          → 无凭据请求返回 401
 一处术语混淆也影响过判断：`packages/web/web` 不是浏览器界面，是**模型访问网页的能力**（搜索与抓取）。
 浏览器前端在 `packages/client/ui-*`。
 
-## 剩余 24 个端点，按「需要什么」分类
+## 剩余 21 个端点，按「需要什么」分类
 
 这是最后一份清单，比单纯的「缺多少个」有用：
 
-| 需要什么 | 数量 | 端点 |
+| 需要什么 | 数量 | 端点 | 能不能做 |
 |---|---|---|---|
-| **Cordis 条目树** | **16** | `pluginManager` 15、`pluginInventory` 1 |
-| 本构建缺少的子系统 | 5 | `mcpManager` 2、`officeKit` 2、`schedule.run` 1 |
-| 运行中的子代理 | 2 | `subagents.prompt`、`subagents.interruptByUser` |
-| 投递日志 | 1 | `schedule.history` |
-| **合计** | **24** | |
+| **Cordis 条目树** | **16** | `pluginManager` 15、`pluginInventory` 1 | **不能** |
+| MCP 传输 | 2 | `mcpManager.probe`、`mcpManager.restart` | 新建子系统 |
+| 运行中的子代理 | 2 | `subagents.prompt`、`subagents.interruptByUser` | **不能** |
+| 调度运行时 | 1 | `schedule.run` | 新建子系统 |
+| **合计** | **21** | | |
+
+`officeKit` 与 `schedule.history` 已移出这张表：前者的 `generation` 应答、`render` 如实拒绝，
+后者用空页加 `retention` 说明它能回溯多远。
+
+**「不能」这一类有一个共同点：它们都指向一个进程，不是指向一个存储。**
+`pluginManager` 指向 Cordis 条目树，`subagents.prompt` 指向运行中的子会话。没有东西可建，
+因为建出来也没有调用方能到达。
 
 ### 一个需要解释的口径
 
