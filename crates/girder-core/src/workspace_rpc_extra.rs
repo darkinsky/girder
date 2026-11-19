@@ -419,6 +419,10 @@ pub fn retain_visible(session_ids: &mut Vec<String>, preferences: &dyn Workspace
 /// server that picked a directory itself would be writing into a path nobody chose. A `None` answers
 /// `initialized: false` rather than guessing, which is what upstream does when its documents lookup
 /// times out.
+#[allow(
+    dead_code,
+    reason = "called from `serve`, which the `#[path]` test target does not compile; reachable in the library"
+)]
 pub fn register_workspace_initialize_default(
     registry: &mut RemoteRegistry,
     workspaces: &Arc<WorkspaceRegistry>,

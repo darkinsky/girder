@@ -14,8 +14,8 @@ consumers, and stay out of the way.
 > format is exercised rather than the service.
 >
 > Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
-> `@Remote` markers and this build's running server, in-scope packages only): **74 of 126 endpoints
-> aligned (58%)**, with **8 of 25 namespaces complete**. 230,051 lines of Rust against upstream's
+> `@Remote` markers and this build's running server, in-scope packages only): **89 of 126 endpoints
+> aligned (70%)**, with **17 of 25 namespaces complete**. 230,051 lines of Rust against upstream's
 > ~243,000 in-scope lines.
 >
 > Most of the 52 missing endpoints are ordinary work. **Two namespaces are a boundary instead**:

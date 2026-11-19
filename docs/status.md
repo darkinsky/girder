@@ -22,12 +22,13 @@ them against a running `girder serve`:
 | | Count |
 | --- | --- |
 | Upstream endpoints, in scope | 126 |
-| Served here | 74 (**58%**) |
-| Namespaces fully aligned | 8 of 25 |
-| Namespaces with nothing | 13 of 25 |
+| Served here | 89 (**70%**) |
+| Namespaces fully aligned | 17 of 25 |
+| Namespaces with nothing | 7 of 25 |
 
-Fully aligned: `commands`, `goals`, `job`, `llm`, `pluginMarket`, `session`, `userQuestions`,
-`workspaceFiles`.
+Fully aligned: `commands`, `goals`, `job`, `llm`, `pluginMarket`, `session`, `settings`, `terminal`,
+`userQuestions`, `workspace`, `workspaceFiles` -- and five more whose only remaining endpoints are
+the two Cordis ones.
 
 Scope matters more than it looks: an earlier version of this file counted 183 endpoints across 35
 namespaces because it included `client`, `experimental` and `extensions`, which the plan excludes.

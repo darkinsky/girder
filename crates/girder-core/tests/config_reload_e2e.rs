@@ -222,8 +222,21 @@ async fn dispatch(
 }
 
 /// The seven methods this build registers under `settings`, as a client spells them.
-const SEVEN_METHODS: [&str; 7] = [
-    "get", "set", "list", "delete", "update", "replace", "mutate",
+/// Every implemented `settings` method.
+///
+/// Was seven; `describe` and `openSettingsDocument` joined when they stopped being declared gaps.
+/// Renamed from `NINE_METHODS` rather than left as a number that no longer counts the list, because
+/// a name that disagrees with its value is the kind of drift this file exists to catch.
+const NINE_METHODS: [&str; 9] = [
+    "get",
+    "set",
+    "list",
+    "delete",
+    "update",
+    "replace",
+    "mutate",
+    "describe",
+    "openSettingsDocument",
 ];
 
 // ---- 1. a written value is the value that is read back ----------------------------------------
@@ -846,15 +859,14 @@ fn a_store_write_is_visible_to_the_next_schema_describe() {
 // ---- 8. the surface is the seven methods, and describe is the declared gap --------------------
 
 #[tokio::test]
-async fn the_settings_namespace_serves_seven_methods_and_reports_describe_as_a_gap() {
-    // The premise of the whole file, pinned at wire level: seven methods are registered, and
-    // `describe` — the method `api_config::settings_methods()` advertises to a form-rendering
-    // client — answers NOT_IMPLEMENTED naming itself rather than a transport-level 404 a client
-    // would read as a typo.
+async fn the_settings_namespace_serves_nine_methods_and_reports_no_gap() {
+    // The premise of the whole file, pinned at wire level: nine methods are registered, and none of
+    // them is a declared gap -- `describe` used to be one, and it now answers a real description
+    // rather than NOT_IMPLEMENTED.
     let store: Arc<dyn SettingsStore> = Arc::new(MemorySettingsStore::new());
     let registry = registry(&store);
 
-    for method in SEVEN_METHODS {
+    for method in NINE_METHODS {
         // Each must be reachable: an unknown-method error would mean the name is wrong, and any
         // other error is the method's own answer to an empty body.
         let result = dispatch(&registry, method, json!({})).await;
@@ -864,13 +876,24 @@ async fn the_settings_namespace_serves_seven_methods_and_reports_describe_as_a_g
         );
     }
 
-    let gap = dispatch(&registry, "describe", json!({}))
+    // `describe` answers a real description. The assertion is on the shape rather than the values:
+    // what matters here is that it is no longer a gap, and that its answer names the three facts a
+    // settings surface needs.
+    let described = dispatch(&registry, "describe", json!({}))
         .await
-        .expect_err("describe is a declared gap, not an implemented method");
-    assert_eq!(gap.code(), "NOT_IMPLEMENTED");
-    let RemoteError::NotImplemented { namespace, method } = &gap else {
-        panic!("the gap must be reported as not-implemented, got {gap:?}");
-    };
-    assert_eq!(namespace, NAMESPACE);
-    assert_eq!(method, "describe");
+        .expect("describe is implemented");
+    for field in ["writable", "hasDocument", "namespaces"] {
+        assert!(
+            described.get(field).is_some(),
+            "`describe` must answer `{field}`, got {described}"
+        );
+    }
+    // And no method of this namespace is a declared gap any more.
+    for method in NINE_METHODS {
+        let result = dispatch(&registry, method, json!({})).await;
+        assert!(
+            !matches!(result, Err(RemoteError::NotImplemented { .. })),
+            "`{NAMESPACE}.{method}` must be implemented, got {result:?}"
+        );
+    }
 }

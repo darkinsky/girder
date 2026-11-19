@@ -296,6 +296,29 @@ fn path_policy(mode: &str, workspace: &std::path::Path) -> Result<girder_core::P
     Ok(policy)
 }
 
+/// The terminal surface: create, read, close, and the two methods that name or save one.
+///
+/// One function because all six share one registry, and a caller that registered five of them would
+/// have terminals it could start and not rename.
+fn register_terminal_surface(remote: &mut girder_core::RemoteRegistry) {
+    let launcher: Arc<dyn girder_core::TerminalLauncher> =
+        Arc::new(girder_core::LocalLauncher::new());
+    girder_core::register_terminal_extra_methods(remote);
+    let terminals = Arc::new(girder_core::TerminalRegistry::new());
+    girder_core::register_terminal_rpc_methods(remote, &terminals, &launcher);
+    // `terminal.rename`: names a terminal a person can tell apart in a list. The bounds are the
+    // controller's, not the store's, so a second caller cannot store an unusable title.
+    girder_core::register_terminal_rename_method(remote, &terminals);
+    // `terminal.retain`: saves a transcript so it survives the process. The store is per-deployment
+    // because it writes to disk, which is a decision a caller makes rather than one this derives.
+    girder_core::register_terminal_retain_method(
+        remote,
+        Arc::new(girder_core::TerminalPersistStore::new(
+            sessions_root().join("terminals"),
+        )),
+    );
+}
+
 /// The route table: the built-in provider, plus whatever the settings file declares.
 ///
 /// `providers` blocks are validated by `pi_ai_apply_gap` before any route registers, so a deployment
@@ -473,22 +496,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // The real launcher: a local shell over pipes. Not a pty, so an interactive program will not work, but a script
     // and a non-interactive command will -- and a terminal that can run those is better than one that refuses every
     // launch, which is what this deployment had until now.
-    let launcher: Arc<dyn girder_core::TerminalLauncher> =
-        Arc::new(girder_core::LocalLauncher::new());
-    girder_core::register_terminal_extra_methods(&mut remote);
-    let terminals = Arc::new(girder_core::TerminalRegistry::new());
-    girder_core::register_terminal_rpc_methods(&mut remote, &terminals, &launcher);
-    // `terminal.rename`: names a terminal a person can tell apart in a list. The bounds are the
-    // controller's, not the store's, so a second caller cannot store an unusable title.
-    girder_core::register_terminal_rename_method(&mut remote, &terminals);
-    // `terminal.retain`: saves a transcript so it survives the process. The store is per-deployment
-    // because it writes to disk, which is a decision a caller makes rather than one this derives.
-    girder_core::register_terminal_retain_method(
-        &mut remote,
-        Arc::new(girder_core::TerminalPersistStore::new(
-            sessions_root().join("terminals"),
-        )),
-    );
+    register_terminal_surface(&mut remote);
 
     // The job tools share the server's registry, so a job a model started is the same job a client sees. Registering
     // them against a second registry would produce two lists that disagree about what is running.

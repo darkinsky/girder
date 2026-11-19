@@ -45,10 +45,9 @@ use girder_core::{Policy, ReadOnly, RemoteCall, RemoteError, RemoteRegistry};
 use serde_json::{Value, json};
 
 use settings_rpc::{
-    DELETE_METHOD, DESCRIBE_METHOD, GET_METHOD, LIST_METHOD, MAX_KEY_LEN, MUTATE_METHOD,
-    MemorySettingsStore, NAMESPACE, OPEN_DOCUMENT_METHOD, REPLACE_METHOD, SET_METHOD,
-    SettingsStore, UNIMPLEMENTED, UPDATE_METHOD, UnavailableSettingsStore,
-    register_settings_methods,
+    DELETE_METHOD, GET_METHOD, LIST_METHOD, MAX_KEY_LEN, MUTATE_METHOD, MemorySettingsStore,
+    NAMESPACE, REPLACE_METHOD, SET_METHOD, SettingsStore, UNIMPLEMENTED, UPDATE_METHOD,
+    UnavailableSettingsStore, register_settings_methods,
 };
 
 // ---- fixtures ---------------------------------------------------------------------------------
