@@ -41,7 +41,6 @@
 //! not knowing which file was the one that changed.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -302,30 +301,38 @@ impl ExecOutput {
         self.code == Some(0)
     }
 
-    /// Renders both streams the way a tool result should show them.
+    /// The model-facing text, rendered through `shell_gap`.
+    ///
+    /// Three differences from the concatenation this replaced, and each is a fact the model needs:
+    ///
+    /// - **A `[stderr]` header** separates the streams. Without it a warning on stderr and a result
+    ///   on stdout read as one paragraph, and a model quoting the output cannot tell which it saw.
+    /// - **`(no output)`** for an empty result, so "the command printed nothing" is stated rather
+    ///   than left as an empty string the reader has to interpret.
+    /// - **`parse_exit_status`'s marker**, which is what `render_result` writes and what upstream's
+    ///   `parseExitStatus` reads back. A model that wants the code can find it; the previous
+    ///   `[exit N]` was this build's own invention and nothing parsed it.
     #[must_use]
-    pub fn to_text(&self) -> String {
-        let mut out = String::new();
-        if !self.stdout.is_empty() {
-            out.push_str(&self.stdout);
-        }
-        if !self.stderr.is_empty() {
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&self.stderr);
-        }
-        match self.code {
-            Some(0) | None => {}
-            Some(code) => {
-                if !out.is_empty() && !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                let _ = write!(out, "[exit {code}]");
-            }
-        }
-        out
+    pub fn to_model_text(&self) -> String {
+        let outcome = crate::shell_gap::RunOutcome {
+            exit_code: self.code,
+            signal: None,
+            // A timed-out run never reaches here: it is `ExecError::Timeout`, so there is no
+            // outcome to render. Reporting `false` is therefore accurate rather than a default.
+            timed_out: false,
+            stopped: None,
+            timeout_ms: 0,
+            stdout: crate::shell_gap::CollectedOutput::complete(self.stdout.clone()),
+            stderr: crate::shell_gap::CollectedOutput::complete(self.stderr.clone()),
+            sandbox: None,
+        };
+        crate::shell_gap::render_result(&outcome, &[])
     }
+
+    // `to_text` used to live here: it concatenated stdout and stderr with no separator, printed an
+    // empty string for no output, and wrote `[exit N]` -- a marker nothing parsed. `to_model_text`
+    // replaces it, through `shell_gap`, which owns upstream's contract. The old method is deleted
+    // rather than kept as a second answer to "what does the model see".
 }
 
 /// Runs `script` through `sh -c`.
@@ -497,7 +504,10 @@ pub fn bash_tool(policy: PathPolicy) -> crate::tools::ToolDefinition {
                         Ok(output) => Ok(with_invalidation_notice(
                             crate::tools::ToolResult {
                                 content: vec![crate::llm::ContentBlock::Text {
-                                    text: output.to_text(),
+                                    // Through `shell_gap`, which owns upstream's output contract: the
+                                    // `[stderr]` header, `(no output)` for an empty result, and the
+                                    // exit marker `parse_exit_status` reads back.
+                                    text: output.to_model_text(),
                                 }],
                                 value: None,
                                 is_error: !output.success(),

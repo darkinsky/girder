@@ -77,7 +77,18 @@ async fn a_nonzero_exit_is_reported_not_raised() {
 
     assert_eq!(output.code, Some(3));
     assert!(!output.success());
-    assert!(output.to_text().contains("[exit 3]"));
+    // Through `shell_gap` now, whose marker is the one `parse_exit_status` reads back. The old
+    // `[exit 3]` was this build's own spelling and nothing parsed it.
+    assert!(
+        output.to_model_text().contains("[exit code: 3]"),
+        "{}",
+        output.to_model_text()
+    );
+    assert!(
+        output.to_model_text().contains("(no output)"),
+        "{}",
+        output.to_model_text()
+    );
 }
 
 #[tokio::test]
