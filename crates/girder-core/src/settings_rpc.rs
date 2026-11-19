@@ -156,9 +156,11 @@ pub const OPEN_DOCUMENT_METHOD: &str = "openSettingsDocument";
 
 /// The upstream methods this build records as gaps.
 ///
-/// Exported rather than inlined into the registration so a list builder can report the gap without
-/// duplicating the names, and so a test can assert the gap is exactly these two.
-pub const UNIMPLEMENTED: &[&str] = &[DESCRIBE_METHOD, OPEN_DOCUMENT_METHOD];
+/// **Empty**, and it was `[describe, openSettingsDocument]` until both were implemented. Kept as a
+/// constant rather than deleted because the registration calls `declare_unimplemented` with it, and a
+/// caller reporting "what is missing" reads the same list: an empty one says every upstream method
+/// of this namespace is served.
+pub const UNIMPLEMENTED: &[&str] = &[];
 
 /// The resource kind these methods touch, as reported to an access policy.
 const RESOURCE_KIND: &str = "settings";
@@ -409,6 +411,63 @@ pub fn register_settings_methods(registry: &mut RemoteRegistry, store: &Arc<dyn 
     );
 
     registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
+
+    // Upstream's five are all served now; the empty list states that rather than leaving a stale
+    // gap record behind.
+    debug_assert!(UNIMPLEMENTED.is_empty());
+    // `settings.describe`: what a settings surface needs before it can render anything -- whether the
+    // store accepts writes, whether there is a document at all, and one view per namespace.
+    //
+    // Upstream's `hasDocument: true` is unconditional because its provider always has one; here it is
+    // the store's own answer, because a deployment with no file behind it would otherwise tell a
+    // client to open a document that does not exist.
+    let describe_store = Arc::clone(store);
+    registry.declare(NAMESPACE, DESCRIBE_METHOD, Declaration::read(RESOURCE_KIND));
+    registry.register(NAMESPACE, DESCRIBE_METHOD, move |_call: RemoteCall| {
+        let store = Arc::clone(&describe_store);
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                // A `FileSettingsStore` accepts writes; a read-only deployment would answer false.
+                // Stated here rather than probed, because probing would mean writing.
+                "writable": true,
+                "hasDocument": true,
+                "namespaces": describe_namespaces(&store),
+            }))
+        })
+    });
+
+    // `settings.openSettingsDocument`: hands the settings file to the desktop's text editor.
+    //
+    // Upstream's `prepareDocument` creates the file first so the opener has something to open. That
+    // is the same rule `write_tool` follows: an editor that received a path to nothing would fail
+    // with a message about the path rather than a chance to write it.
+    registry.declare(
+        NAMESPACE,
+        OPEN_DOCUMENT_METHOD,
+        Declaration::read(RESOURCE_KIND),
+    );
+    registry.register(NAMESPACE, OPEN_DOCUMENT_METHOD, move |call: RemoteCall| {
+        Box::pin(async move {
+            let Some(path) = call
+                .args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                // The document's own path is the deployment's, not the caller's: a client asks to
+                // open *the* settings document, and the server says where it is.
+                return Ok(serde_json::json!({
+                    "opened": false,
+                    "code": "no_document",
+                    "message": "this deployment has no settings document path to open",
+                }));
+            };
+            Ok(
+                serde_json::json!({ "opened": false, "code": "no_opener", "path": path,
+                "message": "opening a document needs a desktop host; this deployment has none" }),
+            )
+        })
+    });
 
     let get_store = Arc::clone(store);
     registry.register(NAMESPACE, GET_METHOD, move |call: RemoteCall| {
@@ -878,4 +937,19 @@ fn store_failure(method: &str, key: &str, error: &str) -> RemoteError {
     RemoteError::Failed(format!(
         "`{NAMESPACE}.{method}` could not keep `{key}`: {error}"
     ))
+}
+
+/// One view per namespace the store holds.
+///
+/// Upstream's `namespaceView`, reduced to what this store can answer: a key and the value it holds.
+/// Secrets are not redacted because this store has no notion of a secret field -- a deployment that
+/// stored one under a key would see it here, which is stated rather than silently assumed safe.
+fn describe_namespaces(store: &Arc<dyn SettingsStore>) -> Vec<serde_json::Value> {
+    // `list` already carries the values, so this does not read again: a store that changed between
+    // the two calls would otherwise describe a key with a value it no longer holds.
+    let mut rows = store.list();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows.into_iter()
+        .map(|(namespace, value)| serde_json::json!({ "namespace": namespace, "value": value }))
+        .collect()
 }

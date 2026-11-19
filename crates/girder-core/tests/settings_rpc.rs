@@ -850,9 +850,13 @@ async fn the_upstream_methods_this_build_lacks_are_declared_not_missing() {
         }
     }
 
-    // Exactly the two documented gaps, no more: a method that quietly stopped being implemented
-    // would otherwise vanish from this list without a test noticing.
-    assert_eq!(UNIMPLEMENTED, &[DESCRIBE_METHOD, OPEN_DOCUMENT_METHOD]);
+    // No gaps left: every upstream method of this namespace is served. Kept as an assertion rather
+    // than deleted, because the way a gap reappears is a handler being removed while its declaration
+    // stays -- and this is what would notice.
+    assert!(
+        UNIMPLEMENTED.is_empty(),
+        "every upstream method is implemented; a name here would mean one is declared but not served"
+    );
     let declared = registry.unimplemented();
     let names: Vec<&str> = declared
         .iter()

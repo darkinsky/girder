@@ -240,6 +240,16 @@ const DECLARED: &[Declared] = &[
         capability: Some("TerminalPersistStore"),
     },
     Declared {
+        method: "settings.describe",
+        registration: "register_settings_methods",
+        capability: Some("SettingsStore"),
+    },
+    Declared {
+        method: "settings.openSettingsDocument",
+        registration: "register_settings_methods",
+        capability: Some("SettingsStore"),
+    },
+    Declared {
         // The sessions a `@`-mention may point at, ranked so the caller's own directory comes first.
         method: "sessionReferenceResolver.candidates",
         registration: "register_session_reference_methods",
