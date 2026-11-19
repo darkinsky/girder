@@ -190,6 +190,23 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // One observation per call; `girder_rpc::stream` polls it. Upstream holds one connection
+        // open and pushes frames, which is the same series with the pacing on the other side.
+        method: "session.observeEvent",
+        registration: "register_session_state_method_with",
+        capability: Some("AgentRuntime (live turns)"),
+    },
+    Declared {
+        method: "session.observeProjections",
+        registration: "register_session_state_method_with",
+        capability: Some("ProjectionRegistry"),
+    },
+    Declared {
+        method: "session.observeState",
+        registration: "register_session_state_method_with",
+        capability: Some("AgentRuntime (live turns)"),
+    },
+    Declared {
         // Chooses a default model when the deployment has none. Idempotent against a configured
         // deployment, and an error rather than a no-op when nothing can serve a model.
         method: "session.initializeDefaultModel",

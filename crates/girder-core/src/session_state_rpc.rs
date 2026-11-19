@@ -244,22 +244,29 @@ pub fn register_session_state_method_with(
     projections: &Arc<ProjectionRegistry>,
     turns: &Arc<dyn LiveTurns>,
 ) {
-    // Two clones each: the first registration takes ownership of these, and `wait` needs its own.
-    let catalog = Arc::clone(catalog);
-    let projections = Arc::clone(projections);
-    let turns: Arc<dyn LiveTurns> = Arc::clone(turns);
-    let wait_catalog = Arc::clone(&catalog);
-    let wait_projections = Arc::clone(&projections);
-    let wait_turns = Arc::clone(&turns);
+    // One owned clone per registration, because each closure takes ownership of what it captures.
+    // Named by endpoint rather than by index: five handlers read these and a `_2` suffix would not
+    // say which one it belonged to.
+    let state_catalog = Arc::clone(catalog);
+    let state_projections = Arc::clone(projections);
+    let state_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
+    let wait_catalog = Arc::clone(catalog);
+    let wait_projections = Arc::clone(projections);
+    let wait_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
+    let event_catalog = Arc::clone(catalog);
+    let projection_registry = Arc::clone(projections);
+    let observe_state_catalog = Arc::clone(catalog);
+    let observe_state_projections = Arc::clone(projections);
+    let observe_state_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
 
     // Declared beside the handler and before it, so the policy judges the call the handler would take.
     // A read: nothing below writes, and a read-only mirror must still be able to render a session.
     registry.declare(NAMESPACE, METHOD, Declaration::read(RESOURCE_KIND));
 
     registry.register(NAMESPACE, METHOD, move |call: RemoteCall| {
-        let catalog = Arc::clone(&catalog);
-        let projections = Arc::clone(&projections);
-        let turns = Arc::clone(&turns);
+        let catalog = Arc::clone(&state_catalog);
+        let projections = Arc::clone(&state_projections);
+        let turns = Arc::clone(&state_turns);
         Box::pin(async move { state(&call.args, &catalog, &projections, &turns, None).await })
     });
 
@@ -268,6 +275,32 @@ pub fn register_session_state_method_with(
     // and one call of this endpoint is one observation. A client that wants to keep waiting calls
     // again -- which is what a stream carrier does on its side, and it keeps this transport free of
     // a long-lived request.
+    // The three `observe*` endpoints, each one observation. `girder_rpc::stream` already names all
+    // three as subscribable and polls them; what was missing was the method behind the name.
+    registry.register(NAMESPACE, "observeEvent", move |call: RemoteCall| {
+        let catalog = Arc::clone(&event_catalog);
+        Box::pin(
+            async move { girder_core::session_observe::observe_event(&call.args, &catalog).await },
+        )
+    });
+
+    registry.register(NAMESPACE, "observeProjections", move |call: RemoteCall| {
+        let projections = Arc::clone(&projection_registry);
+        Box::pin(async move {
+            girder_core::session_observe::observe_projections(&call.args, &projections)
+        })
+    });
+
+    registry.register(NAMESPACE, "observeState", move |call: RemoteCall| {
+        let catalog = Arc::clone(&observe_state_catalog);
+        let projections = Arc::clone(&observe_state_projections);
+        let turns = Arc::clone(&observe_state_turns);
+        Box::pin(async move {
+            let state = state(&call.args, &catalog, &projections, &turns, None).await?;
+            Ok(girder_core::session_observe::observe_state(&state))
+        })
+    });
+
     registry.register(NAMESPACE, "wait", move |call: RemoteCall| {
         let catalog = Arc::clone(&wait_catalog);
         let projections = Arc::clone(&wait_projections);

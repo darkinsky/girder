@@ -283,6 +283,7 @@ mod session_lifecycle_rpc;
 mod session_link;
 mod session_metrics;
 mod session_migration;
+pub mod session_observe;
 mod session_persistence;
 mod session_portable;
 mod session_preview;
