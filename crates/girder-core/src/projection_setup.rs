@@ -45,8 +45,16 @@ pub fn assemble() -> Result<Arc<ProjectionRegistry>, crate::projection::Projecti
 ///
 /// A `Vec<Arc<dyn Projection>>` rather than inlined registrations, so a caller that wants to add one
 /// adds it here and every consumer sees it.
+///
+/// # Why these seven, and not every projection that exists
+///
+/// These are the folds whose upstream consumer is the Host itself: a session's state, its stats, its
+/// turn outline, its token measurement, its working directory. A projection whose only reader is a
+/// browser (`turnOutline`'s rail) still belongs here, because the Host serves it; one that needs a
+/// subsystem this build lacks does not, and is named in `docs/final-report.md` instead.
 #[must_use]
 pub fn base_projections() -> Vec<Arc<dyn crate::projection::Projection>> {
+    use crate::session_stats_gap::Untimed;
     vec![
         // The reference fold: which turn is open, and where it started.
         Arc::new(TurnBoundary),
@@ -54,6 +62,25 @@ pub fn base_projections() -> Vec<Arc<dyn crate::projection::Projection>> {
         Arc::new(ModelSelectionProjection),
         // The session's title and what produced it.
         Arc::new(TitleProjection),
+        // Whole-log turn and step counts with wall times. `Untimed` is the right source here: this
+        // build's events carry their own timestamps, and a projection that dated them again would
+        // disagree with the log it folded.
+        Arc::new(crate::session_stats_gap::StatsProjection::new(Arc::new(
+            Untimed,
+        ))),
+        // Every started turn with the seq a jump can page through.
+        Arc::new(crate::session_proj_extra_gap::TurnOutlineProjection),
+        // The model-list metadata a session carries, so a picker can render a row without reading
+        // the whole log.
+        Arc::new(crate::session_top_gap::SessionListMetadataProjection::new(
+            Arc::new(Untimed),
+        )),
+        // Whether a session is eligible to be continued, which is what `session.continuation` reads.
+        Arc::new(crate::session_top_gap::ContinuationProjection),
+        // The token measurement fold: what a retry can reuse instead of re-measuring.
+        Arc::new(crate::token_measurement_gap::TokenMeasurementProjection),
+        // The working directory in effect, which a shell tool reads before running anything.
+        Arc::new(crate::working_dir_gap::WorkingDirectoryProjection),
     ]
 }
 
@@ -69,6 +96,8 @@ mod tests {
         assert!(keys.contains(&"turnBoundary"), "{keys:?}");
         assert!(keys.contains(&"modelSelection"), "{keys:?}");
         assert!(keys.contains(&"title"), "{keys:?}");
+        assert!(keys.contains(&"sessionStats"), "{keys:?}");
+        assert!(keys.contains(&"turnOutline"), "{keys:?}");
     }
 
     #[test]
