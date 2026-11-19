@@ -447,6 +447,37 @@ pub enum SessionError {
         source: serde_json::Error,
     },
 
+    /// The log's format version is newer than this build understands.
+    ///
+    /// Distinct from [`Self::Corrupt`] because the two demand opposite actions: corrupt means the
+    /// file is damaged and nothing can read it, newer means a *newer build* wrote it and this one
+    /// must not guess. A reader told "corrupt" would delete the file; told this, it upgrades.
+    #[error(
+        "session log uses format v{stored}, but this build reads up to v{current}; \
+         a newer build wrote it"
+    )]
+    FormatTooNew {
+        /// The version the log declares.
+        stored: u64,
+        /// The newest version this build reads.
+        current: u64,
+    },
+
+    /// The log's format version is older than current, and no migration reaches it.
+    ///
+    /// Separate from [`Self::FormatTooNew`] because the fix differs: one is an upgrade, this one is
+    /// a build that should have carried the edge and does not.
+    #[error(
+        "session log uses format v{stored}, and no migration from it is implemented (this build \
+         writes v{current})"
+    )]
+    FormatUnsupported {
+        /// The version the log declares.
+        stored: u64,
+        /// The version this build writes.
+        current: u64,
+    },
+
     /// A zstd frame could not be decoded.
     #[error("session compression: {0}")]
     Compression(String),
@@ -845,6 +876,17 @@ impl crate::ServiceKey for SessionKey {
 ///
 /// Kept as a free function so a tool or a CLI subcommand can inspect a log without constructing a
 /// store.
+/// The `version` a session header declares, when the line is one.
+///
+/// A header is a line whose `type` is `session`. Anything else is an event, and an event has no
+/// version of its own -- a log is one format, stated once.
+fn header_version(value: &serde_json::Value) -> Option<u64> {
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("session") {
+        return None;
+    }
+    value.get("version").and_then(serde_json::Value::as_u64)
+}
+
 pub fn read_session_file(path: impl AsRef<Path>) -> Result<Vec<SessionEvent>, SessionError> {
     let mut bytes = Vec::new();
     File::open(path.as_ref())?.read_to_end(&mut bytes)?;
@@ -856,12 +898,64 @@ pub fn read_session_file(path: impl AsRef<Path>) -> Result<Vec<SessionEvent>, Se
     let text = String::from_utf8(decoded)
         .map_err(|error| SessionError::Compression(format!("session log is not UTF-8: {error}")))?;
 
+    // The first line may be a session header carrying `version`. Classifying it before anything is
+    // parsed is what turns "a field is missing somewhere" into "this log is from a newer build":
+    // without it a v9 log parsed by a v4 reader fails on whichever field the reader needed first,
+    // and that message names a field rather than the difference that produced it.
+    if let Some(version) = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .as_ref()
+        .and_then(header_version)
+    {
+        if let Ok(catalog) = crate::format_catalog_gap::FormatCatalog::released() {
+            match catalog.classify(version) {
+                crate::format_catalog_gap::VersionClass::Current => {}
+                crate::format_catalog_gap::VersionClass::NewerThanBuild { stored, current } => {
+                    return Err(SessionError::FormatTooNew { stored, current });
+                }
+                crate::format_catalog_gap::VersionClass::MigrationRequired => {
+                    // The route is what says whether a migration exists, not the version number: a
+                    // stored version below current with no traversable edge is unsupported too, and
+                    // reporting it as "migration required" would start a loop that fails one edge
+                    // later.
+                    // `blocked_edge` is what says whether the path is walkable: a version below
+                    // current with no traversable edge is unsupported too, and reporting it as
+                    // "migration required" would start a loop that fails one edge later.
+                    let walkable = catalog
+                        .route(version)
+                        .is_ok_and(|route| route.blocked_edge().is_none());
+                    if !walkable {
+                        return Err(SessionError::FormatUnsupported {
+                            stored: version,
+                            current: *catalog.readable_versions().end(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     let mut events = Vec::new();
     for (index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let event = serde_json::from_str(line).map_err(|source| SessionError::Corrupt {
+        // A header is metadata, not an event. It is skipped rather than parsed as one: this build's
+        // own logs begin with an event, and a log from a build that writes a header would otherwise
+        // fail on its first line with "unknown variant `session`" -- a message about the reader's
+        // vocabulary when the actual fact is that a header is there.
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return Err(SessionError::Corrupt {
+                line: index + 1,
+                source: serde_json::from_str::<SessionEvent>(line).expect_err("already failed"),
+            });
+        };
+        if header_version(&value).is_some() {
+            continue;
+        }
+        let event = serde_json::from_value(value).map_err(|source| SessionError::Corrupt {
             line: index + 1,
             source,
         })?;
