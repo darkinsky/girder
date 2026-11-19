@@ -6,21 +6,23 @@ Generated from upstream: every class extending `TypertRemoteService` in the in-s
 a running `girder serve`, so it is what a client can actually call.
 
 Upstream in scope: **126** endpoints across **25** namespaces.
-Present here: **91** (72%).
+Present here: **102** (80%).
 
 The **Tree** column counts uses of the Cordis entry tree. A non-zero count means the namespace
 cannot be ported onto this build's `ServiceKey` substrate without inventing the tree -- a boundary
-rather than backlog.
+rather than backlog. Methods registered with a structured refusal (`no_platform`,
+`store_unavailable`) count as present: a client discovers the answer from the method rather than
+from a 404 it would read as a typo.
 
 | Namespace | Upstream | Here | Missing | Tree |
 | --- | --- | --- | --- | --- |
 | `pluginManager` ✗ | 15 | 0 | 15 | 22 |
-| `account` ✗ | 11 | 0 | 11 |  |
 | `mcpManager` ✗ | 2 | 0 | 2 |  |
 | `officeKit` ✗ | 2 | 0 | 2 |  |
 | `schedule` | 9 | 7 | 2 |  |
 | `subagents` ✗ | 2 | 0 | 2 |  |
 | `pluginInventory` ✗ | 1 | 0 | 1 | 4 |
+| `account` ✓ | 11 | 11 | 0 |  |
 | `agentPresets` ✓ | 3 | 3 | 0 |  |
 | `agentTeams` ✓ | 1 | 1 | 0 |  |
 | `commands` ✓ | 2 | 2 | 0 |  |
@@ -40,9 +42,9 @@ rather than backlog.
 | `workspace` ✓ | 10 | 10 | 0 |  |
 | `workspaceFiles` ✓ | 6 | 6 | 0 |  |
 
-`✓` fully aligned (18): `agentPresets`, `agentTeams`, `commands`, `goals`, `job`, `llm`, `messageFeedback`, `permissionPresets`, `pluginMarket`, `session`, `sessionFeedback`, `sessionReferenceResolver`, `settings`, `terminal`, `userQuestions`, `web`, `workspace`, `workspaceFiles`
+`✓` fully aligned (19): `account`, `agentPresets`, `agentTeams`, `commands`, `goals`, `job`, `llm`, `messageFeedback`, `permissionPresets`, `pluginMarket`, `session`, `sessionFeedback`, `sessionReferenceResolver`, `settings`, `terminal`, `userQuestions`, `web`, `workspace`, `workspaceFiles`
 
-`✗` no implementation (6): `account`, `mcpManager`, `officeKit`, `pluginInventory`, `pluginManager`, `subagents`
+`✗` no implementation (5): `mcpManager`, `officeKit`, `pluginInventory`, `pluginManager`, `subagents`
 
 ## Boundary: blocked by the Cordis substitution
 
@@ -52,20 +54,6 @@ rather than backlog.
 These are not backlog. A port would have to build the entry tree this design replaced.
 
 ## Missing endpoints
-
-### `account` (11)
-
-- `account.cancelSignIn`
-- `account.getBalance`
-- `account.getNotificationContent`
-- `account.getNotifications`
-- `account.getProfile`
-- `account.getState`
-- `account.hasRunningAccountTasks`
-- `account.reportNotificationEvent`
-- `account.signOut`
-- `account.startSignIn`
-- `account.watchState`
 
 ### `mcpManager` (2)
 
@@ -110,6 +98,16 @@ These are not backlog. A port would have to build the entry tree this design rep
 - `subagents.prompt`
 
 ## Endpoints upstream does not serve
+
+### `account`
+
+- `account.watch`
+
+### `credentials`
+
+- `credentials.describe`
+- `credentials.set`
+- `credentials.unset`
 
 ### `extension`
 

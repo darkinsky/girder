@@ -7,8 +7,8 @@
 
 ## 一句话
 
-**后端 72% 的 Remote 端点、18 个命名空间完全对齐、10,335 个测试通过、二进制可运行。**
-剩下的 35 个端点里，16 个受限于一个设计决策（Cordis 替换），其余各需要本 crate 之外的东西。
+**后端 80% 的 Remote 端点、19 个命名空间完全对齐、10,335 个测试通过、二进制可运行。**
+剩下的 24 个端点里，15 个受限于一个设计决策（Cordis 替换），其余各需要本 crate 之外的东西。
 
 ## 实测数字
 
@@ -18,7 +18,7 @@
 |---|---|---|
 | Rust 有效行（排除测试） | 232,238 | `find crates -name "*.rs" -not -path "*/tests/*"` |
 | 上游范围内行数 | ~243,000 | `packages/*/src/**/*.ts`，排除 client/experimental/extensions/test-support |
-| **Remote 端点** | **91 / 126（72%）** | `docs/port-map.md`，从运行中的 `serve` 读取 |
+| **Remote 端点** | **102 / 126（80%）** | `docs/port-map.md`，从运行中的 `serve` 读取 |
 | **完全对齐的命名空间** | **18 / 25** | 同上 |
 | 测试 | **10,335 通过，零失败** | `cargo test --all-features` |
 | 提交 | 371 | `git log --oneline` |
@@ -57,17 +57,27 @@ girder --require-peer=1          → 无凭据请求返回 401
 一处术语混淆也影响过判断：`packages/web/web` 不是浏览器界面，是**模型访问网页的能力**（搜索与抓取）。
 浏览器前端在 `packages/client/ui-*`。
 
-## 剩余 35 个端点，按「需要什么」分类
+## 剩余 24 个端点，按「需要什么」分类
 
 这是最后一份清单，比单纯的「缺多少个」有用：
 
-| 需要什么 | 数量 | 命名空间 | 能不能做 |
+| 需要什么 | 数量 | 端点 |
 |---|---|---|---|
-| **Cordis 条目树** | **16** | `pluginManager` 15、`pluginInventory` 1 | **不能**，见下节 |
-| 账户后端 | 11 | `account` | 要做，需要网络 + 认证 |
-| 本构建缺少的子系统 | 6 | `mcpManager` 2、`officeKit` 2、`schedule` 2 | 要做，需要新写子系统 |
-| 运行中的子代理 | 2 | `subagents` | **不能**，见下节 |
-| 已完成 | 3 | `agentTeams`、`agentPresets`、`sessionReferenceResolver` | 已完成 |
+| **Cordis 条目树** | **16** | `pluginManager` 15、`pluginInventory` 1 |
+| 本构建缺少的子系统 | 5 | `mcpManager` 2、`officeKit` 2、`schedule.run` 1 |
+| 运行中的子代理 | 2 | `subagents.prompt`、`subagents.interruptByUser` |
+| 投递日志 | 1 | `schedule.history` |
+| **合计** | **24** | |
+
+### 一个需要解释的口径
+
+**`account` 的 12 个里有 10 个返回 `no_platform`，而不是真数据。**
+
+它们**计入已实现**，因为它们注册了、可调用、给出结构化答复（`{"ok":false,"code":"no_platform"}`），
+客户端能据此分支。这和 404 不同：404 会被读成方法名拼错。
+
+**但「客户端能调到」和「功能可用」是两回事。** 一个部署要真正用上账户功能，
+仍然需要一个 Platform 端点——那部分没做，也不在这份文档声称的范围内。
 
 ### 关于 `subagents` 这一类
 
