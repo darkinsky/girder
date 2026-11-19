@@ -772,6 +772,19 @@ fn register_workspace_file_surface(
         }
         Err(error) => eprintln!("[llm] runtime not built: {error}"),
     }
+    // `web.listProviders`: the search and fetch endpoints this deployment registered. Empty when it
+    // has none, which is the honest answer rather than an absent method.
+    girder_core::web_rpc::register_web_methods(
+        remote,
+        &Arc::new(girder_core::web_rpc::WebProviders::from_environment()),
+    );
+    // `permissionPresets.catalog`: the same built-in set the approval layer enforces, so a client
+    // reading this and a rule refusing a call cannot disagree about which presets exist.
+    girder_core::permission_presets_rpc::register_permission_preset_methods(
+        remote,
+        &girder_core::permission_presets_rpc::default_catalogue(),
+        girder_core::permission_presets_rpc::DEFAULT_PRESET,
+    );
     // `pluginMarket.*`: the market index this build already parses, reachable from a client.
     let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
     girder_core::plugin_market_rpc::register_market_methods(remote, &market);

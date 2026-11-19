@@ -207,6 +207,20 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // The search and fetch endpoints this deployment registered. Two lists because the two
+        // capabilities are separate: a deployment may have fetch and no search index.
+        method: "web.listProviders",
+        registration: "register_web_methods",
+        capability: Some("WebProviders"),
+    },
+    Declared {
+        // Every selectable preset, in contribution order. Three lists because a selector needs to
+        // distinguish "may pick now" from "offered as a default".
+        method: "permissionPresets.catalog",
+        registration: "register_permission_preset_methods",
+        capability: Some("Catalogue"),
+    },
+    Declared {
         // Upstream's bulk removal of inactive tasks, and the two reads a picker needs before it
         // schedules anything.
         method: "schedule.catalog",

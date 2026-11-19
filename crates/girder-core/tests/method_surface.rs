@@ -155,6 +155,15 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
     }
     let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
     girder_core::plugin_market_rpc::register_market_methods(registry, &market);
+    girder_core::web_rpc::register_web_methods(
+        registry,
+        &Arc::new(girder_core::web_rpc::WebProviders::new()),
+    );
+    girder_core::permission_presets_rpc::register_permission_preset_methods(
+        registry,
+        &girder_core::permission_presets_rpc::default_catalogue(),
+        girder_core::permission_presets_rpc::DEFAULT_PRESET,
+    );
 }
 
 /// The terminals: two probes that need nothing, then the session methods over one registry.
