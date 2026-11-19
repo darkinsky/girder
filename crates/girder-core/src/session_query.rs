@@ -101,7 +101,9 @@ impl Kind {
 }
 
 /// What to search for.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+// `PartialEq` only: `SessionFilter` carries a `f64` creation bound, and `Eq` cannot hold for a
+// float. The loss is a `BTreeMap` key or a `HashSet` member, neither of which a `Query` is used as.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Query {
     /// Case-insensitive text to look for; empty matches everything.
     pub text: String,
@@ -116,6 +118,14 @@ pub struct Query {
     pub kind: Option<Kind>,
     /// Restrict to one session; `None` searches every session.
     pub session: Option<String>,
+    /// Structured session-level clauses, from `session_query_gap`.
+    ///
+    /// The alternatives a caller can express here -- working directory, creation interval, parent
+    /// session, availability -- are the ones whose ranges are evaluable. `session` above is kept
+    /// because it is the common case and a one-element `Id` clause would be a heavier spelling of it,
+    /// but a caller that wants "sessions from this directory created this week" has no way to say it
+    /// without these.
+    pub session_filters: Vec<girder_core::session_query_gap::SessionFilter>,
     /// Stop after this many matches.
     pub limit: Option<usize>,
 }
@@ -329,6 +339,30 @@ pub fn run(query: &Query, candidates: Vec<Candidate>) -> Results {
     results
 }
 
+/// Which of a query's session clauses this build cannot evaluate.
+///
+/// A clause absent from the returned list is evaluable. Exposed because the alternative -- treating an
+/// unevaluable clause as "matches everything" -- answers a filtered question with an unfiltered result,
+/// and treating it as "matches nothing" answers with a confident zero. Neither is the truth, and a
+/// caller cannot tell either from a real answer.
+#[must_use]
+pub fn unevaluable_filters(query: &Query) -> Vec<&'static str> {
+    let mut blocked = Vec::new();
+    for filter in &query.session_filters {
+        let name = match filter {
+            crate::session_query_gap::SessionFilter::Id(_) => continue,
+            crate::session_query_gap::SessionFilter::Cwd(_) => "cwd",
+            crate::session_query_gap::SessionFilter::CreatedAt(_) => "createdAt",
+            crate::session_query_gap::SessionFilter::Parent(_) => "parent",
+            crate::session_query_gap::SessionFilter::Availability(_) => "availability",
+        };
+        if !blocked.contains(&name) {
+            blocked.push(name);
+        }
+    }
+    blocked
+}
+
 /// Runs a query over session files in a directory.
 ///
 /// The fallback when no index is configured. Every matching session's whole log is read, which is the
@@ -351,6 +385,22 @@ pub fn search_files(root: &std::path::Path, query: &Query) -> Results {
         if let Some(only) = &query.session
             && &id != only
         {
+            continue;
+        }
+        // Session-level clauses a record can answer. `Id` is evaluable from the filename, which is
+        // the only session fact a log carries: this build writes no `session/created`,
+        // `working-directory/change` or `session/fork` event, so `Cwd`, `CreatedAt`, `Parent` and
+        // `Availability` have no data behind them and are **not** silently treated as "matches
+        // everything". A filter that quietly passes every row is worse than one that refuses,
+        // because the caller's answer looks complete.
+        if !query.session_filters.iter().all(|filter| match filter {
+            crate::session_query_gap::SessionFilter::Id(values) => {
+                values.iter().any(|value| value == &id)
+            }
+            // Clauses this build cannot evaluate are `false`, so a query using one returns nothing
+            // rather than everything. `search` reports the reason; see `unevaluable_filters`.
+            _ => false,
+        }) {
             continue;
         }
         let Ok(events) = crate::session::read_session_file(&path) else {

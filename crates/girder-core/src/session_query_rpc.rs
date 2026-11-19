@@ -134,6 +134,7 @@ fn search(args: &Value, root: &Path) -> Result<Value, RemoteError> {
         kind: parse_kind(request.kind.as_deref())?,
         session: request.session,
         limit: Some(limit),
+        session_filters: parse_session_filters(args)?,
         ..query
     };
 
@@ -143,6 +144,24 @@ fn search(args: &Value, root: &Path) -> Result<Value, RemoteError> {
     // because moving it to `spawn_blocking` would need the root and the query moved across a thread
     // boundary only to hand back the same value. This is the known blocking point: if session
     // directories grow large enough that one call starves the executor, this is where to offload it.
+    // A clause this build cannot evaluate is reported rather than ignored. Returning hits that
+    // silently ignore `cwd` would answer "these are the sessions in that directory" when the
+    // directory was never considered.
+    let blocked = session_query::unevaluable_filters(&query);
+    if !blocked.is_empty() {
+        return Ok(json!({
+            "hits": [],
+            "sessionsScanned": 0,
+            "truncated": false,
+            "code": "filter_unavailable",
+            "message": format!(
+                "this build cannot evaluate these session filters: {}; it records no session \
+                 creation time, working directory or fork parent, so a result would not honour them",
+                blocked.join(", ")
+            ),
+            "unavailableFilters": blocked,
+        }));
+    }
     let results: Results = session_query::search_files(root, &query);
 
     let hits: Vec<Value> = results
@@ -170,4 +189,71 @@ fn search(args: &Value, root: &Path) -> Result<Value, RemoteError> {
         // a conclusion the evidence does not support.
         "truncated": results.truncated,
     }))
+}
+
+/// Reads the `sessionFilters` a caller sent.
+///
+/// Only `id` is accepted into the filter list. The other four clauses are parsed just far enough to
+/// name themselves, so `unevaluable_filters` can report *which* one was refused rather than answering
+/// "some filter is unavailable" against a query whose shape this build never saw.
+///
+/// Accepting them into the list and letting the search skip every row would be the worse choice: the
+/// caller would receive zero hits and no indication that the zero came from the clause rather than
+/// from the data.
+fn parse_session_filters(
+    args: &serde_json::Value,
+) -> Result<Vec<crate::session_query_gap::SessionFilter>, RemoteError> {
+    use crate::session_query_gap::SessionFilter;
+    let Some(filters) = args
+        .get("sessionFilters")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut parsed = Vec::with_capacity(filters.len());
+    for filter in filters {
+        let Some(object) = filter.as_object() else {
+            return Err(RemoteError::InvalidArguments {
+                namespace: NAMESPACE.to_owned(),
+                method: METHOD.to_owned(),
+                message: "each sessionFilters entry must be an object".to_owned(),
+            });
+        };
+        // The discriminator is whichever known key is present. `id` is the only one this build can
+        // evaluate; the rest are represented so the refusal can name them.
+        for key in ["id", "cwd", "parent"] {
+            let Some(values) = object.get(key) else {
+                continue;
+            };
+            let Some(items) = values.as_array() else {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: METHOD.to_owned(),
+                    message: format!("`{key}` must be an array"),
+                });
+            };
+            let strings: Vec<String> = items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            parsed.push(match key {
+                "id" => SessionFilter::Id(strings),
+                "cwd" => SessionFilter::Cwd(strings.into_iter().map(Some).collect()),
+                _ => SessionFilter::Parent(strings.into_iter().map(Some).collect()),
+            });
+            break;
+        }
+        if let Some(range) = object.get("createdAt") {
+            // The range's shape is not modelled: `SessionQueryRange` needs a validated pair, and a
+            // clause this build refuses does not need one built. A zero-width range keeps the entry
+            // present so the refusal names it.
+            let _ = range;
+            parsed.push(SessionFilter::CreatedAt(
+                crate::session_query_gap::SessionQueryRange::new(None, None)
+                    .unwrap_or_else(|_| unreachable!("an unbounded range is always valid")),
+            ));
+        }
+    }
+    Ok(parsed)
 }
