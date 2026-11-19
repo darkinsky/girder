@@ -1024,7 +1024,7 @@ fn edit(args: &Value, store: &Arc<dyn ScheduleStore>) -> Result<Value, RemoteErr
         }
         other => Err(invalid(
             EDIT_METHOD,
-            &format!("`action` must be `update` or `delete`, got `{other}`"),
+            format!("`action` must be `update` or `delete`, got `{other}`"),
         )),
     }
 }
