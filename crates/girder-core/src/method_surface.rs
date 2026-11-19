@@ -328,6 +328,13 @@ const DECLARED: &[Declared] = &[
         capability: Some("Catalogue"),
     },
     Declared {
+        // Update one field or delete the task: upstream's single edit endpoint, because a client
+        // edits a task in place and a delete is the edit whose patch is everything.
+        method: "schedule.edit",
+        registration: "register_schedule_methods",
+        capability: Some("ScheduleStore"),
+    },
+    Declared {
         // Upstream's bulk removal of inactive tasks, and the two reads a picker needs before it
         // schedules anything.
         method: "schedule.catalog",

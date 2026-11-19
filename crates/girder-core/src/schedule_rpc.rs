@@ -117,6 +117,12 @@ pub const CREATE_METHOD: &str = "create";
 /// Lists tasks, optionally filtered and paged.
 pub const LIST_METHOD: &str = "list";
 
+/// Edits or deletes one task.
+///
+/// Upstream's `edit`: a single endpoint with an `action`, because a client edits a task in place and
+/// a delete is the edit whose patch is everything.
+pub const EDIT_METHOD: &str = "edit";
+
 /// Reads one task.
 ///
 /// The id-addressed read, which upstream spells `view`.
@@ -385,6 +391,20 @@ pub fn register_schedule_methods(registry: &mut RemoteRegistry, store: &Arc<dyn 
     registry.declare(NAMESPACE, VIEW_METHOD, Declaration::read(RESOURCE_KIND));
 
     let create_store = Arc::clone(store);
+    // `schedule.edit`: update one field or delete the task, from a single endpoint.
+    //
+    // Upstream's two actions in one method because a client edits a task in place: a delete is the
+    // edit whose patch is everything. The conflict check needs an `updatedAt` this build's `Schedule`
+    // does not carry, so `expectedUpdatedAt` is **refused** rather than ignored -- a caller that sent
+    // one expects it to be honoured, and silently writing over a concurrent change is the failure it
+    // asked to be protected from.
+    let edit_store = Arc::clone(store);
+    registry.declare(NAMESPACE, EDIT_METHOD, write_declaration());
+    registry.register(NAMESPACE, EDIT_METHOD, move |call: RemoteCall| {
+        let store = Arc::clone(&edit_store);
+        Box::pin(async move { edit(&call.args, &store) })
+    });
+
     // `schedule.catalog`: every task this deployment holds, as the catalogue a picker reads.
     let catalog_store = Arc::clone(store);
     registry.declare(NAMESPACE, "catalog", Declaration::read(RESOURCE_KIND));
@@ -931,4 +951,80 @@ fn no_schedule(method: &str, id: &str) -> RemoteError {
 /// trying for the second.
 fn store_failure(method: &str, error: &ScheduleStoreError) -> RemoteError {
     RemoteError::Failed(format!("`{NAMESPACE}.{method}`: {error}"))
+}
+
+/// `schedule.edit`: updates a field or deletes the task.
+fn edit(args: &Value, store: &Arc<dyn ScheduleStore>) -> Result<Value, RemoteError> {
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(EDIT_METHOD, "`id` is required"))?
+        .to_owned();
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(EDIT_METHOD, "`action` must be `update` or `delete`"))?;
+
+    // An optimistic-concurrency token this build cannot honour. Refused rather than ignored: the
+    // caller sent it to be protected from overwriting a concurrent change, and accepting the call
+    // would grant exactly the protection it asked for and then not provide it.
+    if args
+        .get("expectedUpdatedAt")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(invalid(
+            EDIT_METHOD,
+            "`expectedUpdatedAt` cannot be honoured: this build's schedule carries no revision, \
+             so a conflict check would always pass",
+        ));
+    }
+
+    match action {
+        "delete" => {
+            if store.get(&id).is_none() {
+                return Ok(json!({ "id": id, "code": "schedule_not_found" }));
+            }
+            let removed = store
+                .remove(&id)
+                .map_err(|error| store_failure(EDIT_METHOD, &error))?;
+            if !removed {
+                return Ok(json!({ "id": id, "code": "schedule_not_found" }));
+            }
+            Ok(json!({ "id": id, "deleted": true }))
+        }
+        "update" => {
+            let patch = args
+                .get("patch")
+                .and_then(Value::as_object)
+                .ok_or_else(|| invalid(EDIT_METHOD, "an update needs a `patch` object"))?;
+            if patch.is_empty() {
+                return Err(invalid(
+                    EDIT_METHOD,
+                    "an update patch requires at least one field",
+                ));
+            }
+            let Some(mut schedule) = store.get(&id) else {
+                return Ok(json!({ "id": id, "code": "schedule_not_found" }));
+            };
+            if let Some(active) = patch.get("active").and_then(Value::as_bool) {
+                schedule.active = active;
+            }
+            if let Some(title) = patch.get("title").and_then(Value::as_str) {
+                if title.trim().is_empty() || title.chars().count() > girder_core::MAX_TITLE_CHARS {
+                    return Err(invalid(EDIT_METHOD, "a title must be 1 to 120 characters"));
+                }
+                title.clone_into(&mut schedule.title);
+            }
+            // `insert` replaces by id, which is the store's own upsert: a second `put` for one id is
+            // how an edit lands.
+            store
+                .insert(schedule.clone())
+                .map_err(|error| store_failure(EDIT_METHOD, &error))?;
+            Ok(json!({ "id": id, "title": schedule.title, "active": schedule.active }))
+        }
+        other => Err(invalid(
+            EDIT_METHOD,
+            &format!("`action` must be `update` or `delete`, got `{other}`"),
+        )),
+    }
 }
