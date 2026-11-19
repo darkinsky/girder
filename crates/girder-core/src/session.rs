@@ -279,6 +279,22 @@ pub enum SessionEvent {
         context_window: Option<u64>,
     },
 
+    /// The exact request envelope a turn was built from.
+    ///
+    /// Upstream's `request/header`. Distinct from [`Self::RequestContext`], which records only the
+    /// provider and window for diagnostics: this one carries the **whole call configuration plus the
+    /// tool schemas**, because its purpose is replay. A `request/context` says which model ran; a
+    /// `request/header` says what bytes a replay would have to send to run it again.
+    ///
+    /// Serialized as one opaque object rather than exploded into typed fields: the header's shape is
+    /// `EpochHeader`'s, it is validated there (`canonical_header`), and duplicating its fields here
+    /// would be a second definition that could drift from the one the fold reads.
+    #[serde(rename = "request/header")]
+    RequestHeader {
+        /// The `EpochHeader`, as `request_header_gap` models it.
+        header: serde_json::Value,
+    },
+
     /// The session's title, and what produced it.
     #[serde(rename = "session/title")]
     SessionTitle {
@@ -389,6 +405,7 @@ impl SessionEvent {
             Self::PlanMode { .. } => "plan/mode",
             Self::SandboxMode { .. } => "sandbox/mode",
             Self::RequestContext { .. } => "request/context",
+            Self::RequestHeader { .. } => "request/header",
             Self::SessionTitle { .. } => "session/title",
             Self::LlmRetry { .. } => "llm/retry",
             Self::MessageFeedbackPut { .. } => "feedback/message-put",
@@ -418,6 +435,7 @@ impl SessionEvent {
             | Self::PlanMode { .. }
             | Self::SandboxMode { .. }
             | Self::RequestContext { .. }
+            | Self::RequestHeader { .. }
             | Self::SessionTitle { .. }
             | Self::LlmRetry { .. }
             // Feedback answers about a message, not about a turn: it may be recorded long after the

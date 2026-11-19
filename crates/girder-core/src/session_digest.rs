@@ -287,7 +287,7 @@ pub fn digest(events: &[SessionEvent]) -> Digest {
             | SessionEvent::PermissionPreset { .. }
             | SessionEvent::PlanMode { .. }
             | SessionEvent::SandboxMode { .. }
-            | SessionEvent::RequestContext { .. }
+            | SessionEvent::RequestContext { .. } | SessionEvent::RequestHeader { .. }
             | SessionEvent::SessionTitle { .. }
             | SessionEvent::LlmRetry { .. }
             // a digest counts turns and tokens; feedback is neither, so it contributes nothing here.

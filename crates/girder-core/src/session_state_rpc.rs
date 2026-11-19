@@ -108,6 +108,15 @@ pub struct SessionStateValue {
     /// [`crate::derive_title`] from contents it already has. Filling this field with a guess would make
     /// a session nobody renamed indistinguishable from one that was.
     pub title: Option<String>,
+    /// The request header in force, when the log has one.
+    ///
+    /// `request_header_gap::request_header_of` reads it: the last `request/header` event, in
+    /// canonical form. A client showing "what model produced this" reads it here rather than
+    /// re-folding the log, and a session that never had a request built for it answers `null` --
+    /// which is different from a header this build cannot parse, counted by
+    /// `request_header_gap::unparsed`.
+    #[serde(default)]
+    pub request_header: Option<serde_json::Value>,
     /// Every registered projection's folded state, as the host currently holds it.
     ///
     /// Read, never folded here: the projection state belongs to the host, and replaying *this*
@@ -407,6 +416,8 @@ async fn state(
         // answers it: a client opening a conversation shows the final answer whether or not the turn that produced it
         // is still running, and a turn that only called tools has no text at all -- which is a different state from one
         // that has not answered yet.
+        request_header: girder_core::request_header_gap::request_header_of(&record.events)
+            .and_then(|header| serde_json::to_value(&header).ok()),
         last_text: girder_core::final_text(&record.events),
         last_turn: girder_core::final_output(&record.events).map(|output| output.turn),
         // Counts rather than durations: the log records no timestamps, so every duration a richer stats layer would

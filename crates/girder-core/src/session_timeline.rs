@@ -279,7 +279,7 @@ pub fn outline(events: &[SessionEvent]) -> Vec<Segment> {
             | SessionEvent::PermissionPreset { .. }
             | SessionEvent::PlanMode { .. }
             | SessionEvent::SandboxMode { .. }
-            | SessionEvent::RequestContext { .. }
+            | SessionEvent::RequestContext { .. } | SessionEvent::RequestHeader { .. }
             | SessionEvent::SessionTitle { .. }
             | SessionEvent::LlmRetry { .. }
             // a timeline places turns in time; feedback answers about a message, so it contributes nothing here.

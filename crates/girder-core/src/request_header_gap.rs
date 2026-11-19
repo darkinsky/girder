@@ -366,6 +366,10 @@ pub enum HeaderEvent<'a> {
 
 impl<'a> From<&'a SessionEvent> for HeaderEvent<'a> {
     fn from(event: &'a SessionEvent) -> Self {
+        // A `request/header` event cannot become a borrowed snapshot: the payload is a JSON value and
+        // a `From` impl has nowhere to put the parsed header. Callers that have a session log use
+        // `request_header_of`, which owns what it parses; this conversion stays lossless by treating
+        // the event as `Other` rather than dropping its contents behind a hidden slot.
         Self::Other(event)
     }
 }
@@ -573,4 +577,93 @@ fn same_schema(left: &ToolSchema, right: &ToolSchema) -> bool {
     left.name == right.name
         && left.description == right.description
         && canonical_json(&left.parameters) == canonical_json(&right.parameters)
+}
+
+/// The header in force at the end of a session's log.
+///
+/// The owning counterpart of [`fold_request_header`]: it parses each `request/header` event into a
+/// snapshot it owns, folds them in order, and answers the last one in canonical form. This is what a
+/// caller with a real session log uses, because the borrowed fold has nowhere to keep a parsed header
+/// and a `From<&SessionEvent>` cannot fabricate one.
+///
+/// Returns `None` for a log with no headers, which is a session that never had a request built for it
+/// -- distinct from a header that failed to parse, which is reported by [`Self::unparsed`].
+///
+/// # Why the reason is not carried
+///
+/// Upstream's snapshot carries a `reason` (`Initial`, `Resume`, `Change`, `Series`) because its writer
+/// knows which it is. A log does not: the event stores the header, not the decision behind it. The
+/// fold answers the header, and a caller that needs the reason reads it from the writer's own record.
+#[must_use]
+pub fn request_header_of(events: &[SessionEvent]) -> Option<EpochHeader> {
+    let mut state: Option<EpochHeader> = None;
+    for event in events {
+        if let SessionEvent::RequestHeader { header } = event {
+            if let Ok(parsed) = serde_json::from_value::<EpochHeader>(header.clone()) {
+                state = Some(canonical_header(&parsed));
+            }
+        }
+    }
+    state
+}
+
+/// The number of `request/header` events in a log whose payload did not parse.
+///
+/// Exposed beside [`request_header_of`] so a caller can tell "no headers" from "headers this build
+/// cannot read": the first is a session that never had one, the second is a version or shape this
+/// build does not model, and only the second is a defect worth reporting.
+#[must_use]
+pub fn unparsed(events: &[SessionEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| match event {
+            SessionEvent::RequestHeader { header } => {
+                serde_json::from_value::<EpochHeader>(header.clone()).is_err()
+            }
+            _ => false,
+        })
+        .count()
+}
+
+#[cfg(test)]
+mod header_of_tests {
+    use super::*;
+
+    fn header_event(config: serde_json::Value) -> SessionEvent {
+        SessionEvent::RequestHeader {
+            header: serde_json::json!({ "config": config }),
+        }
+    }
+
+    #[test]
+    fn the_last_header_wins() {
+        // The fold's contract: a resumed or changed request supersedes the earlier one.
+        let events = vec![
+            header_event(serde_json::json!({ "provider": "a", "model": "one" })),
+            header_event(serde_json::json!({ "provider": "b", "model": "two" })),
+        ];
+        let header = request_header_of(&events).expect("a header");
+        assert_eq!(header.config.provider, "b");
+        assert_eq!(header.config.model, "two");
+    }
+
+    #[test]
+    fn a_log_with_no_headers_answers_none() {
+        // Distinct from a header that failed to parse: this is a session that never had one.
+        assert!(request_header_of(&[]).is_none());
+    }
+
+    #[test]
+    fn an_unparsable_header_is_counted_rather_than_hidden() {
+        // "No headers" and "headers this build cannot read" are different facts, and only the second
+        // is a defect.
+        let events = vec![
+            SessionEvent::RequestHeader {
+                header: serde_json::json!({ "not": "a header" }),
+            },
+            header_event(serde_json::json!({ "provider": "a", "model": "one" })),
+        ];
+        assert_eq!(unparsed(&events), 1);
+        assert!(request_header_of(&events).is_some());
+    }
 }
