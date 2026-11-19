@@ -218,6 +218,86 @@ const DECLARED: &[Declared] = &[
         capability: Some("ScheduleStore"),
     },
     Declared {
+        method: "pluginInventory.list",
+        registration: "register_plugin_inventory_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.listPlugins",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.listBundles",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.listVersions",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.readBundleDetail",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.inspect",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.registries",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.listVersionExemptions",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.setPluginEnabled",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.setBundleEnabled",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.installBundle",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.updateBundle",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.removeBundle",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.cancelInstall",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.setVersionExemption",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
+        method: "pluginManager.waitForInstall",
+        registration: "register_plugin_manager_methods",
+        capability: Some("Registry"),
+    },
+    Declared {
         method: "officeKit.generation",
         registration: "register_office_kit_methods",
         capability: Some("officeKit"),

@@ -168,6 +168,17 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         Arc::new(girder_core::MemoryCredentialSource::new());
     girder_core::account_rpc::register_account_methods(registry, &account_credentials, false);
     girder_core::office_kit::register_office_kit_methods(registry);
+    let plugin_entries = Arc::new({
+        let mut entries = girder_core::plugin_entries::Registry::new();
+        entries.insert(girder_core::plugin_entries::Entry {
+            entry_id: "cli".to_owned(),
+            module_name: "@deepseek-ai/dsh".to_owned(),
+            options_id: "@deepseek-ai/dsh".to_owned(),
+        });
+        entries
+    });
+    girder_core::plugin_manager_rpc::register_plugin_manager_methods(registry, &plugin_entries);
+    girder_core::plugin_manager_rpc::register_plugin_inventory_methods(registry, &plugin_entries);
     girder_core::agent_presets::register_agent_preset_methods(
         registry,
         &girder_core::agent_presets::default_registry(),

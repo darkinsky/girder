@@ -791,6 +791,29 @@ fn register_workspace_file_surface(
     // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
     // caller's own directory comes first.
     girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
+    // `pluginManager.*`: the seven reads answer from an explicit entry registry -- the replacement
+    // for the Cordis tree -- and the mutations refuse with `no_installer`, because this build mounts
+    // plugins at compile time.
+    girder_core::plugin_manager_rpc::register_plugin_manager_methods(remote, &{
+        // The plugins this build actually mounts, as entries.
+        let mut entries = girder_core::plugin_entries::Registry::new();
+        entries.insert(girder_core::plugin_entries::Entry {
+            entry_id: "cli".to_owned(),
+            module_name: "@deepseek-ai/dsh".to_owned(),
+            options_id: "@deepseek-ai/dsh".to_owned(),
+        });
+        entries.set_owner("cli");
+        Arc::new(entries)
+    });
+    girder_core::plugin_manager_rpc::register_plugin_inventory_methods(remote, &{
+        let mut entries = girder_core::plugin_entries::Registry::new();
+        entries.insert(girder_core::plugin_entries::Entry {
+            entry_id: "cli".to_owned(),
+            module_name: "@deepseek-ai/dsh".to_owned(),
+            options_id: "@deepseek-ai/dsh".to_owned(),
+        });
+        Arc::new(entries)
+    });
     // `officeKit.*`: the rendering generation is answered; `render` refuses with `no_renderer`
     // because converting a document needs an engine this build does not embed.
     girder_core::office_kit::register_office_kit_methods(remote);
