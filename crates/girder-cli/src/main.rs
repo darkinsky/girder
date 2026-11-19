@@ -772,6 +772,9 @@ fn register_workspace_file_surface(
         }
         Err(error) => eprintln!("[llm] runtime not built: {error}"),
     }
+    // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
+    // caller's own directory comes first.
+    girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
     // `agentPresets.*`: the capability sets a session may start from. This build's presets name
     // tools and a model rather than a Cordis plugin list, which is stated in the module.
     girder_core::agent_presets::register_agent_preset_methods(

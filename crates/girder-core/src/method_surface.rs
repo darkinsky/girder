@@ -230,6 +230,12 @@ const DECLARED: &[Declared] = &[
         capability: Some("Registry"),
     },
     Declared {
+        // The sessions a `@`-mention may point at, ranked so the caller's own directory comes first.
+        method: "sessionReferenceResolver.candidates",
+        registration: "register_session_reference_methods",
+        capability: Some("SessionCatalog"),
+    },
+    Declared {
         // Session-level feedback: a remark about the conversation rather than one message.
         method: "sessionFeedback.record",
         registration: "register_session_feedback_methods",

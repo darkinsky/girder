@@ -297,6 +297,7 @@ pub mod session_query_gap;
 mod session_query_rpc;
 mod session_queue_rpc;
 mod session_recovery;
+pub mod session_reference;
 mod session_replay;
 mod session_resume_rpc;
 mod session_rewind;
