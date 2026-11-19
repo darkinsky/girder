@@ -325,12 +325,23 @@ pub fn run(query: &Query, candidates: Vec<Candidate>) -> Results {
                 results.truncated = true;
                 return results;
             }
+            let seq = u64::try_from(index).unwrap_or(0) + 1;
+            // **No surface filter here, and the reason is structural.** Upstream's `isSurfaceEvent`
+            // is `SURFACE_EVENT_TYPES.has(type) && event.surfaceOp !== undefined`: only an event that
+            // *carries* an op participates in the fold. This build's [`SessionEvent`] is a closed
+            // tagged enum with no `surfaceOp` field -- as `core_gap`'s own docs say -- so every row
+            // would arrive with `op: None`, fold as an append, and produce a surface equal to the
+            // whole log. That filter would be a no-op wearing the appearance of one.
+            //
+            // A compaction in this build therefore *replaces* text rather than shadowing rows, and
+            // the superseded text is gone from the log instead of hidden inside it. If that changes,
+            // the fold belongs here and `fold_surface` is already able to do it.
             if !matches(event, query) {
                 continue;
             }
             results.hits.push(Hit {
                 session: candidate.id.clone(),
-                seq: u64::try_from(index).unwrap_or(0) + 1,
+                seq,
                 kind: event.type_name().to_owned(),
                 event: event.clone(),
             });
