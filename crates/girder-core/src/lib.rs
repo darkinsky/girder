@@ -224,6 +224,7 @@ pub mod pi_ai_apply_gap;
 pub mod pi_ai_runtime_gap;
 mod plugin_lifecycle;
 pub mod plugin_market_gap;
+pub mod plugin_market_rpc;
 mod present_tool;
 mod process_group;
 mod projection;

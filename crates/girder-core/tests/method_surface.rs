@@ -143,6 +143,18 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
 
     let runtime: Arc<dyn ExtensionRuntime> = Arc::new(girder_core::ExtensionShellRuntime::new());
     girder_core::register_extension_run_methods(registry, &extensions, &runtime);
+    // Two surfaces `serve` registers that this helper had not: the LLM runtime's endpoints and the
+    // market index's. Both are shapes `serve` builds, so leaving them out made the test's "serve
+    // shaped" claim slightly untrue.
+    if let Ok(llm) = girder_core::llm_remote::runtime_from_routes(&{
+        let mut routes = girder_core::RouteRegistry::new();
+        let _ = routes.register(girder_core::deepseek_route("deepseek", "test"));
+        Arc::new(routes)
+    }) {
+        let _ = girder_core::register_llm_remote(registry, &llm);
+    }
+    let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
+    girder_core::plugin_market_rpc::register_market_methods(registry, &market);
 }
 
 /// The terminals: two probes that need nothing, then the session methods over one registry.

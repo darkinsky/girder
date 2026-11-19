@@ -772,6 +772,9 @@ fn register_workspace_file_surface(
         }
         Err(error) => eprintln!("[llm] runtime not built: {error}"),
     }
+    // `pluginMarket.*`: the market index this build already parses, reachable from a client.
+    let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
+    girder_core::plugin_market_rpc::register_market_methods(remote, &market);
     girder_core::register_workspace_extra_methods(
         remote,
         workspaces,

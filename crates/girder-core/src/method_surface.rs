@@ -207,6 +207,45 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // The three endpoints upstream marks `@Remote` on `LlmRuntime`. The adapter answers from
+        // this deployment's route table.
+        method: "llm.listProviders",
+        registration: "register_llm_remote",
+        capability: Some("RouteRegistry"),
+    },
+    Declared {
+        method: "llm.listConfigurableProviders",
+        registration: "register_llm_remote",
+        capability: Some("RouteRegistry"),
+    },
+    Declared {
+        method: "llm.discoverModels",
+        registration: "register_llm_remote",
+        capability: Some("RouteRegistry"),
+    },
+    Declared {
+        // The market index this build parses, reachable from a client. `setIndexes` takes the
+        // already-parsed document: a network read is a deployment decision, so the I/O stays above.
+        method: "pluginMarket.listIndexes",
+        registration: "register_market_methods",
+        capability: Some("MarketCatalog"),
+    },
+    Declared {
+        method: "pluginMarket.setIndexes",
+        registration: "register_market_methods",
+        capability: Some("MarketCatalog"),
+    },
+    Declared {
+        method: "pluginMarket.search",
+        registration: "register_market_methods",
+        capability: Some("MarketCatalog"),
+    },
+    Declared {
+        method: "pluginMarket.readEntryDetail",
+        registration: "register_market_methods",
+        capability: Some("MarketCatalog"),
+    },
+    Declared {
         // Chooses a default model when the deployment has none. Idempotent against a configured
         // deployment, and an error rather than a no-op when nothing can serve a model.
         method: "session.initializeDefaultModel",
