@@ -48,11 +48,20 @@ pass their own tests.
 
 ## What is blocked, and by what
 
-Most of the 52 missing endpoints are ordinary backlog: `account` (11) needs an account backend,
-`agentPresets` (3) needs a preset registry, `mcpManager` (2) needs MCP server transport. Work, not
-blockage.
+Of the 36 missing endpoints, the split is what matters:
 
-**Two namespaces are a boundary instead**, and the distinction is measured rather than assumed:
+| Need | Count | Namespaces |
+| --- | --- | --- |
+| The Cordis entry tree | 16 | `pluginManager` (15), `pluginInventory` (1) |
+| An account backend | 11 | `account` |
+| A subsystem this build lacks | 6 | `mcpManager` (2), `officeKit` (2), `schedule` (2) |
+| A live subagent to receive the call | 2 | `subagents` |
+| Nothing -- served now | 3 | `agentTeams`, `agentPresets`, `sessionReferenceResolver` |
+
+The last row is the useful one: three namespaces that looked blocked turned out to need only the
+event vocabulary or a registry that already existed.
+
+The first row of that table is the boundary, and the distinction is measured rather than assumed:
 
 | Namespace | Missing | Entry-tree uses |
 | --- | --- | --- |
