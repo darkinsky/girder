@@ -213,6 +213,7 @@ mod model_memory;
 mod name_suggest;
 mod observation;
 mod office_document;
+pub mod office_kit;
 mod openapi;
 mod openapi_full;
 mod output_budget;

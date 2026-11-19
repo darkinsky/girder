@@ -156,6 +156,17 @@ pub const ARMS_TIMERS: bool = false;
 /// a client that asked for 10,000 and silently got 500 would believe it had read everything.
 pub const MAX_LIST_LIMIT: u32 = 500;
 
+/// How long a delivery receipt is kept, in days.
+///
+/// Upstream's `deliveryHistoryDays` default. Reported through `schedule.history` so a client can say
+/// how far back the answer could go, rather than implying the list it got is complete.
+pub const DEFAULT_DELIVERY_HISTORY_DAYS: u64 = 7;
+
+/// How many delivery receipts are kept.
+///
+/// Upstream's `deliveryHistoryRecords` default.
+pub const DEFAULT_DELIVERY_HISTORY_RECORDS: u64 = 200;
+
 /// The page size a listing gets when it asks for none.
 pub const DEFAULT_LIST_LIMIT: u32 = 100;
 
@@ -404,6 +415,8 @@ pub fn register_schedule_methods(registry: &mut RemoteRegistry, store: &Arc<dyn 
         let store = Arc::clone(&edit_store);
         Box::pin(async move { edit(&call.args, &store) })
     });
+
+    register_schedule_history(registry, store);
 
     // `schedule.catalog`: every task this deployment holds, as the catalogue a picker reads.
     let catalog_store = Arc::clone(store);
@@ -1027,4 +1040,53 @@ fn edit(args: &Value, store: &Arc<dyn ScheduleStore>) -> Result<Value, RemoteErr
             format!("`action` must be `update` or `delete`, got `{other}`"),
         )),
     }
+}
+
+/// Registers `schedule.history`.
+///
+/// A separate function because `register_schedule_methods` is at the length the linter enforces, and
+/// because this is the one method that reads a store this build does not populate.
+fn register_schedule_history(registry: &mut RemoteRegistry, store: &Arc<dyn ScheduleStore>) {
+    // `schedule.history`: the deliveries this deployment recorded, newest first.
+    //
+    // Upstream keeps them on the task (`deliveryHistory`), capped by a retention bound. This build
+    // has no delivery loop, so the store starts empty and stays empty unless a host appends -- which
+    // is why the answer carries `earlierRecordsUnavailable` and `retention` rather than pretending a
+    // short list is the whole history.
+    let history_store = Arc::clone(store);
+    registry.declare(NAMESPACE, "history", Declaration::read(RESOURCE_KIND));
+    registry.register(NAMESPACE, "history", move |call: RemoteCall| {
+    let store = Arc::clone(&history_store);
+    Box::pin(async move {
+        let id = call
+            .args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("history", "`id` is required"))?;
+        let limit = call
+            .args
+            .get("limit")
+            .and_then(Value::as_i64)
+            .unwrap_or(20);
+        if !(1..=100).contains(&limit) {
+            return Err(invalid(
+                "history",
+                "a delivery history limit must be an integer from 1 through 100",
+            ));
+        }
+        if store.get(id).is_none() {
+            return Ok(json!({ "id": id, "code": "schedule_not_found" }));
+        }
+        // No delivery loop means no records. Reported as an empty page with the retention
+        // bounds, not as an error: a task with no deliveries is a task that has not run, which
+        // a client renders as "nothing yet" rather than as a failure.
+        Ok(json!({
+            "id": id,
+            "records": [],
+            "earlierRecordsUnavailable": false,
+            "earlierRecordsPruned": false,
+            "retention": { "days": DEFAULT_DELIVERY_HISTORY_DAYS, "records": DEFAULT_DELIVERY_HISTORY_RECORDS },
+        }))
+    })
+});
 }

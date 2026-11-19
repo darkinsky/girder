@@ -213,6 +213,21 @@ const DECLARED: &[Declared] = &[
         capability: Some("SessionCatalog"),
     },
     Declared {
+        method: "schedule.history",
+        registration: "register_schedule_methods",
+        capability: Some("ScheduleStore"),
+    },
+    Declared {
+        method: "officeKit.generation",
+        registration: "register_office_kit_methods",
+        capability: Some("officeKit"),
+    },
+    Declared {
+        method: "officeKit.render",
+        registration: "register_office_kit_methods",
+        capability: Some("officeKit"),
+    },
+    Declared {
         method: "account.getState",
         registration: "register_account_methods",
         capability: Some("CredentialSource"),

@@ -167,6 +167,7 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
     let account_credentials: Arc<dyn girder_core::CredentialSource> =
         Arc::new(girder_core::MemoryCredentialSource::new());
     girder_core::account_rpc::register_account_methods(registry, &account_credentials, false);
+    girder_core::office_kit::register_office_kit_methods(registry);
     girder_core::agent_presets::register_agent_preset_methods(
         registry,
         &girder_core::agent_presets::default_registry(),

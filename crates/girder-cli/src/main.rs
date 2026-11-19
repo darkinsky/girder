@@ -791,6 +791,9 @@ fn register_workspace_file_surface(
     // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
     // caller's own directory comes first.
     girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
+    // `officeKit.*`: the rendering generation is answered; `render` refuses with `no_renderer`
+    // because converting a document needs an engine this build does not embed.
+    girder_core::office_kit::register_office_kit_methods(remote);
     // `account.*`: the credential store answers `getState`; everything that needs a Platform
     // endpoint refuses with `no_platform` rather than answering `null`, which a client would read as
     // "signed out" for a deployment where signing in cannot succeed.
