@@ -6,7 +6,7 @@ Generated from upstream: every class extending `TypertRemoteService` in the in-s
 a running `girder serve`, so it is what a client can actually call.
 
 Upstream in scope: **126** endpoints across **25** namespaces.
-Present here: **90** (71%).
+Present here: **91** (72%).
 
 The **Tree** column counts uses of the Cordis entry tree. A non-zero count means the namespace
 cannot be ported onto this build's `ServiceKey` substrate without inventing the tree -- a boundary
@@ -20,9 +20,9 @@ rather than backlog.
 | `officeKit` ✗ | 2 | 0 | 2 |  |
 | `schedule` | 9 | 7 | 2 |  |
 | `subagents` ✗ | 2 | 0 | 2 |  |
-| `agentTeams` ✗ | 1 | 0 | 1 |  |
 | `pluginInventory` ✗ | 1 | 0 | 1 | 4 |
 | `agentPresets` ✓ | 3 | 3 | 0 |  |
+| `agentTeams` ✓ | 1 | 1 | 0 |  |
 | `commands` ✓ | 2 | 2 | 0 |  |
 | `goals` ✓ | 7 | 7 | 0 |  |
 | `job` ✓ | 3 | 3 | 0 |  |
@@ -40,9 +40,9 @@ rather than backlog.
 | `workspace` ✓ | 10 | 10 | 0 |  |
 | `workspaceFiles` ✓ | 6 | 6 | 0 |  |
 
-`✓` fully aligned (17): `agentPresets`, `commands`, `goals`, `job`, `llm`, `messageFeedback`, `permissionPresets`, `pluginMarket`, `session`, `sessionFeedback`, `sessionReferenceResolver`, `settings`, `terminal`, `userQuestions`, `web`, `workspace`, `workspaceFiles`
+`✓` fully aligned (18): `agentPresets`, `agentTeams`, `commands`, `goals`, `job`, `llm`, `messageFeedback`, `permissionPresets`, `pluginMarket`, `session`, `sessionFeedback`, `sessionReferenceResolver`, `settings`, `terminal`, `userQuestions`, `web`, `workspace`, `workspaceFiles`
 
-`✗` no implementation (7): `account`, `agentTeams`, `mcpManager`, `officeKit`, `pluginInventory`, `pluginManager`, `subagents`
+`✗` no implementation (6): `account`, `mcpManager`, `officeKit`, `pluginInventory`, `pluginManager`, `subagents`
 
 ## Boundary: blocked by the Cordis substitution
 
@@ -66,10 +66,6 @@ These are not backlog. A port would have to build the entry tree this design rep
 - `account.signOut`
 - `account.startSignIn`
 - `account.watchState`
-
-### `agentTeams` (1)
-
-- `agentTeams.setEnabled`
 
 ### `mcpManager` (2)
 

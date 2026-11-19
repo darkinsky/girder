@@ -7,22 +7,26 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: 120 Remote methods, 32 tools, 10,331 tests, 20.6 MB release binary.**
+> **Status: 121 Remote methods, 32 tools, 10,335 tests, 20.6 MB release binary.**
 > `girder "…"` talks to a DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`) is
 > set and falls back to a scripted provider otherwise, saying which on stderr. The live path is
 > **tested against a mock server, not the real API** — no key exists in this environment, so the wire
 > format is exercised rather than the service.
 >
 > Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
-> `@Remote` markers and this build's running server, in-scope packages only): **90 of 126 endpoints
-> aligned (71%)**, with **17 of 25 namespaces complete**. 230,051 lines of Rust against upstream's
+> `@Remote` markers and this build's running server, in-scope packages only): **91 of 126 endpoints
+> aligned (72%)**, with **18 of 25 namespaces complete**. 232,238 lines of Rust against upstream's
 > ~243,000 in-scope lines.
 >
-> Most of the 52 missing endpoints are ordinary work. **Two namespaces are a boundary instead**:
-> `pluginManager` and `pluginInventory` read the Cordis entry tree (22 and 4 uses), which this port
-> replaced with `ServiceKey` by design. A port would have to invent the tree. That distinction — and
-> the count that establishes it — is in [`docs/status.md`](docs/status.md), because a reader deserves
-> to know which gaps close and which do not.
+> The remaining 35 endpoints split four ways, and the split is the useful part: **16 are a boundary**
+> (`pluginManager` and `pluginInventory` read the Cordis entry tree, which this port replaced with
+> `ServiceKey` by design — a port would have to invent the tree), **11 need an account backend**,
+> **6 need a subsystem this build lacks**, and **2 are addressed to a running subagent** rather than
+> to anything a store could answer.
+>
+> That distinction — which gaps close and which do not — is measured rather than assumed. For the
+> full account, including what this project got wrong along the way, see
+> [`docs/final-report.md`](docs/final-report.md).
 
 ## Why this repository starts with a plan
 
