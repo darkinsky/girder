@@ -100,6 +100,22 @@
 //! it as [`decide_activity`] over explicit facts makes every branch nameable in a test, which the
 //! upstream method cannot be because it reads live state between the branches.
 
+//!
+//! # Status: ported, not registered — and the reason is architectural
+//!
+//! Its three families have consumers upstream, and none of them exists here:
+//!
+//! | Upstream consumer | What it is | Why it has no slot |
+//! | --- | --- | --- |
+//! | `terminal.ts`'s `private survivors` / `unionMembers` | discovery of surviving children of a **pty terminal** | this build has no pty terminal handle; `subprocess::kill_tree` signals a process group directly |
+//! | `prepareShellActivity` in `subprocess-local/index.ts` | argv and environment for launching a shell under node-pty | no node-pty; the executor spawns `sh -c` |
+//! | `parseStateRecord` | decoding a shell integration's activity line | no shell integration is installed |
+//!
+//! **This is not backlog.** Porting it onto this substrate would mean inventing a pty handle to be a
+//! child of, and the teardown ladder exists to handle *that* handle's survivors. The 50 ms sleep in
+//! [`crate::subprocess::kill_tree`] is a real limitation, but the fix is a `/proc` scan with start-time
+//! fencing, not this module — which waits for a shell to *report* its state rather than reading it.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
