@@ -147,7 +147,9 @@ mod health_trend;
 pub mod migration_steps_gap;
 pub mod working_dir_gap;
 
-pub mod account_gap;
+pub mod account_rpc;
+pub use account_gap::{CredentialSource, MemoryCredentialSource, register_credential_methods};
+mod account_gap;
 pub mod boot_app_gap;
 pub mod boot_loader_gap;
 pub mod config_schema_gap;

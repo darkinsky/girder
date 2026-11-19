@@ -791,6 +791,19 @@ fn register_workspace_file_surface(
     // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
     // caller's own directory comes first.
     girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
+    // `account.*`: the credential store answers `getState`; everything that needs a Platform
+    // endpoint refuses with `no_platform` rather than answering `null`, which a client would read as
+    // "signed out" for a deployment where signing in cannot succeed.
+    let credentials: Arc<dyn girder_core::CredentialSource> =
+        Arc::new(girder_core::MemoryCredentialSource::new());
+    // `credentials.{describe,set,unset}`: the store `account.getState` reads. It was written and
+    // never registered, so a client could ask about an account but not configure one.
+    girder_core::register_credential_methods(remote, &credentials);
+    girder_core::account_rpc::register_account_methods(
+        remote,
+        &credentials,
+        std::env::var("DEEPSEEK_API_KEY").is_ok(),
+    );
     // `agentTeams.setEnabled`: whether a session's tree runs as a team. The root is the caller's
     // assertion, checked rather than trusted, because this build holds no subagent tree to derive it.
     girder_core::agent_teams::register_agent_team_methods(remote, &session_catalog());

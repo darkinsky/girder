@@ -213,6 +213,66 @@ const DECLARED: &[Declared] = &[
         capability: Some("SessionCatalog"),
     },
     Declared {
+        method: "account.getState",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.getProfile",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.getBalance",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.getNotifications",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.getNotificationContent",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.reportNotificationEvent",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.startSignIn",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.cancelSignIn",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.signOut",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.hasRunningAccountTasks",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.watchState",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "account.watch",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
         // Whether a session's tree runs as a team. The root is the caller's assertion, checked
         // rather than trusted, because this build holds no subagent tree to derive it.
         method: "agentTeams.setEnabled",

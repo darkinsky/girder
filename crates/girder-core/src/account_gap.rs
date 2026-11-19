@@ -165,6 +165,10 @@ pub const MAX_REFERENCE_LEN: usize = 256;
 const RESOURCE_KIND: &str = "credential";
 
 /// The method names this module serves, in the order they are declared.
+#[allow(
+    dead_code,
+    reason = "a list of the three method names, for a caller that wants to report a surface without registering it"
+)]
 pub const METHODS: &[&str] = &[DESCRIBE_METHOD, SET_METHOD, UNSET_METHOD];
 
 // ---- reference grammar -------------------------------------------------------------------------
@@ -211,6 +215,10 @@ fn validate_reference(reference: &str) -> Result<&str, String> {
 /// Exposed because the grammar is the interesting part of this module and a UI that pre-validates a
 /// field should not have to duplicate the rule to do it.
 #[must_use]
+#[allow(
+    dead_code,
+    reason = "exported for a caller that validates a reference before sending it; the registration validates through `describe` instead"
+)]
 pub fn is_valid_reference(reference: &str) -> bool {
     validate_reference(reference).is_ok()
 }
@@ -402,10 +410,18 @@ impl CredentialSource for MemoryCredentialSource {
 /// process-local map — would report "stored" for a secret that the next process cannot find, which
 /// is the one failure a configuration page must never show.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "the seam a deployment supplies when it has no credential store; unused here because `serve` uses the in-memory one"
+)]
 pub struct UnavailableCredentialSource {
     reason: String,
 }
 
+#[allow(
+    dead_code,
+    reason = "constructors for the refusing store a deployment supplies; unused here because `serve` uses the in-memory one"
+)]
 impl UnavailableCredentialSource {
     /// Creates a source that refuses every write with `reason`.
     #[must_use]
@@ -429,6 +445,10 @@ impl UnavailableCredentialSource {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "the refusing implementation of the store trait; a deployment with no credential backend supplies it"
+)]
 impl CredentialSource for UnavailableCredentialSource {
     fn describe(&self, _reference: &str) -> CredentialInfo {
         // Unconfigured rather than a refusal, because the signature has no error channel. The
