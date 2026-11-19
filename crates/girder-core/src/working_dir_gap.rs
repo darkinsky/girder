@@ -384,7 +384,31 @@ pub fn validate_change(cwd: &str, request: &str) -> Result<String, WorkingDirect
     if request.is_empty() {
         return Err(WorkingDirectoryError::empty_request());
     }
-    Ok(resolve(cwd, request))
+    // **A relative request is allowed, and a blank one is not.** The two checks are upstream's, and
+    // they are in different places: `set` passes the path to `ctx.fs.resolve(path, { cwd })`, so a
+    // relative path resolves against the session's directory -- but the *projection* schema is
+    // `zod.string().min(1).refine(isAbsolute)`, so what gets recorded is always absolute.
+    //
+    // A whitespace-only request is the case that needs both: `min(1)` admits `"  "`, and resolving it
+    // against the base would produce `/base/dir/  ` -- an absolute path nobody asked for. Refused
+    // here rather than at the spawn, because a failure at the spawn names the directory rather than
+    // the request.
+    if request.trim().is_empty() {
+        return Err(WorkingDirectoryError::empty_request());
+    }
+    let resolved = resolve(cwd, request);
+    if !is_absolute(&resolved) {
+        // `INVALID`, not `NOT_FOUND`: the request named something that is not a directory *path*,
+        // which is a different fix from "that directory does not exist".
+        return Err(WorkingDirectoryError::new(
+            format!(
+                "working-directory: change must be an absolute path: {}",
+                json_quote(&resolved)
+            ),
+            WorkingDirectoryErrorCode::Invalid,
+        ));
+    }
+    Ok(resolved)
 }
 
 /// The pure decision behind `set` and `ensure`, once the filesystem has answered.

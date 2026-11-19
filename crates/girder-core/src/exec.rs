@@ -59,6 +59,20 @@ pub enum ExecError {
         path: PathBuf,
     },
 
+    /// The requested working directory cannot be used.
+    ///
+    /// Distinct from [`Self::OutOfScope`]: that one is a policy decision about a path the caller may
+    /// not touch, this one is a request that names no usable directory. A model told "outside the
+    /// writable scope" would try a different path; one told why the directory is unusable can fix
+    /// the request.
+    #[error("working directory `{directory}`: {reason}")]
+    WorkingDirectory {
+        /// The directory that was asked for.
+        directory: String,
+        /// Why it cannot be used.
+        reason: String,
+    },
+
     /// The command ran longer than its timeout and was killed.
     #[error("command timed out after {seconds}s")]
     Timeout {
@@ -375,7 +389,25 @@ async fn run_shell_program(
         crate::subprocess::SpawnOptions::new(program, vec!["-c".to_owned(), script.to_owned()])
             .with_timeout(options.timeout);
     if let Some(cwd) = &options.cwd {
-        spawn = spawn.with_cwd(cwd.clone());
+        // The change is *validated* before it is used: `working_dir_gap` owns upstream's rules for
+        // what a working-directory change may be (absolute after normalization, existing, a
+        // directory), and a spawn that failed with its own message would name a syscall rather than
+        // the request. `validate_change` answers the resolved path or the reason.
+        let requested = cwd.to_string_lossy();
+        let base = std::env::current_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match crate::working_dir_gap::validate_change(&base, &requested) {
+            Ok(resolved) => spawn = spawn.with_cwd(std::path::PathBuf::from(resolved)),
+            // An unusable directory is reported as the tool's error, not as a panic: the model asked
+            // for it and can be told why it cannot have it.
+            Err(error) => {
+                return Err(ExecError::WorkingDirectory {
+                    directory: requested.into_owned(),
+                    reason: error.to_string(),
+                });
+            }
+        }
     }
     if options.clear_environment {
         spawn = spawn.with_cleared_environment();
