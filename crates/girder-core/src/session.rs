@@ -490,6 +490,18 @@ pub enum SessionError {
 /// crashed harness leaves a readable log rather than an empty one — the property that makes
 /// recovery possible at all.
 pub struct SessionStore {
+    /// The cross-process write lease, held for this store's lifetime.
+    ///
+    /// **Separate from the `Mutex` around `append`**, and both are needed: the mutex serialises
+    /// writers inside one process, and the lease is a kernel file lock that stops a *second process*
+    /// from appending to the same log. Without it two `girder` processes on one session interleave
+    /// compressed frames, and a reader gets a stream that decodes into a mixture of both.
+    ///
+    /// `None` when the store was built without one, which is what a test and an in-memory session
+    /// want: acquiring a lease creates a directory and a lock file, and a caller that never writes to
+    /// disk should not pay for that.
+    lease: Option<std::sync::Arc<crate::persistence_lease_gap::SessionWriteLease>>,
+
     path: PathBuf,
     /// Compression level. 3 is zstd's default and balances speed against size for log text.
     level: i32,
@@ -589,8 +601,40 @@ impl SessionStore {
         Self {
             path: path.into(),
             level: 3,
+            lease: None,
             cached: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Opens a store that holds the cross-process write lease.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::persistence_lease_gap::LeaseError`] when another holder has it, or the directory
+    /// cannot be created. Reported rather than retried: the lock is non-blocking on purpose, because
+    /// waiting on a wedged holder is an unbounded hang with no diagnostic.
+    pub fn with_lease(
+        path: impl Into<PathBuf>,
+        id: impl Into<String>,
+    ) -> Result<Self, crate::persistence_lease_gap::LeaseError> {
+        let path = path.into();
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let lease = crate::persistence_lease_gap::SessionWriteLease::acquire(dir, id)?;
+        Ok(Self {
+            path,
+            level: 3,
+            lease: Some(std::sync::Arc::new(lease)),
+            cached: Arc::new(std::sync::RwLock::new(None)),
+        })
+    }
+
+    /// Whether this store holds the cross-process write lease.
+    ///
+    /// Exposed so a caller can tell "I may write here" from "another process is writing here" without
+    /// attempting an append that would fail.
+    #[must_use]
+    pub fn holds_lease(&self) -> bool {
+        self.lease.is_some()
     }
 
     /// Sets the zstd compression level.
@@ -798,10 +842,15 @@ impl Session for SessionStore {
     fn append(&self, event: SessionEvent) -> BoxFut<Result<(), SessionError>> {
         let path = self.path.clone();
         let level = self.level;
+        // The lease travels with the write. Dropping it here would release the cross-process lock
+        // while the append this future exists for has not happened yet, which is the one window the
+        // lease is for.
+        let lease = self.lease.clone();
         Box::pin(async move {
             SessionStore {
                 path,
                 level,
+                lease,
                 cached: Arc::new(std::sync::RwLock::new(None)),
             }
             .append(&event)
@@ -811,10 +860,12 @@ impl Session for SessionStore {
     fn replay(&self) -> BoxFut<Result<Vec<SessionEvent>, SessionError>> {
         let path = self.path.clone();
         let level = self.level;
+        let lease = self.lease.clone();
         Box::pin(async move {
             SessionStore {
                 path,
                 level,
+                lease,
                 cached: Arc::new(std::sync::RwLock::new(None)),
             }
             .read_all()
