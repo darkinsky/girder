@@ -184,6 +184,13 @@ fn register_terminal_surface(registry: &mut girder_core::RemoteRegistry) {
     let terminals = Arc::new(TerminalRegistry::new());
     let launcher: Arc<dyn TerminalLauncher> = Arc::new(LocalLauncher::new());
     girder_core::register_terminal_rpc_methods(registry, &terminals, &launcher);
+    girder_core::register_terminal_rename_method(registry, &terminals);
+    girder_core::register_terminal_retain_method(
+        registry,
+        Arc::new(girder_core::TerminalPersistStore::new(
+            std::path::Path::new("/nonexistent-for-routing"),
+        )),
+    );
 }
 
 /// The workspace browser: one filesystem, one workspace table.

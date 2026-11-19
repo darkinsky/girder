@@ -340,6 +340,12 @@ pub struct Session {
     status: std::sync::Mutex<Status>,
     transcript: std::sync::Mutex<Transcript>,
     size: Size,
+    /// What a person called this terminal.
+    ///
+    /// `None` until it is renamed, which is what a client shows as "Terminal 3" from the id rather
+    /// than as an empty label. Upstream's `rename` sets it on the live terminal and broadcasts the
+    /// change; here it is a plain field because a session's state has no watchers of its own.
+    title: std::sync::Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -362,7 +368,27 @@ impl Session {
             status: std::sync::Mutex::new(Status::Running),
             transcript: std::sync::Mutex::new(Transcript::new(max_bytes)),
             size,
+            title: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Names this terminal, or clears the name.
+    ///
+    /// Upstream's `rename`, whose validation is the caller's: `terminalTitle` in the controller trims
+    /// and refuses a blank or over-long title, and this stores what it is given. A blank title is
+    /// stored as `None` rather than `Some("")`, because a client that read an empty string would
+    /// render a nameless terminal as one whose name was erased.
+    pub fn rename(&self, title: Option<&str>) {
+        let trimmed = title.map(str::trim).filter(|title| !title.is_empty());
+        if let Ok(mut held) = self.title.lock() {
+            *held = trimmed.map(str::to_owned);
+        }
+    }
+
+    /// What a person called this terminal, when they named it.
+    #[must_use]
+    pub fn title(&self) -> Option<String> {
+        self.title.lock().ok().and_then(|held| held.clone())
     }
 
     /// Its id.

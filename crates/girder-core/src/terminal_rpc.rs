@@ -614,6 +614,61 @@ fn invalid(method: &str, message: &str) -> RemoteError {
 /// Separate from [`register_terminal_methods`] because it needs a `TerminalPersistStore` and the rest do not: a caller
 /// that has no directory to write into still gets the live-terminal surface, and a caller that passes a store gets one
 /// more method rather than a different registration path for all of them.
+/// Registers `terminal.rename`.
+///
+/// Upstream validates the title in the controller -- trimmed, one to 120 characters -- and refuses
+/// outside that range. The bounds are reproduced here rather than in [`crate::terminal::Session`],
+/// because the session stores whatever it is given: a validation that lived in the store would have
+/// to be repeated by every other caller.
+pub fn register_terminal_rename_method(
+    registry: &mut RemoteRegistry,
+    terminals: &std::sync::Arc<crate::terminal::Registry>,
+) {
+    let terminals = std::sync::Arc::clone(terminals);
+    registry.register(NAMESPACE, "rename", move |call: RemoteCall| {
+        let terminals = std::sync::Arc::clone(&terminals);
+        Box::pin(async move {
+            let id = call
+                .args
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "rename".to_owned(),
+                    message: "`id` is required".to_owned(),
+                })?;
+            let title = call
+                .args
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "rename".to_owned(),
+                    message: "`title` is required".to_owned(),
+                })?;
+            // Upstream's `terminalTitle`: trimmed, one to 120 characters. A blank title is refused
+            // rather than stored, because clearing a name is a different request from setting one.
+            let trimmed = title.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > 120 {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "rename".to_owned(),
+                    message: "a terminal title must contain 1-120 characters".to_owned(),
+                });
+            }
+            let Some(session) = terminals.get(id) else {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "rename".to_owned(),
+                    message: format!("no terminal `{id}` is known to this deployment"),
+                });
+            };
+            session.rename(Some(trimmed));
+            Ok(serde_json::json!({ "id": id, "title": trimmed }))
+        })
+    });
+}
+
 pub fn register_terminal_retain_method(
     registry: &mut RemoteRegistry,
     store: std::sync::Arc<crate::terminal_persist::Store>,

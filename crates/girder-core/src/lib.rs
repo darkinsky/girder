@@ -1156,7 +1156,8 @@ pub use terminal_retain_rpc::{
 };
 pub use terminal_rpc::{
     DEFAULT_READ_WAIT_MS as TERMINAL_DEFAULT_READ_WAIT_MS, MAX_WAIT_MS as TERMINAL_MAX_WAIT_MS,
-    register_terminal_methods as register_terminal_rpc_methods, register_terminal_retain_method,
+    register_terminal_methods as register_terminal_rpc_methods, register_terminal_rename_method,
+    register_terminal_retain_method,
 };
 pub use terminal_rpc_extra::{TerminalShell, discover_shells, register_terminal_extra_methods};
 pub use terminal_tool::{

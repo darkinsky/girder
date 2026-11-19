@@ -230,6 +230,16 @@ const DECLARED: &[Declared] = &[
         capability: Some("Registry"),
     },
     Declared {
+        method: "terminal.rename",
+        registration: "register_terminal_rename_method",
+        capability: Some("TerminalRegistry"),
+    },
+    Declared {
+        method: "terminal.retain",
+        registration: "register_terminal_retain_method",
+        capability: Some("TerminalPersistStore"),
+    },
+    Declared {
         // The sessions a `@`-mention may point at, ranked so the caller's own directory comes first.
         method: "sessionReferenceResolver.candidates",
         registration: "register_session_reference_methods",
