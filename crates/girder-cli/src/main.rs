@@ -791,6 +791,13 @@ fn register_workspace_file_surface(
     // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
     // caller's own directory comes first.
     girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
+    // `subagents.{prompt, interruptByUser}`: delivering input to a running child. The substrate is
+    // the two inbox queues the agent loop already reads, so this is not a resident-session
+    // subsystem -- it is the way to put a message into a session from outside.
+    girder_core::subagent_rpc::register_subagent_methods(
+        remote,
+        &Arc::new(girder_core::subagent_rpc::RunningChildren::new()),
+    );
     // `mcpManager.{probe, restart}`: the MCP subsystem was already here -- wire layer, stdio framing,
     // child lifecycle, handshake -- and had no endpoint. Configured servers come from settings.
     girder_core::mcp_manager_rpc::register_mcp_manager_methods(remote, &Arc::new(Vec::new()));

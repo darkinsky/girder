@@ -1,5 +1,18 @@
 //! The Codex app-server wire protocol: one child turn as a closed message state machine.
 //!
+//! # Status: ported, not registered
+//!
+//! This module is not reachable from any RPC endpoint, and that is deliberate rather than an
+//! oversight: it describes the **Codex** app-server protocol, which upstream speaks when a subagent
+//! runs against a Codex backend. This build has no Codex backend to speak it to.
+//!
+//! The types below therefore carry `#[allow(dead_code)]` at module scope rather than one per item.
+//! The alternative -- deleting 1,474 lines of an accurately ported protocol -- would lose the
+//! mapping between upstream's message shapes and these, which is the part that takes reading to
+//! reconstruct. Keeping it costs a lint suppression and tells a reader the truth: the work is done,
+//! the consumer is absent.
+#![allow(dead_code)]
+//!
 //! # What the measurement said
 //!
 //! Upstream `packages/subagent` is 9,900 raw lines (6,791 after stripping comments and blank

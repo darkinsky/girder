@@ -437,6 +437,36 @@ impl Agent {
         self.lock_inbox().take_turn()
     }
 
+    /// Queues a message to be seen at the next step boundary.
+    ///
+    /// Upstream's `agent.steer`: the message joins the turn in progress, so the model reads it before
+    /// its next tool call rather than after the turn ends. The distinction from [`Self::followup`] is
+    /// the whole reason both exist -- a steer can stop a wrong plan mid-turn, a followup cannot.
+    ///
+    /// Returns the inbox length after the push, which is what a caller needs to render "3 queued".
+    pub fn steer(&self, message: crate::message::Message) -> usize {
+        let mut inbox = self.lock_inbox();
+        let _ = inbox.apply(&crate::inbox::Splice::append(
+            crate::inbox::Target::NextStep,
+            vec![message],
+        ));
+        inbox.len()
+    }
+
+    /// Queues a message for the turn after this one.
+    ///
+    /// Upstream's `agent.followup`. A followup is what a subagent prompt becomes when the child is
+    /// already working: the message waits for the current turn to finish rather than interrupting it,
+    /// because an instruction that arrives mid-tool-call can invalidate work already committed.
+    pub fn followup(&self, message: crate::message::Message) -> usize {
+        let mut inbox = self.lock_inbox();
+        let _ = inbox.apply(&crate::inbox::Splice::append(
+            crate::inbox::Target::NextTurn,
+            vec![message],
+        ));
+        inbox.len()
+    }
+
     /// Takes the queued next-step messages, emptying that queue.
     pub fn take_queued_step(&self) -> Vec<crate::message::Message> {
         self.lock_inbox().take_step()

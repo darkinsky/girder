@@ -218,6 +218,17 @@ const DECLARED: &[Declared] = &[
         capability: Some("ScheduleStore"),
     },
     Declared {
+        // Delivering input to a running child, over the two inbox queues the agent loop reads.
+        method: "subagents.prompt",
+        registration: "register_subagent_methods",
+        capability: Some("RunningChildren"),
+    },
+    Declared {
+        method: "subagents.interruptByUser",
+        registration: "register_subagent_methods",
+        capability: Some("RunningChildren"),
+    },
+    Declared {
         // The MCP subsystem was already here and had no endpoint.
         method: "mcpManager.probe",
         registration: "register_mcp_manager_methods",

@@ -178,6 +178,10 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         entries
     });
     girder_core::mcp_manager_rpc::register_mcp_manager_methods(registry, &Arc::new(Vec::new()));
+    girder_core::subagent_rpc::register_subagent_methods(
+        registry,
+        &Arc::new(girder_core::subagent_rpc::RunningChildren::new()),
+    );
     girder_core::plugin_manager_rpc::register_plugin_manager_methods(registry, &plugin_entries);
     girder_core::plugin_manager_rpc::register_plugin_inventory_methods(registry, &plugin_entries);
     girder_core::agent_presets::register_agent_preset_methods(
