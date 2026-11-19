@@ -201,6 +201,7 @@ mod mcp_stdio;
 mod mcp_subprocess;
 mod mcp_tools;
 mod message;
+pub mod message_feedback;
 pub mod method_surface;
 mod model_catalog_extra;
 mod model_fallback;

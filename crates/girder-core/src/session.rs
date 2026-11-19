@@ -302,6 +302,43 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+
+    /// A message's feedback was recorded or replaced.
+    ///
+    /// Upstream's `feedback/message-put`, from `packages/feedback/message-feedback`. Feedback is a
+    /// log event rather than a side table because it belongs to a message and must survive the same
+    /// way the message does: a rating stored elsewhere would be lost by a fork or a compaction that
+    /// preserved the conversation.
+    #[serde(rename = "feedback/message-put")]
+    MessageFeedbackPut {
+        /// The message the feedback is about.
+        message_id: String,
+        /// `positive` or `negative`.
+        rating: crate::message_feedback::Rating,
+        /// A note, when the person wrote one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        /// A category, when the client supplied one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
+        /// The item's identity, so a replacement is recognisable as one.
+        version: String,
+        /// When the item was first recorded.
+        created_at: i64,
+        /// When it last changed.
+        updated_at: i64,
+    },
+
+    /// A message's feedback was withdrawn.
+    ///
+    /// Upstream's `feedback/message-delete`. A separate event rather than a tombstone: the log is
+    /// append-only, and a reader that sees the put followed by the delete knows both that feedback
+    /// existed and that it was removed.
+    #[serde(rename = "feedback/message-delete")]
+    MessageFeedbackDelete {
+        /// The message whose feedback was withdrawn.
+        message_id: String,
+    },
 }
 
 impl SessionEvent {
@@ -327,6 +364,8 @@ impl SessionEvent {
             Self::RequestContext { .. } => "request/context",
             Self::SessionTitle { .. } => "session/title",
             Self::LlmRetry { .. } => "llm/retry",
+            Self::MessageFeedbackPut { .. } => "feedback/message-put",
+            Self::MessageFeedbackDelete { .. } => "feedback/message-delete",
         }
     }
 
@@ -351,7 +390,12 @@ impl SessionEvent {
             | Self::SandboxMode { .. }
             | Self::RequestContext { .. }
             | Self::SessionTitle { .. }
-            | Self::LlmRetry { .. } => None,
+            | Self::LlmRetry { .. }
+            // Feedback answers about a message, not about a turn: it may be recorded long after the
+            // turn that produced the message, so attributing it to one would be a claim the event
+            // does not make.
+            | Self::MessageFeedbackPut { .. }
+            | Self::MessageFeedbackDelete { .. } => None,
         }
     }
 }

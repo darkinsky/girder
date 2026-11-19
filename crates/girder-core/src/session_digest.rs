@@ -289,7 +289,10 @@ pub fn digest(events: &[SessionEvent]) -> Digest {
             | SessionEvent::SandboxMode { .. }
             | SessionEvent::RequestContext { .. }
             | SessionEvent::SessionTitle { .. }
-            | SessionEvent::LlmRetry { .. } => {}
+            | SessionEvent::LlmRetry { .. }
+            // a digest counts turns and tokens; feedback is neither, so it contributes nothing here.
+            | SessionEvent::MessageFeedbackPut { .. }
+            | SessionEvent::MessageFeedbackDelete { .. } => {}
         }
     }
 

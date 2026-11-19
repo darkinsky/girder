@@ -207,6 +207,22 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // Feedback is a log event, so `list` replays and the two writes need a store.
+        method: "messageFeedback.list",
+        registration: "register_message_feedback_methods",
+        capability: Some("SessionCatalog"),
+    },
+    Declared {
+        method: "messageFeedback.put",
+        registration: "register_message_feedback_methods",
+        capability: Some("SessionCatalog"),
+    },
+    Declared {
+        method: "messageFeedback.delete",
+        registration: "register_message_feedback_methods",
+        capability: Some("SessionCatalog"),
+    },
+    Declared {
         // The search and fetch endpoints this deployment registered. Two lists because the two
         // capabilities are separate: a deployment may have fetch and no search index.
         method: "web.listProviders",

@@ -155,6 +155,12 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
     }
     let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
     girder_core::plugin_market_rpc::register_market_methods(registry, &market);
+    // A catalog over a path that need not exist: these tests check that a method is *routable*,
+    // not that a session can be read from it.
+    let feedback_catalog: Arc<dyn SessionCatalog> = Arc::new(girder_core::DirectoryCatalog::new(
+        std::path::Path::new("/nonexistent-for-routing"),
+    ));
+    girder_core::message_feedback::register_message_feedback_methods(registry, &feedback_catalog);
     girder_core::web_rpc::register_web_methods(
         registry,
         &Arc::new(girder_core::web_rpc::WebProviders::new()),
