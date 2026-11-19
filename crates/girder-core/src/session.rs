@@ -329,6 +329,18 @@ pub enum SessionEvent {
         updated_at: i64,
     },
 
+    /// Whether this session's tree runs as a team.
+    ///
+    /// Upstream's `team/mode`, from `packages/team/agent-team`. A session with team mode on is one
+    /// whose root leads a tree of subagents that share a task graph; turning it off stops new team
+    /// tools from being offered without stopping the children already running, which is why this is
+    /// a recorded selection rather than a switch that kills anything.
+    #[serde(rename = "team/mode")]
+    TeamMode {
+        /// Whether the tree is a team.
+        enabled: bool,
+    },
+
     /// A remark about the session as a whole.
     ///
     /// Upstream's `feedback/record`, from `packages/feedback/command-feedback`. Distinct from
@@ -382,6 +394,7 @@ impl SessionEvent {
             Self::MessageFeedbackPut { .. } => "feedback/message-put",
             Self::MessageFeedbackDelete { .. } => "feedback/message-delete",
             Self::SessionFeedbackRecord { .. } => "feedback/record",
+            Self::TeamMode { .. } => "team/mode",
         }
     }
 
@@ -412,7 +425,8 @@ impl SessionEvent {
             // does not make.
             | Self::MessageFeedbackPut { .. }
             | Self::MessageFeedbackDelete { .. }
-            | Self::SessionFeedbackRecord { .. } => None,
+            | Self::SessionFeedbackRecord { .. }
+            | Self::TeamMode { .. } => None,
         }
     }
 }

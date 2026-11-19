@@ -213,6 +213,13 @@ const DECLARED: &[Declared] = &[
         capability: Some("SessionCatalog"),
     },
     Declared {
+        // Whether a session's tree runs as a team. The root is the caller's assertion, checked
+        // rather than trusted, because this build holds no subagent tree to derive it.
+        method: "agentTeams.setEnabled",
+        registration: "register_agent_team_methods",
+        capability: Some("SessionCatalog"),
+    },
+    Declared {
         // The capability sets a session may start from. This build's presets name tools and a
         // model rather than a Cordis plugin list.
         method: "agentPresets.list",
