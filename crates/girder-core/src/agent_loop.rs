@@ -1056,14 +1056,12 @@ fn over_budget(
             // the budget's margin absorbs.
             .map(|message| crate::token_meter::estimate_blocks(&message.content))
             .sum(),
-        tools: tools
-            .iter()
-            .map(|schema| {
-                crate::token_meter::estimate_text(&schema.name)
-                    + crate::token_meter::estimate_text(&schema.description)
-                    + crate::token_meter::estimate_text(&schema.parameters.to_string())
-            })
-            .sum(),
+        // Through `token_projection_gap`, which prices the catalogue **as a catalogue**. Summing the
+        // three fields per tool undercounts by the JSON structure a request actually carries: the
+        // keys, the braces, the commas, and one block of framing for the array itself. Measured on a
+        // two-tool catalogue, the per-field sum was 40 and the catalogue 65 -- a 62% underestimate,
+        // which is the difference between "this request fits" and "the provider refuses it".
+        tools: crate::token_projection_gap::estimate_tools(tools),
     };
     let budget = crate::context_budget::Budget {
         window,
