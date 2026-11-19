@@ -197,7 +197,7 @@ impl crate::llm_final_gap::Adapter for RouteTableAdapter {
         let mut info = ProviderInfo::named(provider);
         if let Ok(route) = self.routes.get(provider) {
             if !route.display_name.is_empty() {
-                info.name = route.display_name.clone();
+                info.name.clone_from(&route.display_name);
             }
         }
         info
