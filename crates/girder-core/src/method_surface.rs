@@ -190,6 +190,14 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        // One observation plus the stopping decision. Upstream's `wait` loops an observation until
+        // the decision is terminal; here a client calls again, which keeps a long-lived request off
+        // this transport.
+        method: "session.wait",
+        registration: "register_session_state_method_with",
+        capability: Some("AgentRuntime (live turns)"),
+    },
+    Declared {
         method: "session.duplicate",
         registration: "register_session_lifecycle_methods_with_archive",
         capability: Some("ArchiveStore"),

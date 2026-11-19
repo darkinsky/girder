@@ -244,9 +244,13 @@ pub fn register_session_state_method_with(
     projections: &Arc<ProjectionRegistry>,
     turns: &Arc<dyn LiveTurns>,
 ) {
+    // Two clones each: the first registration takes ownership of these, and `wait` needs its own.
     let catalog = Arc::clone(catalog);
     let projections = Arc::clone(projections);
-    let turns = Arc::clone(turns);
+    let turns: Arc<dyn LiveTurns> = Arc::clone(turns);
+    let wait_catalog = Arc::clone(&catalog);
+    let wait_projections = Arc::clone(&projections);
+    let wait_turns = Arc::clone(&turns);
 
     // Declared beside the handler and before it, so the policy judges the call the handler would take.
     // A read: nothing below writes, and a read-only mirror must still be able to render a session.
@@ -257,6 +261,44 @@ pub fn register_session_state_method_with(
         let projections = Arc::clone(&projections);
         let turns = Arc::clone(&turns);
         Box::pin(async move { state(&call.args, &catalog, &projections, &turns, None).await })
+    });
+
+    // `session.wait`: one reading of the state, then the stopping decision. Upstream's loop
+    // observes until the decision is terminal; the decision itself is `session_wait::wait_action`,
+    // and one call of this endpoint is one observation. A client that wants to keep waiting calls
+    // again -- which is what a stream carrier does on its side, and it keeps this transport free of
+    // a long-lived request.
+    registry.register(NAMESPACE, "wait", move |call: RemoteCall| {
+        let catalog = Arc::clone(&wait_catalog);
+        let projections = Arc::clone(&wait_projections);
+        let turns = Arc::clone(&wait_turns);
+        Box::pin(async move {
+            let state = state(&call.args, &catalog, &projections, &turns, None).await?;
+            let value = serde_json::from_value::<SessionStateValue>(state).map_err(|error| {
+                RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "wait".to_owned(),
+                    message: format!("the state reader returned an unexpected shape: {error}"),
+                }
+            })?;
+            // The three facts, read straight from the state this handler just built. Going through
+            // `facts_of` would re-deserialize the value, and under `#[path]` test compilation
+            // `SessionStateValue` resolves to the test crate's copy while the value is the
+            // library's -- so the facts are read from the struct in hand.
+            let facts = girder_core::session_wait::WaitFacts {
+                pending_input: value.interrupted,
+                running: value.running,
+                active: value.events > 0,
+            };
+            let action = girder_core::session_wait::wait_action(facts);
+            // Rendered here rather than through `wait_value`, which takes the library's
+            // `SessionStateValue`: under `#[path]` compilation that is a different type from the one
+            // in hand. The shape is the same object `wait_value` builds.
+            Ok(serde_json::json!({
+                "reason": action.as_str(),
+                "state": value,
+            }))
+        })
     });
 }
 
