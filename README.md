@@ -7,15 +7,15 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: 104 Remote methods across 35 namespaces, 32 tools, 10,312 tests, 20.6 MB release binary.**
+> **Status: 120 Remote methods, 32 tools, 10,331 tests, 20.6 MB release binary.**
 > `girder "…"` talks to a DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`) is
 > set and falls back to a scripted provider otherwise, saying which on stderr. The live path is
 > **tested against a mock server, not the real API** — no key exists in this environment, so the wire
 > format is exercised rather than the service.
 >
 > Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
-> `@Remote` markers and this build's running server, in-scope packages only): **89 of 126 endpoints
-> aligned (70%)**, with **17 of 25 namespaces complete**. 230,051 lines of Rust against upstream's
+> `@Remote` markers and this build's running server, in-scope packages only): **90 of 126 endpoints
+> aligned (71%)**, with **17 of 25 namespaces complete**. 230,051 lines of Rust against upstream's
 > ~243,000 in-scope lines.
 >
 > Most of the 52 missing endpoints are ordinary work. **Two namespaces are a boundary instead**:

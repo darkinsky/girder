@@ -6,7 +6,7 @@ Generated from upstream: every class extending `TypertRemoteService` in the in-s
 a running `girder serve`, so it is what a client can actually call.
 
 Upstream in scope: **126** endpoints across **25** namespaces.
-Present here: **89** (70%).
+Present here: **90** (71%).
 
 The **Tree** column counts uses of the Cordis entry tree. A non-zero count means the namespace
 cannot be ported onto this build's `ServiceKey` substrate without inventing the tree -- a boundary
@@ -16,9 +16,9 @@ rather than backlog.
 | --- | --- | --- | --- | --- |
 | `pluginManager` ✗ | 15 | 0 | 15 | 22 |
 | `account` ✗ | 11 | 0 | 11 |  |
-| `schedule` | 9 | 6 | 3 |  |
 | `mcpManager` ✗ | 2 | 0 | 2 |  |
 | `officeKit` ✗ | 2 | 0 | 2 |  |
+| `schedule` | 9 | 7 | 2 |  |
 | `subagents` ✗ | 2 | 0 | 2 |  |
 | `agentTeams` ✗ | 1 | 0 | 1 |  |
 | `pluginInventory` ✗ | 1 | 0 | 1 | 4 |
@@ -48,6 +48,8 @@ rather than backlog.
 
 - **`pluginInventory`** — 1 endpoint(s), 4 entry-tree uses
 - **`pluginManager`** — 15 endpoint(s), 22 entry-tree uses
+
+These are not backlog. A port would have to build the entry tree this design replaced.
 
 ## Missing endpoints
 
@@ -101,9 +103,8 @@ rather than backlog.
 - `pluginManager.updateBundle`
 - `pluginManager.waitForInstall`
 
-### `schedule` (3)
+### `schedule` (2)
 
-- `schedule.edit`
 - `schedule.history`
 - `schedule.run`
 

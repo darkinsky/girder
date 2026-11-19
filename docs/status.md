@@ -22,7 +22,7 @@ them against a running `girder serve`:
 | | Count |
 | --- | --- |
 | Upstream endpoints, in scope | 126 |
-| Served here | 89 (**70%**) |
+| Served here | 90 (**71%**) |
 | Namespaces fully aligned | 17 of 25 |
 | Namespaces with nothing | 7 of 25 |
 
