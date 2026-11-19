@@ -480,7 +480,11 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // The projection bridge: a client reads folded session state without replaying the log itself.
     // Without this the browser would need its own copy of every projection's fold logic, and the two
     // would drift.
-    let projections = Arc::new(girder_core::ProjectionRegistry::new());
+    // Assembled rather than empty. Every projection existed and none was registered, so
+    // `session.state` answered `projections: {}` -- a session with no state, not because anything
+    // failed but because nothing was ever put in the registry.
+    let projections = girder_core::projection_setup::assemble()
+        .map_err(|error| anyhow::anyhow!("projection registry: {error}"))?;
 
     // Background jobs, with the registry the server keeps for this process.
     let jobs = Arc::new(girder_core::JobRegistry::new(256 * 1024));
