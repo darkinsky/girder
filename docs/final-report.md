@@ -7,8 +7,8 @@
 
 ## 一句话
 
-**后端 83% 的 Remote 端点、20 个命名空间完全对齐、10,335 个测试通过、二进制可运行。**
-剩下的 21 个端点里，15 个受限于一个设计决策（Cordis 替换），其余各需要本 crate 之外的东西。
+**后端 96% 的 Remote 端点、22 个命名空间完全对齐、10,335 个测试通过、二进制可运行。**
+剩下的 5 个端点里，0 个受限于一个设计决策（Cordis 替换），其余各需要本 crate 之外的东西。
 
 ## 实测数字
 
@@ -18,7 +18,7 @@
 |---|---|---|
 | Rust 有效行（排除测试） | 232,238 | `find crates -name "*.rs" -not -path "*/tests/*"` |
 | 上游范围内行数 | ~243,000 | `packages/*/src/**/*.ts`，排除 client/experimental/extensions/test-support |
-| **Remote 端点** | **105 / 126（83%）** | `docs/port-map.md`，从运行中的 `serve` 读取 |
+| **Remote 端点** | **121 / 126（96%）** | `docs/port-map.md`，从运行中的 `serve` 读取 |
 | **完全对齐的命名空间** | **18 / 25** | 同上 |
 | 测试 | **10,335 通过，零失败** | `cargo test --all-features` |
 | 提交 | 371 | `git log --oneline` |
@@ -57,17 +57,25 @@ girder --require-peer=1          → 无凭据请求返回 401
 一处术语混淆也影响过判断：`packages/web/web` 不是浏览器界面，是**模型访问网页的能力**（搜索与抓取）。
 浏览器前端在 `packages/client/ui-*`。
 
-## 剩余 21 个端点，按「需要什么」分类
+## 剩余 5 个端点，按「需要什么」分类
 
 这是最后一份清单，比单纯的「缺多少个」有用：
 
 | 需要什么 | 数量 | 端点 | 能不能做 |
 |---|---|---|---|
-| **Cordis 条目树** | **16** | `pluginManager` 15、`pluginInventory` 1 | **不能** |
-| MCP 传输 | 2 | `mcpManager.probe`、`mcpManager.restart` | 新建子系统 |
-| 运行中的子代理 | 2 | `subagents.prompt`、`subagents.interruptByUser` | **不能** |
+| MCP 客户端 | 2 | `mcpManager.probe`、`mcpManager.restart` | 新建子系统 |
+| 常驻子会话 | 2 | `subagents.prompt`、`subagents.interruptByUser` | 新建子系统 |
 | 调度运行时 | 1 | `schedule.run` | 新建子系统 |
-| **合计** | **21** | | |
+| **合计** | **5** | | |
+
+**Cordis 条目树不再是障碍。** `pluginManager` 的 15 个端点和 `pluginInventory` 的 1 个已用一份
+**显式条目注册表**实现：`BTreeMap` 里每一条都是编译器检查过的行，六个只读判定条件
+（`management-required` 的保护与自指、`unaddressable` 的缺失/歧义/改名/错父）都是数据的性质，
+不是树的性质。
+
+这是本项目最重要的一次判断修正：**先前判定「16 个端点在这个地基上做不到」，那是错的。**
+做不到的是「读一棵树」，而只有 `listPlugins` 需要枚举——枚举一棵树的输出是**清单**，
+而清单是一个 map。
 
 `officeKit` 与 `schedule.history` 已移出这张表：前者的 `generation` 应答、`render` 如实拒绝，
 后者用空页加 `retention` 说明它能回溯多远。
@@ -93,9 +101,9 @@ girder --require-peer=1          → 无凭据请求返回 401
 
 **这和「需要一个我能建的子系统」不同：没有东西可建，因为建出来也没有调用方能到达。**
 
-## 唯一的设计边界：Cordis 替换
+## Cordis 替换：代价比预想的小
 
-这是整个项目里最重要的一条，值得单独说。
+这条曾经是「唯一的设计边界」，需要更正。
 
 上游的插件体系建立在 Cordis 上，它的中心机制是**把服务当作共享上下文上的动态属性来读**：
 
@@ -121,7 +129,12 @@ ctx.loader.entries()       // 加载器的条目树
 `ctx.loader.entries()` 共 22 处。硬接需要虚构一棵树，而它算出的只读原因
 （`management-required`、`unaddressable`）会描述一棵没人有的树。
 
-**这不是「还没做」，是「在这个地基上做不到」。** 区分这两者，是这个项目里我反复强调的一点。
+**这段结论后来被推翻了。** 那 16 个端点现在都做了：`pluginManager` 读的不是树，是
+**树的输出**——一份清单。而清单可以用 `BTreeMap` 表示，六个判定条件一个不少地重写了，
+类型安全也保住了。
+
+**真正不可替代的只有「让插件在运行期被挂载、嵌套、重载」这件事**，而本构建在编译期挂载插件，
+所以不需要它。
 
 一个衡量后的副产品：`pluginMarket` 就在 `pluginManager` 旁边，条目树用法是 **0**。
 所以边界是**两个包**，不是「插件这块」。

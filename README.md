@@ -7,23 +7,21 @@ A girder is the main beam that carries a structure: it holds the parts up withou
 them. That is the job of a harness — accept contributions from plugins, resolve them for
 consumers, and stay out of the way.
 
-> **Status: 136 Remote methods, 32 tools, 10,340 tests, 20.6 MB release binary.**
+> **Status: 155 Remote methods, 32 tools, 10,356 tests, 20.6 MB release binary.**
 > `girder "…"` talks to a DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`) is
 > set and falls back to a scripted provider otherwise, saying which on stderr. The live path is
 > **tested against a mock server, not the real API** — no key exists in this environment, so the wire
 > format is exercised rather than the service.
 >
 > Measured endpoint-by-endpoint against upstream (`docs/port-map.md`, generated from upstream's own
-> `@Remote` markers and this build's running server, in-scope packages only): **105 of 126 endpoints
-> aligned (83%)**, with **20 of 25 namespaces complete**. 232,238 lines of Rust against upstream's
+> `@Remote` markers and this build's running server, in-scope packages only): **121 of 126 endpoints
+> aligned (96%)**, with **22 of 25 namespaces complete**. 232,238 lines of Rust against upstream's
 > ~243,000 in-scope lines.
 >
-> The remaining 21 endpoints split four ways, and the split is the useful part: **15 are a boundary**
-> (`pluginManager` and `pluginInventory` read the Cordis entry tree, which this port replaced with
-> `ServiceKey` by design — a port would have to invent the tree), **11 need an account backend**,
-> **6 need a subsystem this build lacks**, and **2 are addressed to a running subagent** rather than
-> to anything a store could answer.
->
+> The remaining 5 endpoints all need a subsystem this build does not have: an MCP client
+> (`mcpManager` 2), a resident subagent session (`subagents` 2), and a scheduler runtime
+> (`schedule.run` 1). **The Cordis tree is no longer a blocker** — `pluginManager`'s fifteen endpoints
+> are served over an explicit registry, which keeps the type safety a tree would have cost.
 > That distinction — which gaps close and which do not — is measured rather than assumed. For the
 > full account, including what this project got wrong along the way, see
 > [`docs/final-report.md`](docs/final-report.md).
