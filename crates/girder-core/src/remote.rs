@@ -1861,13 +1861,44 @@ fn register_rename(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                             message: format!("no session `{session_id}`"),
                         });
                     };
-                    let Some(derived) = girder_core::derive_title(
-                        &record.events,
-                        girder_core::TitleSource::FirstPrompt,
-                        // A list row shows a few dozen characters; a longer title would be cut by whatever renders it,
-                        // and cutting here means the cut is the same everywhere.
-                        60,
-                    ) else {
+                    // Whether a model title is even appropriate is decided before deriving one.
+                    // `schedule` is upstream's rule: a seeded session (one that started from an
+                    // existing transcript) is never auto-titled, a subagent's session is not either,
+                    // and a title the user set is never overwritten. Deriving a lexical title in those
+                    // cases would put a machine's leading-words guess where a person's label belongs.
+                    let count = record
+                        .events
+                        .iter()
+                        .filter(|event| {
+                            matches!(event, girder_core::SessionEvent::UserMessage { .. })
+                        })
+                        .count();
+                    let verdict = girder_core::session_title_llm_gap::schedule(
+                        girder_core::session_title_llm_gap::Automatic::FirstPrompt,
+                        girder_core::session_title_llm_gap::Envelope {
+                            is_seeded: false,
+                            is_subagent: false,
+                        },
+                        girder_core::session_title_llm_gap::TitleState { count, owner: None },
+                        // No provider is wired to title generation yet, so the answer is `false` and
+                        // `schedule` falls through to `FallbackOnly` -- the lexical title this call
+                        // produces. The decision is still asked rather than assumed: when a provider
+                        // exists, this is the one place that changes.
+                        false,
+                    );
+                    let Some(derived) = (verdict
+                        != girder_core::session_title_llm_gap::Schedule::Ignore)
+                        .then(|| {
+                            girder_core::derive_title(
+                                &record.events,
+                                girder_core::TitleSource::FirstPrompt,
+                                // A list row shows a few dozen characters; a longer title would be cut by whatever renders it,
+                                // and cutting here means the cut is the same everywhere.
+                                60,
+                            )
+                        })
+                        .flatten()
+                    else {
                         return Err(RemoteError::InvalidArguments {
                             namespace: "session".to_owned(),
                             method: "rename".to_owned(),
