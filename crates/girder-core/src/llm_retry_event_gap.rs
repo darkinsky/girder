@@ -94,6 +94,31 @@
 //!   `normal` stops at `maxRetries` *counted over the chain*, which is a different question from
 //!   "is this code retryable".
 
+//!
+//! # Status: ported, not registered — the retry sits at a different layer
+//!
+//! Upstream writes these two events from inside `llm-retry`'s agent function, where it holds
+//! `agent.session`:
+//!
+//! ```typescript
+//! agent.session.append('llm/retry', eventData)
+//! if (!await cancellableDelay(delayMs, fusedSignal)) return
+//! agent.session.append('llm/retry-started', { retryId, turn, step, retry })
+//! ```
+//!
+//! **This build's retry is a provider wrapper with no session handle.** `RetryingProvider::stream`
+//! calls `run_with_retry`, which takes the attempt as a closure and knows only the policy and the
+//! classifier — it has no `LoopContext`, no session, and no writer. Threading one through would mean
+//! the provider layer depending on the session layer, which is the direction the whole crate avoids.
+//!
+//! So the event vocabulary exists and is unwritten. The gap is not the payload model: it is that
+//! "which attempt is this, and what turn and step is it part of" is a fact only the agent loop holds,
+//! and the retry happens below it. Moving the retry up would put backoff inside the loop's request
+//! path, which is a design change rather than a wiring one.
+//!
+//! `RetryStarted::after` and `validate` remain the contract a writer would have to honour: the two
+//! events are paired, and a log carrying one without the other is invalid.
+
 // The crate root does not declare this module; the integrator owns the line and its `pub use`.
 // Until then nothing in a library build has a caller, so the whole surface would read as waste. The
 // test target exercises every item below.
