@@ -79,6 +79,35 @@
 //! `use crate::…` lines below therefore resolve identically inside the library (where `boot_gap` is
 //! a private module of the same crate) and inside the test.
 
+//!
+//! # Status: ported, not registered — upstream does not serve it either
+//!
+//! `compatibility_of`, `installation_of` and `listing_of` are real and complete, and **no RPC endpoint
+//! calls them upstream either.** `pluginMarket` marks exactly two methods, `listIndexes` and
+//! `setIndexes`, both of which this build already serves.
+//!
+//! The annotator that uses these is a private helper:
+//!
+//! ```typescript
+//! private async annotator() {
+//!   const [bundles, { exemptions }] = [
+//!     await this.ctx.pluginManager.listBundles(),
+//!     this.ctx.pluginManager.listVersionExemptions(),
+//!   ]
+//!   const runtimeVersion = getDshRuntimeVersion()
+//!   return plugin => listingOf(plugin, bundles, exemptions, runtimeVersion)
+//! }
+//! ```
+//!
+//! So the honest statement is: this module is a faithful port of a rule set that nothing in the 126
+//! endpoints reaches. Serving it would mean **inventing an endpoint upstream does not have** -- a
+//! `pluginMarket.list` -- which is a product decision, not a porting one, and one that would produce a
+//! client-visible surface with no upstream counterpart to compare against.
+//!
+//! What is *not* blocked: `pluginManager.listBundles` and `listVersionExemptions` are both registered
+//! here, so the inputs this module needs already exist as endpoints. Only the assembly is absent, and
+//! upstream has not assembled it either.
+
 #![allow(
     dead_code,
     reason = "this module is compiled privately by the `#[path]` test until lib.rs re-exports it; every item here is public surface for that wiring, so 'unused within this test binary' is not dead code"
