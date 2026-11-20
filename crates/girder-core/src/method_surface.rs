@@ -240,6 +240,36 @@ const DECLARED: &[Declared] = &[
         capability: Some("ServerConfig"),
     },
     Declared {
+        // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
+        method: "skills.list",
+        registration: "register_skill_methods",
+        capability: Some("Host"),
+    },
+    Declared {
+        // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
+        method: "fileReferences.list",
+        registration: "register_file_reference_methods",
+        capability: Some("PathBuf"),
+    },
+    Declared {
+        // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
+        method: "directoryPicker.list",
+        registration: "register_directory_picker",
+        capability: Some("DirectoryPickerBackend"),
+    },
+    Declared {
+        // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
+        method: "directoryPicker.pick",
+        registration: "register_directory_picker",
+        capability: Some("DirectoryPickerBackend"),
+    },
+    Declared {
+        // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
+        method: "directoryPicker.createDirectory",
+        registration: "register_directory_picker",
+        capability: Some("DirectoryPickerBackend"),
+    },
+    Declared {
         method: "pluginInventory.list",
         registration: "register_plugin_inventory_methods",
         capability: Some("Registry"),

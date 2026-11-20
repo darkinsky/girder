@@ -178,6 +178,21 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         entries
     });
     girder_core::mcp_manager_rpc::register_mcp_manager_methods(registry, &Arc::new(Vec::new()));
+    girder_core::api_tools_gap::register_file_reference_methods(registry, |_agent| {
+        Some(std::path::PathBuf::from("/tmp"))
+    });
+    girder_core::register_directory_picker(
+        registry,
+        &(Arc::new(girder_core::LocalDirectoryPicker::new())
+            as Arc<dyn girder_core::DirectoryPickerBackend>),
+    );
+    girder_core::skill_final_gap::register_skill_methods(
+        registry,
+        Arc::new(girder_core::skill_final_gap::FilesystemHost::new(
+            Arc::new(girder_core::skill_final_gap::FixedSessions::new()),
+            "/tmp",
+        )),
+    );
     girder_core::subagent_rpc::register_subagent_methods(
         registry,
         &Arc::new(girder_core::subagent_rpc::RunningChildren::new()),

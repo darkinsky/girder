@@ -824,6 +824,35 @@ fn register_workspace_file_surface(
         remote,
         &Arc::new(girder_core::subagent_rpc::RunningChildren::new()),
     );
+    // `skills.list`: the ranked catalog over the six roots upstream scans, with the project's own
+    // skill shadowing a bundled one of the same name. `skill_catalog` renders a prompt and does not
+    // rank; serving a client that will *invoke* a name needs the ranking.
+    girder_core::skill_final_gap::register_skill_methods(
+        remote,
+        Arc::new(girder_core::skill_final_gap::FilesystemHost::new(
+            Arc::new(girder_core::skill_final_gap::FixedSessions::new()),
+            std::env::current_dir().map_or_else(
+                |_| ".".to_owned(),
+                |path| path.to_string_lossy().into_owned(),
+            ),
+        )),
+    );
+    // `directoryPicker.{list,pick,createDirectory}`: the three endpoints upstream serves from
+    // `workspace-controller/src/directory-picker.ts`. The backend reports its own capability and each
+    // endpoint refuses when its capability is absent, rather than answering an empty selection that a
+    // client would read as "the user cancelled".
+    girder_core::register_directory_picker(
+        remote,
+        &(Arc::new(girder_core::LocalDirectoryPicker::new())
+            as Arc<dyn girder_core::DirectoryPickerBackend>),
+    );
+    // `fileReferences.list`: file and directory candidates for one agent's working directory, which
+    // is what an `@` completion queries. The implementation was complete and unregistered -- and the
+    // endpoint survey that reported 126/126 had only scanned `src/index.ts`, so this one lives in
+    // `file-references.ts` and was not counted.
+    girder_core::api_tools_gap::register_file_reference_methods(remote, move |_agent: &str| {
+        Some(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
+    });
     // `mcpManager.{probe, restart}`: the MCP subsystem was already here -- wire layer, stdio framing,
     // child lifecycle, handshake -- and had no endpoint. Configured servers come from settings.
     girder_core::mcp_manager_rpc::register_mcp_manager_methods(remote, &Arc::new(Vec::new()));
