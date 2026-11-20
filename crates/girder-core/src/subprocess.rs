@@ -373,8 +373,21 @@ fn kill_tree(pid: Option<u32>) {
         let mut gone = false;
         while std::time::Instant::now() < deadline {
             // `pid` was narrowed to i32 above for `Pid::from_raw`; the group id is the same number.
+            // **Through `subprocess_gap`, which also fences on start time.** The hand-rolled scan this
+            // replaces read `/proc/<pid>/stat` for a live state and stopped there. That answers "is
+            // something in this group running" but not "is it the process I started": between a
+            // kill and the re-read, the pid can be reused by an unrelated process, and a signal sent
+            // on the strength of the pid alone reaches the wrong one. `group_member` compares the
+            // start time it recorded, so a reused pid reads as dead.
             let group_number = u32::try_from(pid).unwrap_or_default();
-            if !group_has_live_member(group_number) {
+            let liveness = crate::subprocess_gap::group_member(
+                &crate::subprocess_gap::HostProbe,
+                group_number,
+                // The child pid is the group leader when `new_process_group` is set, so it is the
+                // one member worth checking first: a successful read there answers without scanning.
+                Some(u32::try_from(pid).unwrap_or_default()),
+            );
+            if liveness != crate::subprocess_gap::GroupLiveness::AllQuiescent {
                 gone = true;
                 break;
             }
@@ -390,60 +403,6 @@ fn kill_tree(pid: Option<u32>) {
         // acceptance criteria are POSIX-only.
         let _ = pid;
     }
-}
-
-/// Whether any member of `pgid`'s process group is alive rather than a zombie.
-///
-/// Reads `/proc/<pid>/stat` for the group's members. A process whose state is `Z` has exited and is
-/// waiting for its parent to collect it; signalling it achieves nothing and waiting for it to vanish
-/// waits forever, because its parent is this process and it has not called `wait` yet.
-///
-/// Returns `true` when the directory cannot be read, which is the conservative answer: teardown then
-/// falls through to SIGKILL, and a group that could not be inspected is one that should be signalled
-/// rather than assumed gone.
-#[cfg(unix)]
-fn group_has_live_member(pgid: u32) -> bool {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return true;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(pid_text) = name.to_str() else {
-            continue;
-        };
-        if pid_text.parse::<u32>().is_err() {
-            continue;
-        }
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        // `pid (comm) state ppid pgrp ...`; `comm` may contain spaces and parentheses, so the split
-        // is on the LAST `)` rather than the first.
-        let Some(after_comm) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = after_comm.1.split_whitespace();
-        let Some(state) = fields.next() else {
-            continue;
-        };
-        let _ppid = fields.next();
-        let Some(pgrp) = fields.next() else {
-            continue;
-        };
-        if pgrp.parse::<u32>() != Ok(pgid) {
-            continue;
-        }
-        // `Z` is a zombie and `X` a dead task; neither can be signalled usefully.
-        if state != "Z" && state != "X" {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(not(unix))]
-fn group_has_live_member(_pgid: u32) -> bool {
-    true
 }
 
 /// Waits for the child to be reaped, bounded so a stuck wait cannot hang teardown.
