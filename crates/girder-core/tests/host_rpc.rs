@@ -28,8 +28,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/host_rpc.rs"]
-mod host_rpc;
+#[path = "../src/host/rpc.rs"]
+pub mod host_rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -662,4 +662,10 @@ async fn a_registry_with_a_read_only_policy_refuses_the_call() {
         .expect_err("a read-only policy refuses a launch");
     assert_eq!(code(&error), "REFUSED", "{error}");
     assert!(opener.calls().is_empty(), "{:?}", opener.calls());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod host {
+    pub use super::host_rpc as rpc;
 }

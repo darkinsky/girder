@@ -8,7 +8,7 @@
 //!
 //! `stream_flow` is not exported from the crate root yet; that wiring is a separate change to
 //! `lib.rs`. Compiling the exact source file — rather than a copy — keeps these tests exercising the
-//! code a consumer will eventually reach through `girder_core::stream_flow`.
+//! code a consumer will eventually reach through `girder_core::llm::stream_flow`.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,8 +16,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/stream_flow.rs"]
-mod stream_flow;
+#[path = "../src/llm/stream_flow.rs"]
+pub mod stream_flow;
 
 use stream_flow::{Flow, SendResult, SlowDetector};
 
@@ -314,4 +314,10 @@ fn inflight_stays_within_capacity_across_a_random_trace() {
     }
 
     assert!(flow.sent_total() > 0, "the trace sent something");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::stream_flow as stream_flow;
 }

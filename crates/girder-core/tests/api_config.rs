@@ -3,7 +3,7 @@
 //! The workspace registry's interesting part is the manual order: a user who drags one workspace above
 //! another expects it to stay there, and an off-by-one when reordering is invisible until they look.
 
-use girder_core::api_config::{
+use girder_core::api::config::{
     SettingView, SettingsDescribeValue, SettingsUpdateRequest, WorkspaceCreateRequest,
     WorkspaceDeleteValue, WorkspaceRegistry, WorkspaceValue, WorkspaceView, config_catalogue,
     settings_methods, workspace_methods,

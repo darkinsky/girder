@@ -5,10 +5,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from
 //! `lib.rs` is a separate change. When it is exported, this can become
-//! `use girder_core::file_watch::{ChangeKind, PollingWatcher, snapshot};`.
+//! `use girder_core::fs::file_watch::{ChangeKind, PollingWatcher, snapshot};`.
 
-#[path = "../src/file_watch.rs"]
-mod file_watch;
+#[path = "../src/fs/file_watch.rs"]
+pub mod file_watch;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -292,4 +292,10 @@ fn a_watcher_exposes_its_configuration_and_baseline() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod fs {
+    pub use super::file_watch as file_watch;
 }

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use girder_core::api_config::WorkspaceRegistry;
+use girder_core::api::config::WorkspaceRegistry;
 use girder_core::{
     ArchiveStore, BoxFut, ChunkStream, ExtensionRuntime, FileSystem, JobRegistry, LlmError,
     LlmProvider, LlmRequest, LocalFileSystem, LocalLauncher, MemoryArchiveStore,
@@ -146,39 +146,39 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
     // Two surfaces `serve` registers that this helper had not: the LLM runtime's endpoints and the
     // market index's. Both are shapes `serve` builds, so leaving them out made the test's "serve
     // shaped" claim slightly untrue.
-    if let Ok(llm) = girder_core::llm_remote::runtime_from_routes(&{
+    if let Ok(llm) = girder_core::llm::remote::runtime_from_routes(&{
         let mut routes = girder_core::RouteRegistry::new();
         let _ = routes.register(girder_core::deepseek_route("deepseek", "test"));
         Arc::new(routes)
     }) {
         let _ = girder_core::register_llm_remote(registry, &llm);
     }
-    let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
-    girder_core::plugin_market_rpc::register_market_methods(registry, &market);
+    let market = Arc::new(girder_core::boot::plugin_market_rpc::MarketCatalog::new());
+    girder_core::boot::plugin_market_rpc::register_market_methods(registry, &market);
     // A catalog over a path that need not exist: these tests check that a method is *routable*,
     // not that a session can be read from it.
     let feedback_catalog: Arc<dyn SessionCatalog> = Arc::new(girder_core::DirectoryCatalog::new(
         std::path::Path::new("/nonexistent-for-routing"),
     ));
-    girder_core::message_feedback::register_message_feedback_methods(registry, &feedback_catalog);
-    girder_core::message_feedback::register_session_feedback_methods(registry, &feedback_catalog);
-    girder_core::session_reference::register_session_reference_methods(registry, &feedback_catalog);
-    girder_core::agent_teams::register_agent_team_methods(registry, &feedback_catalog);
+    girder_core::feedback::message_feedback::register_message_feedback_methods(registry, &feedback_catalog);
+    girder_core::feedback::message_feedback::register_session_feedback_methods(registry, &feedback_catalog);
+    girder_core::session::reference::register_session_reference_methods(registry, &feedback_catalog);
+    girder_core::team::agent_teams::register_agent_team_methods(registry, &feedback_catalog);
     let account_credentials: Arc<dyn girder_core::CredentialSource> =
         Arc::new(girder_core::MemoryCredentialSource::new());
-    girder_core::account_rpc::register_account_methods(registry, &account_credentials, false);
-    girder_core::office_kit::register_office_kit_methods(registry);
+    girder_core::credentials::account_rpc::register_account_methods(registry, &account_credentials, false);
+    girder_core::document::office_kit::register_office_kit_methods(registry);
     let plugin_entries = Arc::new({
-        let mut entries = girder_core::plugin_entries::Registry::new();
-        entries.insert(girder_core::plugin_entries::Entry {
+        let mut entries = girder_core::boot::plugin_entries::Registry::new();
+        entries.insert(girder_core::boot::plugin_entries::Entry {
             entry_id: "cli".to_owned(),
             module_name: "@deepseek-ai/dsh".to_owned(),
             options_id: "@deepseek-ai/dsh".to_owned(),
         });
         entries
     });
-    girder_core::mcp_manager_rpc::register_mcp_manager_methods(registry, &Arc::new(Vec::new()));
-    girder_core::api_tools_gap::register_file_reference_methods(registry, |_agent| {
+    girder_core::mcp::manager_rpc::register_mcp_manager_methods(registry, &Arc::new(Vec::new()));
+    girder_core::api::tools::register_file_reference_methods(registry, |_agent| {
         Some(std::path::PathBuf::from("/tmp"))
     });
     girder_core::register_directory_picker(
@@ -186,31 +186,31 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         &(Arc::new(girder_core::LocalDirectoryPicker::new())
             as Arc<dyn girder_core::DirectoryPickerBackend>),
     );
-    girder_core::skill_final_gap::register_skill_methods(
+    girder_core::skill::skill_final::register_skill_methods(
         registry,
-        Arc::new(girder_core::skill_final_gap::FilesystemHost::new(
-            Arc::new(girder_core::skill_final_gap::FixedSessions::new()),
+        Arc::new(girder_core::skill::skill_final::FilesystemHost::new(
+            Arc::new(girder_core::skill::skill_final::FixedSessions::new()),
             "/tmp",
         )),
     );
-    girder_core::subagent_rpc::register_subagent_methods(
+    girder_core::subagent::rpc::register_subagent_methods(
         registry,
-        &Arc::new(girder_core::subagent_rpc::RunningChildren::new()),
+        &Arc::new(girder_core::subagent::rpc::RunningChildren::new()),
     );
-    girder_core::plugin_manager_rpc::register_plugin_manager_methods(registry, &plugin_entries);
-    girder_core::plugin_manager_rpc::register_plugin_inventory_methods(registry, &plugin_entries);
-    girder_core::agent_presets::register_agent_preset_methods(
+    girder_core::boot::plugin_manager_rpc::register_plugin_manager_methods(registry, &plugin_entries);
+    girder_core::boot::plugin_manager_rpc::register_plugin_inventory_methods(registry, &plugin_entries);
+    girder_core::preset::agent_presets::register_agent_preset_methods(
         registry,
-        &girder_core::agent_presets::default_registry(),
+        &girder_core::preset::agent_presets::default_registry(),
     );
-    girder_core::web_rpc::register_web_methods(
+    girder_core::web::rpc::register_web_methods(
         registry,
-        &Arc::new(girder_core::web_rpc::WebProviders::new()),
+        &Arc::new(girder_core::web::rpc::WebProviders::new()),
     );
-    girder_core::permission_presets_rpc::register_permission_preset_methods(
+    girder_core::credentials::permission_presets_rpc::register_permission_preset_methods(
         registry,
-        &girder_core::permission_presets_rpc::default_catalogue(),
-        girder_core::permission_presets_rpc::DEFAULT_PRESET,
+        &girder_core::credentials::permission_presets_rpc::default_catalogue(),
+        girder_core::credentials::permission_presets_rpc::DEFAULT_PRESET,
     );
 }
 

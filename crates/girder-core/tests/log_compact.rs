@@ -14,8 +14,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/log_compact.rs"]
-mod log_compact;
+#[path = "../src/session/log_compact.rs"]
+pub mod log_compact;
 
 use girder_core::{
     ChatMessage, ChatRole, ContentBlock, MessageSource, SessionEvent, SessionStats, ToolCallId,
@@ -728,4 +728,10 @@ fn a_large_log_is_compacted_only_where_it_is_redundant() {
     assert_eq!(compacted.removed, 10, "one duplicate per hundredth turn");
     assert_eq!(compacted.events.len(), original_len - 10);
     assert_eq!(playback(&compacted.events), playback(&events));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::log_compact as log_compact;
 }

@@ -20,8 +20,8 @@
 //! belongs to the integrator. `output_predict` imports from `girder_core` itself, which resolves
 //! here because the module is compiled into a test binary that depends on the real crate.
 
-#[path = "../src/output_predict.rs"]
-mod output_predict;
+#[path = "../src/core/output_predict.rs"]
+pub mod output_predict;
 
 use std::path::{Path, PathBuf};
 
@@ -395,4 +395,10 @@ fn a_measured_read_and_an_unmeasured_one_are_told_apart_by_confidence_alone() {
 
     assert!(measured.confidence > guessed.confidence, "{measured:?}");
     assert!(measured.bytes > 0 && guessed.bytes > 0);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::output_predict as output_predict;
 }

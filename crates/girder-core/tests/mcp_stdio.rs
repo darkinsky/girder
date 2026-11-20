@@ -9,7 +9,7 @@
 //!
 //! The module is not exported from the crate root yet; that wiring is a separate change to `lib.rs`.
 //! Compiling the exact source file — rather than a copy — keeps these tests exercising the code a
-//! consumer will reach through `girder_core::mcp_stdio`.
+//! consumer will reach through `girder_core::mcp::stdio`.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,8 +17,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/mcp_stdio.rs"]
-mod mcp_stdio;
+#[path = "../src/mcp/stdio.rs"]
+pub mod mcp_stdio;
 
 use mcp_stdio::{
     FrameBuffer, FrameError, MAX_FRAME_BYTES, StdioConfig, decode_frames,
@@ -437,4 +437,10 @@ fn an_empty_command_is_refused_before_anything_is_spawned() {
     assert!(StdioConfig::new("").validate().is_err());
     assert!(StdioConfig::new("  \t ").validate().is_err());
     assert!(StdioConfig::new("uvx").validate().is_ok());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod mcp {
+    pub use super::mcp_stdio as stdio;
 }

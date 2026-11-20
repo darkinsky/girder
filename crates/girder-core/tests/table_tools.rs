@@ -9,8 +9,8 @@
 //! `tests/tool_value.rs`: these tests then compile against the module as written, whether or not the
 //! crate root has wired it up yet.
 
-#[path = "../src/table_tools.rs"]
-mod table_tools;
+#[path = "../src/core/table_tools.rs"]
+pub mod table_tools;
 
 use girder_core::{RenderedTable, StructuredValue, render_tool_value};
 use table_tools::{FileRow, MatchRow, file_table, match_table, render_table};
@@ -532,4 +532,10 @@ fn render_table_keeps_short_rows_aligned() {
     });
     let text = render_table(&value);
     assert_aligned(&text);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::table_tools as table_tools;
 }

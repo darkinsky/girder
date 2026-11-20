@@ -8,8 +8,8 @@
 //! server hint that outranks local arithmetic, and a status table that never retries a failure
 //! whose repeat would be identical.
 
-#[path = "../src/backoff.rs"]
-mod backoff;
+#[path = "../src/util/backoff.rs"]
+pub mod backoff;
 
 use backoff::{Retryable, Strategy, should_retry};
 
@@ -509,4 +509,10 @@ fn the_default_matches_the_retry_module_it_mirrors() {
     assert_eq!(strategy.multiplier, 2);
     assert_eq!(strategy.max_ms, 10_000);
     assert!((strategy.jitter - 0.1).abs() < f64::EPSILON);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod util {
+    pub use super::backoff as backoff;
 }

@@ -10,8 +10,8 @@
 //! `tests/table_tools.rs`: the tests then compile against the module as written, whether or not the
 //! crate root has wired it up yet.
 
-#[path = "../src/list_render.rs"]
-mod list_render;
+#[path = "../src/util/list_render.rs"]
+pub mod list_render;
 
 use list_render::{
     FileEntry, MatchEntry, parse_glob_output, parse_grep_output, render_files, render_matches,
@@ -425,4 +425,10 @@ fn char_cells(ch: char) -> usize {
         '\u{3000}'..='\u{9FFF}' | '\u{FF00}'..='\u{FFEF}' => 2,
         _ => 1,
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod util {
+    pub use super::list_render as list_render;
 }

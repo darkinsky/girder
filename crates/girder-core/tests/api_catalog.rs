@@ -10,15 +10,15 @@
 //! The catalog is not exported from the crate root yet; the wiring is a separate change to
 //! `lib.rs`. Compiling the exact source file here keeps these tests runnable and independent of
 //! that wiring, while still exercising the same code a consumer will reach through
-//! `girder_core::api_catalog`. Nothing is duplicated: this is the real file.
+//! `girder_core::api::catalog`. Nothing is duplicated: this is the real file.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/api_catalog.rs"]
-mod api_catalog;
+#[path = "../src/api/catalog.rs"]
+pub mod api_catalog;
 
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ impl Farewell for Polite {
     }
 }
 
-/// An `emit` event, declared the way `runtime::AgentTurn` declares its own.
+/// An `emit` event, declared the way `core::runtime::AgentTurn` declares its own.
 struct Ping;
 
 impl Event for Ping {
@@ -540,4 +540,10 @@ fn entries_keep_the_names_they_were_built_with() {
         catalog.event("agent/turn").unwrap().modes,
         vec!["emit", "serial"]
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::api_catalog as catalog;
 }

@@ -22,8 +22,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/cache_invalidate.rs"]
-mod cache_invalidate;
+#[path = "../src/core/cache_invalidate.rs"]
+pub mod cache_invalidate;
 
 use cache_invalidate::{Effect, apply, effect, normalized_path};
 use girder_core::{ToolCache, ToolCacheEntry, ToolCacheKey};
@@ -393,4 +393,10 @@ fn invalidation_keeps_the_counters_a_session_reports() {
         before,
         "a flush must not reset counters"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::cache_invalidate as cache_invalidate;
 }

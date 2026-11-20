@@ -3,7 +3,7 @@
 //! The two properties worth pinning are the ones a naive port would get wrong: the list frame is the
 //! whole set rather than a delta, and the resume offset is a byte count that survives a ring trim.
 
-use girder_core::api_job::{
+use girder_core::api::job::{
     JobFollowFrame, JobFollowRequest, JobKillValue, JobListFrame, JobListRequest, JobView,
     job_catalogue, job_methods, kill_outcome, project, project_chunk,
 };

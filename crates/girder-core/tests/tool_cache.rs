@@ -22,8 +22,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/tool_cache.rs"]
-mod tool_cache;
+#[path = "../src/core/tool_cache.rs"]
+pub mod tool_cache;
 
 use tool_cache::{Cache, Entry, Key, is_cacheable};
 
@@ -421,4 +421,10 @@ fn the_debug_form_does_not_print_file_contents() {
 
     assert!(!shown.contains("a secret line"), "got {shown}");
     assert!(shown.contains("Cache"), "got {shown}");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_cache as tool_cache;
 }

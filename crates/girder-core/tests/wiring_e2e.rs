@@ -101,10 +101,10 @@ fn a_search_with_no_hits_reads_as_an_answer() {
 #[test]
 fn a_text_only_route_is_told_the_image_was_omitted() {
     // Read the projection the loop now applies, at the same reachability a caller has.
-    let message = girder_core::content_projection_gap::user_message(vec![ContentBlock::Image {
+    let message = girder_core::session::content_projection::user_message(vec![ContentBlock::Image {
         attachment: "sha256:abc".to_owned(),
     }]);
-    let projected = girder_core::content_projection_gap::project_images_for_text_model(&[message]);
+    let projected = girder_core::session::content_projection::project_images_for_text_model(&[message]);
 
     let text = projected[0]
         .content
@@ -119,7 +119,7 @@ fn a_text_only_route_is_told_the_image_was_omitted() {
         "the model must be told an image was dropped, and which one:\n{text}"
     );
     assert!(
-        !girder_core::content_projection_gap::content_has_image(&projected[0].content),
+        !girder_core::session::content_projection::content_has_image(&projected[0].content),
         "the image block itself must be gone"
     );
 }
@@ -127,16 +127,16 @@ fn a_text_only_route_is_told_the_image_was_omitted() {
 #[test]
 fn an_image_accepting_route_leaves_the_message_alone() {
     // The loop's `accepts_images` branch: nothing is rewritten.
-    let message = girder_core::content_projection_gap::user_message(vec![ContentBlock::Image {
+    let message = girder_core::session::content_projection::user_message(vec![ContentBlock::Image {
         attachment: "sha256:abc".to_owned(),
     }]);
     let messages = vec![message];
     let projected = if true {
         messages.clone()
     } else {
-        girder_core::content_projection_gap::project_images_for_text_model(&messages)
+        girder_core::session::content_projection::project_images_for_text_model(&messages)
     };
-    assert!(girder_core::content_projection_gap::content_has_image(
+    assert!(girder_core::session::content_projection::content_has_image(
         &projected[0].content
     ));
 }

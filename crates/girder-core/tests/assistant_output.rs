@@ -10,8 +10,8 @@
 //! compile against it as written before the crate root wires it in. It resolves `girder_core::…`
 //! through the alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/assistant_output.rs"]
-mod assistant_output;
+#[path = "../src/core/assistant_output.rs"]
+pub mod assistant_output;
 
 use girder_core::{
     ChatMessage, ChatRole, ContentBlock, MessageId, MessageSource, SessionEvent, ToolCallId,
@@ -315,4 +315,10 @@ fn whitespace_is_text_even_though_empty_text_is_not() {
         Some(" \t"),
         "the model wrote these characters, so they are the output"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::assistant_output as assistant_output;
 }

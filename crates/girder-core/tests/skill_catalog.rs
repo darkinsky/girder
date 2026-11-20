@@ -14,10 +14,10 @@
 
 use std::path::{Path, PathBuf};
 
-// The module is included from its source file rather than reached through `girder_core::skill_catalog`
+// The module is included from its source file rather than reached through `girder_core::skill::catalog`
 // because `lib.rs` is wired by a separate change: this test has to compile and run before that landing.
 // It is the same file either way, so a behavior that passes here is a behavior of the shipped module.
-#[path = "../src/skill_catalog.rs"]
+#[path = "../src/skill/catalog.rs"]
 mod catalog;
 
 use catalog::{SkillMeta, discover, parse_frontmatter, render_list};

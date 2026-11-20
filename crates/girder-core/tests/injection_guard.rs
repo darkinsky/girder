@@ -12,8 +12,8 @@
 
 // The module is included by path rather than through the crate's re-exports, so these tests
 // compile against the guard as written even before the crate root wires it in.
-#[path = "../src/injection_guard.rs"]
-mod injection_guard;
+#[path = "../src/guard/injection_guard.rs"]
+pub mod injection_guard;
 
 use injection_guard::{Pattern, Severity, Signal, annotate, default_patterns, scan};
 
@@ -471,4 +471,10 @@ fn only_medium_and_above_are_noteworthy() {
     assert!(Severity::High.is_noteworthy());
     assert!(Severity::High > Severity::Medium);
     assert!(Severity::Medium > Severity::Low);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod guard {
+    pub use super::injection_guard as injection_guard;
 }

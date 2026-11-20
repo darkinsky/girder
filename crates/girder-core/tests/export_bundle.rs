@@ -19,7 +19,7 @@
 //!
 //! `export_bundle` is not yet declared in the crate root; that wiring is a separate change. The file
 //! has no `crate::` imports, so including it by path needs no shim and exercises exactly the code a
-//! consumer will reach through `girder_core::export_bundle`. Nothing is copied: this is the real
+//! consumer will reach through `girder_core::session::export_bundle`. Nothing is copied: this is the real
 //! file, and the `#[path]` attribute should be replaced by the crate-root import once it lands.
 #![allow(
     clippy::unwrap_used,
@@ -28,8 +28,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/export_bundle.rs"]
-mod export_bundle;
+#[path = "../src/session/export_bundle.rs"]
+pub mod export_bundle;
 
 use export_bundle::{Bundle, BundleError, Entry, VERSION, manifest, validate};
 
@@ -398,4 +398,10 @@ fn a_saturated_total_still_rejects_a_wrong_declaration() {
             actual: usize::MAX,
         })
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::export_bundle as export_bundle;
 }

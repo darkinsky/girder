@@ -7,7 +7,7 @@
 //! # Why the module is compiled by path
 //!
 //! These tests drive [`Pool`] through a `#[path]` module so that every case exercises the exact
-//! source file a consumer reaches through `girder_core::subagent_pool`, and so that the behaviour is
+//! source file a consumer reaches through `girder_core::subagent::pool`, and so that the behaviour is
 //! pinned even while the crate-root re-export is being wired. One extra test
 //! ([`the_crate_root_export_is_usable`]) goes through the public re-export instead, which is what
 //! proves the wiring itself works.
@@ -28,8 +28,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/subagent_pool.rs"]
-mod subagent_pool;
+#[path = "../src/subagent/pool.rs"]
+pub mod subagent_pool;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -317,4 +317,10 @@ async fn the_crate_root_export_is_usable() {
     assert_eq!(again.index(), 2, "indices continue across releases");
     pool.release(again);
     assert_eq!(pool.active(), 0);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod subagent {
+    pub use super::subagent_pool as pool;
 }

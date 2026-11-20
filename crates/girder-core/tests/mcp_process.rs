@@ -9,10 +9,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from `lib.rs` is
 //! a separate change. When it is exported, this can become
-//! `use girder_core::mcp_process::{ExitReason, Fleet, FleetError, Lifecycle, State};`.
+//! `use girder_core::mcp::process::{ExitReason, Fleet, FleetError, Lifecycle, State};`.
 
-#[path = "../src/mcp_process.rs"]
-mod mcp_process;
+#[path = "../src/mcp/process.rs"]
+pub mod mcp_process;
 
 use mcp_process::{ExitReason, Fleet, FleetError, Lifecycle, State};
 
@@ -360,4 +360,10 @@ fn the_fleet_error_names_the_server_it_refused() {
     };
     assert!(exhausted.to_string().contains("flaky"));
     assert!(exhausted.to_string().contains('2'));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod mcp {
+    pub use super::mcp_process as process;
 }

@@ -38,8 +38,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/questions_rpc.rs"]
-mod questions_rpc;
+#[path = "../src/interaction/questions_rpc.rs"]
+pub mod questions_rpc;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -51,7 +51,7 @@ use girder_core::{
 use serde_json::{Value, json};
 
 use questions_rpc::{
-    ANSWER_METHOD, AskError, AskRequest, CANCEL_METHOD, CONFIRM_NO, CONFIRM_YES,
+    ANSWER_METHOD, ATTACH_WAIT_METHOD, AskError, AskRequest, CANCEL_METHOD, CONFIRM_NO, CONFIRM_YES,
     DEFAULT_LIST_LIMIT, LIST_METHOD, MAX_LIST_LIMIT, MemoryQuestionStore, NAMESPACE,
     PendingQuestion, QuestionQueue, QuestionState, QuestionStore, QuestionStoreError,
     UNSERVED_METHODS, UnavailableQuestionStore, register_question_methods,
@@ -975,8 +975,8 @@ async fn a_read_only_policy_can_list_and_cannot_answer_or_cancel() {
     );
 }
 
-#[test]
-fn upstreams_unserved_method_is_named_rather_than_silently_absent() {
+#[tokio::test]
+async fn upstreams_unserved_method_is_named_rather_than_silently_absent() {
     let (registry, _queue) = registry();
 
     // Registered: the three this build serves.
@@ -987,15 +987,20 @@ fn upstreams_unserved_method_is_named_rather_than_silently_absent() {
         );
     }
 
-    // Unserved: named so a gap report can read it. `attachWait` is a stream, and a unary handler
-    // would claim a capability this build does not have.
-    assert_eq!(UNSERVED_METHODS, &["attachWait"]);
-    for method in UNSERVED_METHODS {
-        assert!(
-            registry.get(NAMESPACE, method).is_none(),
-            "`{NAMESPACE}.{method}` must not be registered with a unary handler"
-        );
-    }
+    assert!(UNSERVED_METHODS.is_empty());
+    assert!(
+        registry.get(NAMESPACE, ATTACH_WAIT_METHOD).is_some(),
+        "`{NAMESPACE}.{ATTACH_WAIT_METHOD}` must be served"
+    );
+    let frame = dispatch(
+        &registry,
+        ATTACH_WAIT_METHOD,
+        json!({"agentId": "missing", "callId": "missing"}),
+    )
+    .await
+    .expect("a countdown with nobody waiting is a finished frame");
+    assert_eq!(frame["done"], json!(true));
+    assert_eq!(frame["remainingMs"], json!(0));
 }
 
 #[test]
@@ -1131,4 +1136,10 @@ fn a_second_settle_on_a_store_reports_the_state_that_won() {
         }),
         "the state travels with the refusal, so a client learns what happened"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod interaction {
+    pub use super::questions_rpc as questions_rpc;
 }

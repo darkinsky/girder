@@ -9,7 +9,7 @@
 //!
 //! The limiter is not exported from the crate root yet; that wiring is a separate change to
 //! `lib.rs`. Compiling the exact source file here — rather than a copy — keeps these tests
-//! exercising the same code a consumer will reach through `girder_core::rpc_limits`.
+//! exercising the same code a consumer will reach through `girder_core::api::rpc_limits`.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,8 +17,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/rpc_limits.rs"]
-mod rpc_limits;
+#[path = "../src/api/rpc_limits.rs"]
+pub mod rpc_limits;
 
 use std::time::{Duration, Instant};
 
@@ -460,4 +460,10 @@ fn a_refusal_is_a_std_error() {
     fn takes_error(_: &dyn std::error::Error) {}
 
     takes_error(&Refusal::TooManyInFlight { limit: 1 });
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::rpc_limits as rpc_limits;
 }

@@ -18,8 +18,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-#[path = "../src/diff_patch.rs"]
-mod diff_patch;
+#[path = "../src/fs/diff_patch.rs"]
+pub mod diff_patch;
 
 use diff_patch::{Hunk, Patch, PatchError, apply, parse};
 
@@ -438,4 +438,10 @@ fn chinese_context_that_does_not_match_is_rejected() {
         matches!(error, PatchError::ContextMismatch { line: 2, .. }),
         "expected a context mismatch at line 2, got {error:?}"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod fs {
+    pub use super::diff_patch as diff_patch;
 }

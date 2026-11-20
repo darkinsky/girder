@@ -12,8 +12,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/terminal_meta.rs"]
-mod terminal_meta;
+#[path = "../src/terminal/meta.rs"]
+pub mod terminal_meta;
 
 use terminal_meta::{MAX_LABEL_CHARS, Meta, MetaError, Retention, Store};
 
@@ -465,4 +465,10 @@ fn each_meta_is_returned_whole() {
             retention: Retention::Forever,
         }
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_meta as meta;
 }

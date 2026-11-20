@@ -27,8 +27,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/error_taxonomy.rs"]
-mod error_taxonomy;
+#[path = "../src/util/error_taxonomy.rs"]
+pub mod error_taxonomy;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -448,4 +448,10 @@ fn a_missing_resource_names_the_namespace_as_what_was_missing() {
         panic!("expected an absence");
     };
     assert_eq!(what, "session");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod util {
+    pub use super::error_taxonomy as error_taxonomy;
 }

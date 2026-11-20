@@ -32,8 +32,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_lifecycle_rpc.rs"]
-mod session_lifecycle_rpc;
+#[path = "../src/session/lifecycle_rpc.rs"]
+pub mod session_lifecycle_rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -591,4 +591,10 @@ async fn a_title_is_none_when_none_was_stored() {
     seed(&harness.dir, "s1", "hello");
 
     assert_eq!(harness.catalog.title("s1").await, None);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_lifecycle_rpc as lifecycle_rpc;
 }

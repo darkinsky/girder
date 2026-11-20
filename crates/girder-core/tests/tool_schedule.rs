@@ -12,8 +12,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/tool_schedule.rs"]
-mod tool_schedule;
+#[path = "../src/core/tool_schedule.rs"]
+pub mod tool_schedule;
 
 use tool_schedule::{Call, is_read_only, plan};
 
@@ -269,4 +269,10 @@ fn changing_tools_are_not_read_only() {
 fn terminal_read_is_not_read_only_because_it_consumes_output() {
     // Two overlapping reads would race over which one receives what the terminal printed.
     assert!(!is_read_only("terminal_read"));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_schedule as tool_schedule;
 }

@@ -11,7 +11,7 @@
 //!
 //! # The order this file was written against
 //!
-//! Confirmed by reading `agent_loop::{dispatch, run}` before writing any test:
+//! Confirmed by reading `core::agent_loop::{dispatch, run}` before writing any test:
 //!
 //! 1. **tool lookup** -- an unknown name never reaches any other layer;
 //! 2. **cache lookup** (`cached_result`) -- before the rule waterfall, so a hit is served without
@@ -20,7 +20,7 @@
 //! 3. **`ToolPreExecute` waterfall**, whose terminal is `decide_by_rules`; `Ask` is resolved through
 //!    `ask_approver`, and no approver is a refusal, not a permission;
 //! 4. **deadline** (`run_with_deadline`) wrapping the execute waterfall, which wraps
-//! 5. **`run_body`**: `argument_limits::check` on the raw text *before* the JSON parse, then the
+//! 5. **`run_body`**: `core::argument_limits::check` on the raw text *before* the JSON parse, then the
 //!    parse, then the tool body;
 //! 6. **cache invalidation** (`invalidate_after`) -- after the body, whatever its outcome;
 //! 7. **`ToolPostExecute` waterfall**, then the cache `put` of what the model will actually see;
@@ -238,7 +238,7 @@ async fn finished_content(
     finished
 }
 
-/// The file's modification time in the same unit `agent_loop::read_mtime` uses.
+/// The file's modification time in the same unit `core::agent_loop::read_mtime` uses.
 fn mtime_ms(path: &Path) -> u64 {
     std::fs::metadata(path)
         .expect("metadata")

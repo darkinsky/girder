@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use girder_core::api_config::WorkspaceRegistry;
+use girder_core::api::config::WorkspaceRegistry;
 use girder_core::{LocalFileSystem, RemoteCall, RemoteError, RemoteRegistry};
 use serde_json::json;
 

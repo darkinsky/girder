@@ -27,15 +27,15 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/workspace_files_rpc.rs"]
-mod workspace_files_rpc;
+#[path = "../src/workspace/files_rpc.rs"]
+pub mod workspace_files_rpc;
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use girder_core::api_config::WorkspaceRegistry;
+use girder_core::api::config::WorkspaceRegistry;
 use girder_core::{LocalFileSystem, RemoteCall, RemoteError, RemoteRegistry};
 
 use workspace_files_rpc::{
@@ -615,4 +615,27 @@ async fn a_missing_workspace_id_is_an_argument_error() {
         .expect_err("no id");
     assert_eq!(error.code(), "INVALID_ARGUMENTS");
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test]
+async fn a_watch_starts_with_an_empty_baseline() {
+    let (base, root) = fixture("watch");
+    let registry = registry(&root);
+    let reply = registry
+        .dispatch(
+            "workspaceFiles",
+            "watch",
+            call(serde_json::json!({ "workspaceId": WORKSPACE })),
+        )
+        .await
+        .expect("watch");
+    assert_eq!(reply["changes"], serde_json::json!([]));
+    assert_eq!(reply["done"], serde_json::json!(false));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod workspace {
+    pub use super::workspace_files_rpc as files_rpc;
 }

@@ -10,8 +10,8 @@
 //! against the quota as written even before the crate root wires it in — the same arrangement
 //! `tests/tool_limits.rs` uses.
 
-#[path = "../src/usage_quota.rs"]
-mod usage_quota;
+#[path = "../src/llm/usage_quota.rs"]
+pub mod usage_quota;
 
 use usage_quota::{Quota, Totals, Tracker, Usage, Verdict};
 
@@ -414,4 +414,10 @@ fn a_default_tracker_is_permissive() {
         tracker.record(Usage::new(0, u64::MAX, u64::MAX)),
         Verdict::Within
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::usage_quota as usage_quota;
 }

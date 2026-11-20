@@ -10,12 +10,12 @@
 //! against it as written before the crate root declares it. It names its dependencies through
 //! `girder_core::…`, which resolves here because the library aliases itself under that name.
 
-#[path = "../src/openapi_full.rs"]
-mod openapi_full;
+#[path = "../src/api/openapi_full.rs"]
+pub mod openapi_full;
 
 use std::sync::Arc;
 
-use girder_core::api_config::WorkspaceRegistry;
+use girder_core::api::config::WorkspaceRegistry;
 use girder_core::{
     DirectoryCatalog, FileSystem, JobRegistry, LocalFileSystem, MemoryScheduleStore,
     MemorySettingsStore, ProjectionRegistry, RemoteRegistry, ScheduleStore, SessionCatalog,
@@ -525,4 +525,10 @@ fn the_descriptors_do_not_decide_which_methods_exist() {
 
     assert_eq!(described.len(), 1);
     assert_eq!(described[0].method, "page");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::openapi_full as openapi_full;
 }

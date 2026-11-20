@@ -6,7 +6,7 @@
 //! must render as exactly `12`, and a tolerance would let a rounding regression pass as correct.
 //!
 //! The converter is included by path rather than through the crate's re-exports, so these tests compile
-//! against it as written even before the crate root wires it in. It reaches for `crate::session_stats`,
+//! against it as written even before the crate root wires it in. It reaches for `crate::session::stats`,
 //! which this test binary does not have, so that path is stood up here as an alias of the crate's own
 //! re-export: the converter then sees the same `Stats` the rest of the crate publishes.
 
@@ -19,9 +19,9 @@ mod session_stats {
     pub use girder_core::SessionStats as Stats;
 }
 
-#[path = "../src/session_metrics.rs"]
+#[path = "../src/session/metrics.rs"]
 #[allow(dead_code)]
-mod session_metrics;
+pub mod session_metrics;
 
 use std::collections::BTreeMap;
 
@@ -313,4 +313,10 @@ fn the_full_conversation_renders_one_block_per_metric() {
     assert_eq!(rendered.matches("# TYPE ").count(), 10);
     assert_eq!(rendered.lines().count(), 30);
     assert!(rendered.ends_with('\n'));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_metrics as metrics;
 }

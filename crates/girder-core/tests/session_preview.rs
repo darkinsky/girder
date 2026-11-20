@@ -11,8 +11,8 @@
 //! against it as written even before the crate root wires it in. It resolves `girder_core::…` through
 //! the alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/session_preview.rs"]
-mod session_preview;
+#[path = "../src/session/preview.rs"]
+pub mod session_preview;
 
 use girder_core::{
     ChatMessage, ChatRole, ContentBlock, MessageId, MessageSource, SessionEvent, ToolCallId,
@@ -592,4 +592,10 @@ fn at_ms_is_zero_because_the_log_records_no_wall_clock_time() {
 
     assert_eq!(preview("s-1", &events, 80).at_ms, 0);
     assert_eq!(preview_from_tail("s-1", &events, 80).at_ms, 0);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_preview as preview;
 }

@@ -11,8 +11,8 @@
 //! against it as written even before the crate root wires it in. That is why nothing here reaches for
 //! anything else in `girder_core`.
 
-#[path = "../src/tool_batching.rs"]
-mod tool_batching;
+#[path = "../src/core/tool_batching.rs"]
+pub mod tool_batching;
 
 use tool_batching::{Strategy, ToolCallInfo, choose};
 
@@ -180,4 +180,10 @@ fn strategy_names_are_stable_and_distinct() {
     ];
     assert_eq!(names, ["sequential", "parallel", "fail-fast"]);
     assert_eq!(Strategy::Parallel.to_string(), "parallel");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_batching as tool_batching;
 }

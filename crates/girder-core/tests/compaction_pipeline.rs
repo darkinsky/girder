@@ -12,8 +12,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the pipeline as written even before the crate root wires it in. It resolves `girder_core::…`
 // through the alias the library declares for itself, which is why the same source builds here.
-#[path = "../src/compaction_pipeline.rs"]
-mod compaction_pipeline;
+#[path = "../src/compaction/pipeline.rs"]
+pub mod compaction_pipeline;
 
 use compaction_pipeline::{Outcome, run};
 use girder_core::{
@@ -339,4 +339,10 @@ fn summary_and_skip_reason_are_never_both_present() {
             "a pass either compacted or explained itself, never both and never neither"
         );
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod compaction {
+    pub use super::compaction_pipeline as pipeline;
 }

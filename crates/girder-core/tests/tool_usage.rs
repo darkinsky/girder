@@ -8,7 +8,7 @@
 //!
 //! The module is included by path because `girder-core`'s crate root does not declare it yet — wiring
 //! `mod tool_usage;` and its re-exports belongs to the integrator. Once that lands, the `#[path]` line and the two
-//! shims below should be replaced with `use girder_core::tool_usage::*;`.
+//! shims below should be replaced with `use girder_core::core::tool_usage::*;`.
 
 // The source imports `crate::session::SessionEvent` and `crate::llm::ContentBlock`. Because it is included by path
 // into this test crate, `crate::` resolves here, so these two shims supply the same types at the same paths. They
@@ -21,8 +21,8 @@ mod session {
     pub use girder_core::SessionEvent;
 }
 
-#[path = "../src/tool_usage.rs"]
-mod tool_usage;
+#[path = "../src/core/tool_usage.rs"]
+pub mod tool_usage;
 
 use girder_core::{ContentBlock, SessionEvent, ToolCallId};
 use tool_usage::{ToolStats, usage};
@@ -408,4 +408,10 @@ fn two_spellings_of_a_tool_are_two_rows() {
         result("c2", "ok"),
     ];
     assert_eq!(names(&usage(&events)), ["read-file", "read_file"]);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_usage as tool_usage;
 }

@@ -12,8 +12,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the checker as written even before the crate root wires it in. That is also why no test
 // here reaches for anything else in `girder_core`: the only dependency is the module itself.
-#[path = "../src/api_key.rs"]
-mod api_key;
+#[path = "../src/api/key.rs"]
+pub mod api_key;
 
 use api_key::{KeyCheck, MIN_KEY_LEN, check, normalize};
 
@@ -226,4 +226,10 @@ fn normalize_terminates_on_degenerate_input() {
     for raw in ["\"", "'", "`", "Bearer ", "\"\"", "''", "``"] {
         let _ = normalize(raw);
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::api_key as key;
 }

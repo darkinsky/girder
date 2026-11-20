@@ -15,8 +15,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/tool_graph.rs"]
-mod tool_graph;
+#[path = "../src/core/tool_graph.rs"]
+pub mod tool_graph;
 
 use tool_graph::{GraphError, Node, Plan, happens_before, plan};
 
@@ -429,4 +429,10 @@ fn planning_twice_yields_the_same_plan() {
         node("d", "write", &["b", "c"], &["z"]),
     ];
     assert_eq!(plan_ok(&nodes), plan_ok(&nodes));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_graph as tool_graph;
 }

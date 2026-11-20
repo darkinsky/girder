@@ -37,8 +37,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/goal_rpc.rs"]
-mod goal_rpc;
+#[path = "../src/goal/rpc.rs"]
+pub mod goal_rpc;
 
 use std::sync::Arc;
 
@@ -631,4 +631,10 @@ async fn every_advertised_method_is_registered() {
         goal_rpc::METHODS.len(),
         "every registered name is advertised"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod goal {
+    pub use super::goal_rpc as rpc;
 }

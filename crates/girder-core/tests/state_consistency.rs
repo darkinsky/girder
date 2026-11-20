@@ -18,8 +18,8 @@
 
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the checker as written even before the crate root wires it in.
-#[path = "../src/state_consistency.rs"]
-mod state_consistency;
+#[path = "../src/core/state_consistency.rs"]
+pub mod state_consistency;
 
 use state_consistency::{Inconsistency, Severity, Values, check};
 
@@ -384,4 +384,10 @@ fn checks_accept_a_snapshot_with_zero_turns_and_zero_rows() {
         tool_usage_total: 0,
     };
     assert_eq!(check(&values), Vec::new());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::state_consistency as state_consistency;
 }

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use futures::{SinkExt as _, StreamExt as _};
 use girder_core::EventBus;
-use girder_core::gateway_gap::{Interactions, PeerDirectory, Principal, RESERVED_IDENTITY_FIELDS};
+use girder_core::api::gateway::{Interactions, PeerDirectory, Principal, RESERVED_IDENTITY_FIELDS};
 use girder_rpc::server::PEER_HEADER;
 use girder_rpc::{DownlinkFrame, INVOKE_PATH, RpcServer, SubscriptionFrame, decode_downlink};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -353,7 +353,7 @@ async fn strict_mode_refuses_a_claim_that_disagrees_with_the_credential() {
 
 /// An identity spelled in `args` is refused, not silently dropped.
 ///
-/// `gateway_gap::admitted_call` refuses a payload carrying `peer` or `principal` at the top level.
+/// `api::gateway::admitted_call` refuses a payload carrying `peer` or `principal` at the top level.
 /// The property that matters at this layer is that the refusal happens *before* dispatch: a handler
 /// that ran and ignored the field would leave the caller believing it had set something.
 #[tokio::test]

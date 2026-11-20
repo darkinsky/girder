@@ -1,0 +1,713 @@
+//! The file tools: read, write, and edit.
+//!
+//! These are the three operations a coding agent spends its time on, and each has a failure mode worth naming:
+//!
+//! - **read** that returns a whole file wastes a context window on lines the model did not need
+//! - **write** that replaces a file silently discards whatever someone else changed
+//! - **edit** that replaces every occurrence changes code the caller never looked at
+//!
+//! # Why read numbers its lines
+//!
+//! A model that quotes a line to edit needs a way to say which line. A numbered read makes the number part of the
+//! observation, so the edit that follows is grounded in what was actually seen rather than in a guess about offsets.
+//!
+//! # Why write records an observation
+//!
+//! The write is the new expectation. A session that read a file, wrote it, and then wrote it again would otherwise
+//! fail its own second write against a change it made itself.
+//!
+//! # Why edit refuses an ambiguous match
+//!
+//! Replacing every occurrence would change code the caller never looked at, and the caller would only find out on the
+//! next read — which may be never.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use serde_json::json;
+
+use crate::core::observation::Observation;
+use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+
+/// How many bytes a read returns before it refuses rather than truncates.
+///
+/// Truncating a file mid-line would give the model a partial statement that looks complete. A refusal names the size
+/// and lets the model ask for a range.
+pub const MAX_READ_BYTES: usize = 512 * 1024;
+
+/// Builds the `read` tool.
+#[must_use]
+pub fn read_tool(workspace: PathBuf) -> ToolDefinition {
+    ToolDefinition::new(
+        "read",
+        "Reads a file, returning its lines with one-based line numbers",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File to read, absolute or relative to the workspace" },
+                "offset": { "type": "number", "description": "First line to return, one-based" },
+                "limit": { "type": "number", "description": "How many lines to return" }
+            },
+            "required": ["path"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, ctx: ToolRunContext| {
+            let workspace = workspace.clone();
+            Box::pin(async move { read(&args, &workspace, &ctx).await })
+        }),
+    )
+}
+
+async fn read(
+    args: &serde_json::Value,
+    workspace: &Path,
+    ctx: &ToolRunContext,
+) -> Result<ToolResult, crate::core::tools::ToolError> {
+    // The resolver's own message, not `path` is required: a refused escape and a missing argument are different answers,
+    // and collapsing them told a caller their argument was absent when it was present and out of bounds.
+    let path = match resolve(
+        args,
+        workspace,
+        ctx.path_base(workspace),
+        ctx.allows_outside_workspace(),
+    ) {
+        Ok(path) => path,
+        Err(error) => return Ok(ToolResult::error(error)),
+    };
+    // A document is refused with an explanation rather than decoded as text: a .docx is a zip, and showing its bytes
+    // as text gives a model a screenful of noise it will try to reason about.
+    if let Ok(head) = tokio::fs::read(&path).await {
+        let shown = path.display().to_string();
+        if let Some(format) = crate::document::office_document::detect(&head) {
+            if !crate::document::office_document::is_readable(format) {
+                return Ok(ToolResult::error(crate::document::office_document::explain(format)));
+            }
+        } else if head.starts_with(b"PK\x03\x04") {
+            // A zip the format table could not name: an archive is still not text, and its local file headers decoded as
+            // text are the noise this check exists to prevent. Naming the container is more useful than guessing which
+            // office format it holds, because a caller can list it.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a zip archive, so it has no text to read; list its entries to find the document inside"
+            )));
+        } else if crate::document::office_document::is_document(&shown, &head) && head.contains(&0) {
+            // A binary file the format table does not know: still not text, and reading it would produce replacement
+            // characters a model would treat as content.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a binary file, so it has no text to read; use a tool that understands its format"
+            )));
+        }
+    }
+    let text = match tokio::fs::read_to_string(&path).await {
+        Ok(text) => text,
+        Err(error) => {
+            return Ok(ToolResult::error(format!(
+                "cannot read `{}`: {error}",
+                path.display()
+            )));
+        }
+    };
+
+    if text.len() > MAX_READ_BYTES {
+        return Ok(ToolResult::error(format!(
+            "`{}` is {} bytes, over the {MAX_READ_BYTES}-byte limit; read a range with `offset` and `limit`",
+            path.display(),
+            text.len()
+        )));
+    }
+
+    let offset = args
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    let offset = usize::try_from(offset.max(1)).unwrap_or(1);
+    let limit = args.get("limit").and_then(serde_json::Value::as_u64);
+
+    let lines: Vec<&str> = text.lines().collect();
+    let start = (offset - 1).min(lines.len());
+    let end = match limit {
+        Some(limit) => (start + usize::try_from(limit).unwrap_or(usize::MAX)).min(lines.len()),
+        None => lines.len(),
+    };
+
+    let mut out = String::new();
+    for (index, line) in lines[start..end].iter().enumerate() {
+        // `write!` into a `String` cannot fail, and the result is ignored rather than unwrapped so the lint that
+        // flags `format!` appended to a `String` is satisfied without a panic path.
+        let _ = writeln!(out, "{}\t{line}", start + index + 1);
+    }
+
+    // The observation is recorded even for a partial read: what the model saw is what a later write must not
+    // contradict, and a range still establishes that this session has looked at the file.
+    ctx.observe(&path, Observation::Present(crate::core::observation::version_of(&text)));
+
+    // The language is named in the result because a client that renders the lines wants to highlight them, and the
+    // alternative is every consumer re-deriving it from the extension with its own table. One shared table is what
+    // keeps a preview and a diff agreeing about whether `.m` is Objective-C or MATLAB.
+    Ok(ToolResult::text(
+        match crate::util::code_language::read_hint(&path.display().to_string()) {
+            Some(language) => format!("{language}\n{out}"),
+            None => out,
+        },
+    ))
+}
+
+/// Builds the `write` tool.
+#[must_use]
+pub fn write_tool(workspace: PathBuf) -> ToolDefinition {
+    ToolDefinition::new(
+        "write",
+        "Writes a file, replacing its contents",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File to write" },
+                "content": { "type": "string", "description": "The complete new contents" }
+            },
+            "required": ["path", "content"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, ctx: ToolRunContext| {
+            let workspace = workspace.clone();
+            Box::pin(async move { write(&args, &workspace, &ctx).await })
+        }),
+    )
+}
+
+async fn write(
+    args: &serde_json::Value,
+    workspace: &Path,
+    ctx: &ToolRunContext,
+) -> Result<ToolResult, crate::core::tools::ToolError> {
+    if let Some(message) = ctx.refuses_writes() {
+        return Ok(ToolResult::error(message));
+    }
+    // The resolver's own message, not `path` is required: a refused escape and a missing argument are different answers,
+    // and collapsing them told a caller their argument was absent when it was present and out of bounds.
+    let path = match resolve(
+        args,
+        workspace,
+        ctx.path_base(workspace),
+        ctx.allows_outside_workspace(),
+    ) {
+        Ok(path) => path,
+        Err(error) => return Ok(ToolResult::error(error)),
+    };
+    let content = args
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if content.is_empty() {
+        return Ok(ToolResult::error("`content` is required"));
+    }
+
+    // The conflict check runs before anything is written: a write that clobbered a change the session never saw is
+    // the failure this exists to prevent, and discovering it after the write is too late.
+    if let Err(conflict) = ctx.check_write(&path) {
+        return Ok(ToolResult::error(format!(
+            "refusing to write `{}`: {}",
+            path.display(),
+            conflict.describe()
+        )));
+    }
+
+    if let Some(parent) = path.parent()
+        && !parent.is_dir()
+        && let Err(error) = tokio::fs::create_dir_all(parent).await
+    {
+        return Ok(ToolResult::error(format!(
+            "cannot create `{}`: {error}",
+            parent.display()
+        )));
+    }
+
+    // Atomic rather than truncate-then-write: a process killed mid-write would leave a file shorter than either
+    // version, and the content that was there is gone because truncation is the first thing that happens. A model
+    // editing a source file is exactly the caller that must not experience this. The call blocks, so it runs on the
+    // blocking pool rather than stalling the reactor.
+    let target = path.clone();
+    let body = content.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::util::atomic_write::write_atomic(
+            &target,
+            body.as_bytes(),
+            crate::util::atomic_write::Mode::PRIVATE,
+        )
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return Ok(ToolResult::error(format!(
+                "cannot write `{}`: {error}",
+                path.display()
+            )));
+        }
+        Err(error) => {
+            return Ok(ToolResult::error(format!(
+                "cannot write `{}`: the write task failed: {error}",
+                path.display()
+            )));
+        }
+    }
+
+    // The write is the new expectation: a session that wrote and then wrote again must not fail its own second write.
+    ctx.observe(
+        &path,
+        Observation::Present(crate::core::observation::version_of(&content)),
+    );
+
+    Ok(ToolResult::text(format!(
+        "wrote {} bytes to {}",
+        content.len(),
+        path.display()
+    )))
+}
+
+/// Builds the `edit` tool.
+#[must_use]
+pub fn edit_tool(workspace: PathBuf) -> ToolDefinition {
+    ToolDefinition::new(
+        "edit",
+        "Replaces one exact occurrence of a text in a file",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File to edit" },
+                "old": { "type": "string", "description": "The exact text to replace; must occur once" },
+                "new": { "type": "string", "description": "The replacement" }
+            },
+            "required": ["path", "old", "new"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, ctx: ToolRunContext| {
+            let workspace = workspace.clone();
+            Box::pin(async move { edit(&args, &workspace, &ctx).await })
+        }),
+    )
+}
+
+async fn edit(
+    args: &serde_json::Value,
+    workspace: &Path,
+    ctx: &ToolRunContext,
+) -> Result<ToolResult, crate::core::tools::ToolError> {
+    if let Some(message) = ctx.refuses_writes() {
+        return Ok(ToolResult::error(message));
+    }
+    // The resolver's own message, not `path` is required: a refused escape and a missing argument are different answers,
+    // and collapsing them told a caller their argument was absent when it was present and out of bounds.
+    let path = match resolve(
+        args,
+        workspace,
+        ctx.path_base(workspace),
+        ctx.allows_outside_workspace(),
+    ) {
+        Ok(path) => path,
+        Err(error) => return Ok(ToolResult::error(error)),
+    };
+    let old = args
+        .get("old")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if old.is_empty() {
+        return Ok(ToolResult::error("`old` is required"));
+    }
+    let new = args
+        .get("new")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    // A document is refused with an explanation rather than decoded as text: a .docx is a zip, and showing its bytes
+    // as text gives a model a screenful of noise it will try to reason about.
+    if let Ok(head) = tokio::fs::read(&path).await {
+        let shown = path.display().to_string();
+        if let Some(format) = crate::document::office_document::detect(&head) {
+            if !crate::document::office_document::is_readable(format) {
+                return Ok(ToolResult::error(crate::document::office_document::explain(format)));
+            }
+        } else if head.starts_with(b"PK\x03\x04") {
+            // A zip the format table could not name: an archive is still not text, and its local file headers decoded as
+            // text are the noise this check exists to prevent. Naming the container is more useful than guessing which
+            // office format it holds, because a caller can list it.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a zip archive, so it has no text to read; list its entries to find the document inside"
+            )));
+        } else if crate::document::office_document::is_document(&shown, &head) && head.contains(&0) {
+            // A binary file the format table does not know: still not text, and reading it would produce replacement
+            // characters a model would treat as content.
+            return Ok(ToolResult::error(format!(
+                "`{shown}` is a binary file, so it has no text to read; use a tool that understands its format"
+            )));
+        }
+    }
+    let text = match tokio::fs::read_to_string(&path).await {
+        Ok(text) => text,
+        Err(error) => {
+            return Ok(ToolResult::error(format!(
+                "cannot read `{}`: {error}",
+                path.display()
+            )));
+        }
+    };
+
+    if let Err(conflict) = ctx.check_write(&path) {
+        return Ok(ToolResult::error(format!(
+            "refusing to edit `{}`: {}",
+            path.display(),
+            conflict.describe()
+        )));
+    }
+
+    let edited = match crate::core::observation::replace_exactly_once(&text, old, new) {
+        Ok(edited) => edited,
+        Err(girder_core::EditError::Ambiguous { matches, lines }) => {
+            // The line numbers are the part the caller cannot derive: "occurs four times" sends them back to search the
+            // file again, while "on lines 4, 9, 20, 31" lets them pick which one they meant.
+            let where_ = lines
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Ok(ToolResult::error(format!(
+                "`{}`: the text to replace occurs {matches} times, on lines {where_}; give more context or use the \
+                 replacement tool with an occurrence index",
+                path.display()
+            )));
+        }
+        Err(error) => return Ok(ToolResult::error(format!("`{}`: {error}", path.display()))),
+    };
+
+    if let Err(error) = tokio::fs::write(&path, &edited).await {
+        return Ok(ToolResult::error(format!(
+            "cannot write `{}`: {error}",
+            path.display()
+        )));
+    }
+    ctx.observe(
+        &path,
+        Observation::Present(crate::core::observation::version_of(&edited)),
+    );
+
+    Ok(ToolResult::text(format!("edited {}", path.display())))
+}
+
+/// Builds the `apply_patch` tool.
+///
+/// The patch parser and the hunk matcher were written before a caller existed, so this is where they earn their
+/// place: a multi-file change is one call rather than a sequence of edits that can fail halfway through.
+#[must_use]
+pub fn patch_tool(workspace: PathBuf) -> ToolDefinition {
+    ToolDefinition::new(
+        "apply_patch",
+        "Applies a multi-file patch",
+        json!({
+            "type": "object",
+            "properties": {
+                "patch": { "type": "string", "description": "The patch, beginning with `*** Begin Patch`" }
+            },
+            "required": ["patch"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, ctx: ToolRunContext| {
+            let workspace = workspace.clone();
+            Box::pin(async move { apply(&args, &workspace, &ctx).await })
+        }),
+    )
+}
+
+async fn apply(
+    args: &serde_json::Value,
+    workspace: &Path,
+    ctx: &ToolRunContext,
+) -> Result<ToolResult, crate::core::tools::ToolError> {
+    let text = args
+        .get("patch")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if let Some(message) = ctx.refuses_writes() {
+        return Ok(ToolResult::error(message));
+    }
+    if text.trim().is_empty() {
+        return Ok(ToolResult::error("`patch` is required"));
+    }
+
+    let operations = match crate::fs::patch::parse(text.as_str()) {
+        Ok(operations) => operations,
+        Err(error) => {
+            return Ok(ToolResult::error(format!(
+                "cannot parse the patch: {error}"
+            )));
+        }
+    };
+
+    // Every operation is computed before any is applied. A patch that fails on its third file must not leave the
+    // first two changed: the caller asked for a change, not for a prefix of one.
+    let mut planned: Vec<(PathBuf, Option<String>)> = Vec::new();
+    for operation in &operations {
+        let path = crate::workspace::path::normalize(&crate::workspace::path::resolve(
+            Some(ctx.path_base(workspace)),
+            operation.path(),
+        ));
+        match operation {
+            crate::fs::patch::Operation::Add { content, .. } => planned.push((path, Some(content.clone()))),
+            crate::fs::patch::Operation::Delete { .. } => planned.push((path, None)),
+            crate::fs::patch::Operation::Update { hunks, move_to, .. } => {
+                let existing = match tokio::fs::read_to_string(&path).await {
+                    Ok(existing) => existing,
+                    Err(error) => {
+                        return Ok(ToolResult::error(format!(
+                            "cannot read `{}`: {error}",
+                            path.display()
+                        )));
+                    }
+                };
+                let applied = crate::fs::patch::apply(&existing, hunks);
+                if !applied.is_complete() {
+                    let reasons: Vec<String> = applied
+                        .failures
+                        .iter()
+                        .map(|failure| {
+                            format!(
+                                "hunk {} at line {}: {:?}",
+                                failure.hunk, failure.expected, failure.reason
+                            )
+                        })
+                        .collect();
+                    return Ok(ToolResult::error(format!(
+                        "the patch does not apply to `{}`: {}",
+                        path.display(),
+                        reasons.join("; ")
+                    )));
+                }
+                planned.push((path, Some(applied.text)));
+                if let Some(destination) = move_to {
+                    planned.push((
+                        crate::workspace::path::normalize(&crate::workspace::path::resolve(
+                            Some(ctx.path_base(workspace)),
+                            destination,
+                        )),
+                        None,
+                    ));
+                }
+            }
+        }
+    }
+
+    if !ctx.allows_outside_workspace() {
+        for (path, _) in &planned {
+            if !crate::workspace::path::contains(workspace, path) {
+                return Ok(ToolResult::error(format!(
+                    "`{}` is outside the workspace",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    for (path, content) in &planned {
+        if let Some(content) = content {
+            if let Some(parent) = path.parent()
+                && !parent.is_dir()
+            {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            if let Err(error) = tokio::fs::write(path, content).await {
+                return Ok(ToolResult::error(format!(
+                    "cannot write `{}`: {error}",
+                    path.display()
+                )));
+            }
+            ctx.observe(path, Observation::Present(crate::core::observation::version_of(content)));
+        } else {
+            let _ = tokio::fs::remove_file(path).await;
+            ctx.forget(path);
+        }
+    }
+
+    Ok(ToolResult::text(format!(
+        "applied {} file operation(s)",
+        operations.len()
+    )))
+}
+
+/// Resolves a path against the workspace and refuses one that leaves it.
+///
+/// Lexical first, then canonical: `../..` is caught by the string form, and a symlink inside the workspace pointing outside
+/// is caught only by asking the filesystem where it goes. Both checks are needed because each misses what the other sees --
+/// a purely lexical check reports an escaping symlink as inside, and canonicalising alone cannot describe a file that does
+/// not exist yet.
+fn resolve(
+    args: &serde_json::Value,
+    workspace: &Path,
+    base: &Path,
+    allow_outside: bool,
+) -> Result<PathBuf, String> {
+    let path = args
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "`path` is required".to_owned())?;
+    // `base` is the session directory. `workspace` stays the boundary: a relative path may start
+    // in a subdirectory and still must not leave the project.
+    let lexical =
+        crate::workspace::path::normalize(&crate::workspace::path::resolve(Some(base), path));
+    if !allow_outside && !crate::workspace::path::contains(workspace, &lexical) {
+        return Err(format!("`path` = `{path}` is outside the workspace"));
+    }
+    if allow_outside {
+        return Ok(lexical);
+    }
+    // The canonical form of the deepest component that exists: a new file has no canonical path, so its directory is what
+    // gets asked, and a symlink that points outside resolves to outside.
+    if let Ok(root) = workspace.canonicalize() {
+        let mut probe = lexical.clone();
+        let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+        loop {
+            match probe.canonicalize() {
+                Ok(resolved) => {
+                    let joined = suffix
+                        .iter()
+                        .rev()
+                        .fold(resolved, |path, part| path.join(part));
+                    if !allow_outside && !crate::workspace::path::contains(&root, &joined) {
+                        return Err(format!("`path` = `{path}` is outside the workspace"));
+                    }
+                    break;
+                }
+                Err(_) => match (
+                    probe.file_name().map(std::ffi::OsStr::to_os_string),
+                    probe.parent(),
+                ) {
+                    (Some(name), Some(parent)) => {
+                        suffix.push(name);
+                        probe = parent.to_path_buf();
+                    }
+                    _ => break,
+                },
+            }
+        }
+    }
+    Ok(lexical)
+}
+
+/// Builds the `ask_user` tool.
+///
+/// A model that needs a decision it cannot make — which of two designs, whether to overwrite — should ask rather than
+/// guess. The alternative is a model inventing an answer and building on it, which costs more to undo than a question
+/// costs to answer.
+///
+/// # Why the answer is a result rather than an error
+///
+/// A person declining to answer is information: the model can proceed differently. An error would make the turn look
+/// broken and the model would retry the same question.
+#[must_use]
+pub fn ask_tool(responder: std::sync::Arc<dyn crate::interaction::questions::Responder>) -> ToolDefinition {
+    ToolDefinition::new(
+        "ask_user",
+        "Asks the person a question and waits for the answer",
+        json!({
+            "type": "object",
+            "properties": {
+                "question": { "type": "string", "description": "What to ask" },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "The choices to offer; omit for a free-form answer"
+                },
+                "context": { "type": "string", "description": "Why you are asking, to help them decide" },
+                "multiple": {
+                    "type": "boolean",
+                    "description": "Whether more than one option may be chosen"
+                }
+            },
+            "required": ["question"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, _ctx: ToolRunContext| {
+            let responder = std::sync::Arc::clone(&responder);
+            Box::pin(async move { ask_inner(&args, responder).await })
+        }),
+    )
+}
+
+async fn ask_inner(
+    args: &serde_json::Value,
+    responder: std::sync::Arc<dyn crate::interaction::questions::Responder>,
+) -> Result<ToolResult, crate::core::tools::ToolError> {
+    let question = args
+        .get("question")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if question.trim().is_empty() {
+        return Ok(ToolResult::error("`question` is required"));
+    }
+
+    let options: Vec<String> = args
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // A question with one option is a confirmation, and a model that offered one choice meant to ask a yes/no
+    // question without saying so. Treating it as a confirmation gives the person a usable control.
+    let multiple = args
+        .get("multiple")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let choices = || {
+        options
+            .iter()
+            .map(|option| crate::interaction::questions::Option_::new(option.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let shape = match (options.len(), multiple) {
+        (0, _) => crate::interaction::questions::Shape::Text {
+            label: question.to_owned(),
+            optional: false,
+        },
+        (1, false) => crate::interaction::questions::Shape::Confirm {
+            label: question.to_owned(),
+        },
+        (_, true) => crate::interaction::questions::Shape::Multiple {
+            label: question.to_owned(),
+            options: choices(),
+            // At least one: a model that offered choices and received none has learned nothing, and would have to ask
+            // again.
+            min: 1,
+            max: options.len(),
+        },
+        (_, false) => crate::interaction::questions::Shape::Choice {
+            label: question.to_owned(),
+            options: choices(),
+        },
+    };
+
+    let mut ask = crate::interaction::questions::Question::new(shape);
+    if let Some(context) = args.get("context").and_then(serde_json::Value::as_str) {
+        ask = ask.with_context(context.to_owned());
+    }
+
+    match responder.ask(ask).await {
+        Ok(reply) => {
+            let answer = match &reply.answer {
+                crate::interaction::questions::Answer::Text(text) => text.clone(),
+                crate::interaction::questions::Answer::Chosen(value) => value.clone(),
+                crate::interaction::questions::Answer::ChosenMany(values) => values.join(", "),
+                crate::interaction::questions::Answer::Confirmed(confirmed) => {
+                    if *confirmed { "yes" } else { "no" }.to_owned()
+                }
+            };
+            // The default case is recorded in the text: a model that treated a timeout's default as a person's answer
+            // would build on consent it never received.
+            Ok(ToolResult::text(if reply.is_human() {
+                answer
+            } else {
+                format!("{answer} (default; nobody answered)")
+            }))
+        }
+        Err(error) => Ok(ToolResult::error(format!("cannot ask: {error}"))),
+    }
+}

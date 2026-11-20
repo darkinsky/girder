@@ -18,8 +18,8 @@
 //! against it as written even before the crate root wires it in. It names the crate through
 //! `::girder_core`, which the library alias lets resolve from either side.
 
-#[path = "../src/tool_idempotency.rs"]
-mod tool_idempotency;
+#[path = "../src/core/tool_idempotency.rs"]
+pub mod tool_idempotency;
 
 use girder_core::{ContentBlock, SessionEvent, ToolCallId};
 
@@ -431,4 +431,10 @@ fn a_result_after_repeated_calls_still_skips() {
         &fingerprint("bash", "ls"),
     ));
     assert_eq!(executed(&events)[0].attempts, 2);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_idempotency as tool_idempotency;
 }

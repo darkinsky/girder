@@ -2,8 +2,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use girder_core::terminal_controller_gap::Screen;
-use girder_core::terminal_screen_rpc::{
+use girder_core::terminal::controller::Screen;
+use girder_core::terminal::screen_rpc::{
     DEFAULT_COUNT, MAX_BYTES, MAX_COUNT, METHOD, NAMESPACE, ScreenArgs, parse_args,
     register_screen_method,
 };

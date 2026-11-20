@@ -6,7 +6,7 @@
 //!
 //! The module is included by path because `girder-core`'s crate root does not yet declare it —
 //! wiring `pub mod token_meter;` belongs to the integrator. Once that lands, this `#[path]` line
-//! should be replaced with `use girder_core::token_meter::*;`.
+//! should be replaced with `use girder_core::llm::token_meter::*;`.
 
 // The module is included by path, so its `crate::llm` import would resolve against this test
 // crate's root rather than `girder-core`'s. This shim supplies the same two types there. It exists
@@ -17,7 +17,7 @@ mod llm {
     pub use girder_core::{ContentBlock, Message};
 }
 
-#[path = "../src/token_meter.rs"]
+#[path = "../src/llm/token_meter.rs"]
 mod token_meter;
 
 use girder_core::{ContentBlock, Message, Role, ToolCallId};

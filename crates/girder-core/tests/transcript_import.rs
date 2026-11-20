@@ -35,11 +35,11 @@
 // `is_empty` helpers — the importer asks about the events, not about the transcript. Without this
 // the shared source would fail a dead-code check that is about *this* test, not about the module.
 #[allow(dead_code)]
-#[path = "../src/session_transcript.rs"]
-mod session_transcript;
+#[path = "../src/session/transcript.rs"]
+pub mod session_transcript;
 
-#[path = "../src/transcript_import.rs"]
-mod transcript_import;
+#[path = "../src/session/transcript_import.rs"]
+pub mod transcript_import;
 
 use girder_core::{
     ChatMessage, ContentBlock, MessageSource, SessionEvent, TurnEndReason, check_history,
@@ -916,4 +916,11 @@ fn every_imported_message_carries_exactly_one_text_block() {
         assert!(!message.text().is_empty());
     }
     assert_eq!(seen, 5, "every message this transcript holds was imported");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_transcript as transcript;
+    pub use super::transcript_import as transcript_import;
 }

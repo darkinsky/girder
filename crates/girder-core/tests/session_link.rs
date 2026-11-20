@@ -13,8 +13,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/session_link.rs"]
-mod session_link;
+#[path = "../src/session/link.rs"]
+pub mod session_link;
 
 use session_link::{Graph, Kind, Link, LinkError};
 
@@ -322,4 +322,10 @@ fn related_is_ordered_stably_across_repeated_reads() {
         ],
         "ordered by timestamp, not by insertion"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_link as link;
 }

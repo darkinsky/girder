@@ -5,7 +5,7 @@
 //!
 //! | format | what a round trip is allowed to preserve |
 //! |---|---|
-//! | [`girder_core::export_bundle`] (own transport) | every event, field for field, in order |
+//! | [`girder_core::session::export_bundle`] (own transport) | every event, field for field, in order |
 //! | [`girder_core::export_transcript`] (`OpenAI`) | the conversation text of the user and assistant turns |
 //! | [`girder_core::export_transcript`] (`Anthropic`) | the same text, with the prompt lifted to a top-level field |
 //! | [`girder_core::compact_log`] | every derived view (transcript, digest) of the same log |
@@ -24,7 +24,7 @@
 //! # Why these are reached through the crate root
 //!
 //! Unlike the per-module tests beside this file, these go through the public re-exports
-//! (`girder_core::export_bundle`, `girder_core::import_bundle`, …) on purpose. That is the surface a
+//! (`girder_core::session::export_bundle`, `girder_core::import_bundle`, …) on purpose. That is the surface a
 //! consumer actually calls, and it is where a mis-wired re-export would hide. Including the modules
 //! by path would test the implementations while bypassing the wiring that makes them reachable.
 //!

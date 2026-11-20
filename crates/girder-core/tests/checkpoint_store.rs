@@ -23,8 +23,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/checkpoint_store.rs"]
-mod checkpoint_store;
+#[path = "../src/session/checkpoint_store.rs"]
+pub mod checkpoint_store;
 
 use checkpoint_store::{Checkpoint, FILE_SUFFIX, Kind, Store, StoreError};
 use std::path::PathBuf;
@@ -474,4 +474,10 @@ fn an_omitted_timestamp_is_defaulted_on_read() {
     let loaded = store.load("s1").expect("loaded");
     assert_eq!(seqs(&loaded), vec![4]);
     assert!(loaded[0].at_ms > 1_600_000_000_000, "{}", loaded[0].at_ms);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::checkpoint_store as checkpoint_store;
 }

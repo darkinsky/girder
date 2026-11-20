@@ -9,7 +9,7 @@
 //! `session_portable` is not exported from the crate root yet; the wiring into `lib.rs` is a
 //! separate change. Compiling the exact source file keeps these tests runnable and independent of
 //! that wiring, while still exercising the same code a consumer will reach through
-//! `girder_core::session_portable`. Nothing is duplicated: this is the real file.
+//! `girder_core::session::portable`. Nothing is duplicated: this is the real file.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -25,7 +25,7 @@ mod session {
     pub use girder_core::SessionEvent;
 }
 
-#[path = "../src/session_portable.rs"]
+#[path = "../src/session/portable.rs"]
 mod session_portable;
 
 use girder_core::{SessionEvent, TurnEndReason};

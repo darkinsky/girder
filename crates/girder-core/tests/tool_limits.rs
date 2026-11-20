@@ -11,8 +11,8 @@
 //! `#[path]` line can become `use girder_core::{ToolLimit, ToolTracker, ToolVerdict};`, which is what the crate root
 //! exports today.
 
-#[path = "../src/tool_limits.rs"]
-mod tool_limits;
+#[path = "../src/core/tool_limits.rs"]
+pub mod tool_limits;
 
 use tool_limits::{Limit, Tracker, Verdict};
 
@@ -303,4 +303,10 @@ fn separate_trackers_do_not_share_state() {
         Verdict::TooManyCalls { .. }
     ));
     assert_eq!(second.calls("bash"), 0);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_limits as tool_limits;
 }

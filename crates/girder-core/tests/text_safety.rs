@@ -12,8 +12,8 @@
 //! concurrent `lib.rs` change exports. Once the re-export settles, this can become
 //! `use girder_core::{HazardKind as Kind, is_text_safe as is_safe, sanitize_text as sanitize, scan_text as scan};`.
 
-#[path = "../src/text_safety.rs"]
-mod text_safety;
+#[path = "../src/guard/text_safety.rs"]
+pub mod text_safety;
 
 use text_safety::{Kind, is_safe, sanitize, scan};
 
@@ -392,4 +392,10 @@ fn scanning_finds_every_hazard_in_a_mixed_text() {
             Kind::ZeroWidth
         ]
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod guard {
+    pub use super::text_safety as text_safety;
 }

@@ -32,8 +32,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/workflow_rpc.rs"]
-mod workflow_rpc;
+#[path = "../src/workflow/rpc.rs"]
+pub mod workflow_rpc;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -704,4 +704,10 @@ async fn a_read_only_peer_may_observe_and_may_not_start_or_cancel() {
         .await
         .expect_err("refused");
     assert_eq!(refused_cancel.code(), "REFUSED");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod workflow {
+    pub use super::workflow_rpc as rpc;
 }

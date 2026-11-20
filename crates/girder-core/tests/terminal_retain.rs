@@ -23,8 +23,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/terminal_retain.rs"]
-mod terminal_retain;
+#[path = "../src/terminal/retain.rs"]
+pub mod terminal_retain;
 
 use std::path::PathBuf;
 
@@ -358,4 +358,10 @@ fn the_line_rule_matches_the_cut() {
         );
         assert_eq!(read(&store, &id).as_deref(), Some(output));
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_retain as retain;
 }

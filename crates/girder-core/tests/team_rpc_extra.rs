@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use girder_core::team_rpc_extra::{MAX_TASKS, METHOD, NAMESPACE};
+use girder_core::team::rpc_extra::{MAX_TASKS, METHOD, NAMESPACE};
 use girder_core::{RemoteCall, RemoteError, RemoteRegistry};
 use serde_json::{Value, json};
 

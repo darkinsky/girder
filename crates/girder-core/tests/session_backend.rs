@@ -8,10 +8,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from `lib.rs`
 //! is the wiring change, which belongs to whoever connects the backend to the session RPC surface.
-//! When it is exported, this can become `use girder_core::session_backend::...;`.
+//! When it is exported, this can become `use girder_core::session::backend::...;`.
 
-#[path = "../src/session_backend.rs"]
-mod session_backend;
+#[path = "../src/session/backend.rs"]
+pub mod session_backend;
 
 use session_backend::{Backend, Capabilities, Choice, Config, choose};
 
@@ -244,4 +244,10 @@ fn choose_agrees_with_the_backend_capability_table() {
         let expected: Capabilities = choice.backend.capabilities();
         assert_eq!(choice.capabilities(), expected);
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_backend as backend;
 }

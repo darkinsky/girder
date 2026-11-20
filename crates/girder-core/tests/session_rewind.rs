@@ -10,8 +10,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the module as written even before the crate root wires it in. It resolves `girder_core::…`
 // through the same crate name the library uses for itself.
-#[path = "../src/session_rewind.rs"]
-mod session_rewind;
+#[path = "../src/session/rewind.rs"]
+pub mod session_rewind;
 
 use girder_core::{SessionEvent, ToolCallId, TurnEndReason};
 use session_rewind::{Checkpoint, checkpoint_for_turn, checkpoints, rewind_to};
@@ -328,4 +328,10 @@ fn a_zero_checkpoint_rewinds_to_nothing() {
     };
 
     assert!(rewind_to(&events, &point).is_empty());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_rewind as rewind;
 }

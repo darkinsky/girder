@@ -25,8 +25,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/tool_output_view.rs"]
-mod tool_output_view;
+#[path = "../src/core/tool_output_view.rs"]
+pub mod tool_output_view;
 
 use girder_core::{ContentBlock, ToolCallId};
 use tool_output_view::{ATTACHMENT_COST_CHARS, MIN_KEPT_CHARS, Outcome, View, block_cost};
@@ -296,4 +296,10 @@ fn a_reasoning_block_is_priced_as_text() {
     assert_eq!(block_cost(&reasoning), 8);
     let mut view = View::new(8);
     assert_eq!(view.add_block(&reasoning), Outcome::Kept);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_output_view as tool_output_view;
 }

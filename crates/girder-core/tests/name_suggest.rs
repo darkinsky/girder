@@ -12,8 +12,8 @@
 
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the policy as written even before the crate root wires it in.
-#[path = "../src/name_suggest.rs"]
-mod name_suggest;
+#[path = "../src/util/name_suggest.rs"]
+pub mod name_suggest;
 
 use name_suggest::{Candidate, closest, distance, suggest_tool};
 use std::time::{Duration, Instant};
@@ -302,4 +302,10 @@ fn empty_inputs_are_handled_pairwise() {
     assert_eq!(distance("", "", 8), 0);
     assert_eq!(distance("", "abc", 8), 3);
     assert_eq!(distance("abc", "", 8), 3);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod util {
+    pub use super::name_suggest as name_suggest;
 }

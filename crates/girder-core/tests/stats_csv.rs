@@ -15,7 +15,7 @@
 //!
 //! `stats_csv` is not yet exported from the crate root — that wiring is a separate change to `lib.rs`. Building the
 //! exact source file here, rather than a copy of it, keeps these tests exercising the code a consumer will reach
-//! through `girder_core::stats_csv`. `ToolStats` *is* exported, so it is imported from the crate instead of being
+//! through `girder_core::telemetry::stats_csv`. `ToolStats` *is* exported, so it is imported from the crate instead of being
 //! re-declared: a test that invented its own struct would not compile against the real one.
 
 #![allow(
@@ -24,8 +24,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/stats_csv.rs"]
-mod stats_csv;
+#[path = "../src/telemetry/stats_csv.rs"]
+pub mod stats_csv;
 
 use girder_core::ToolStats;
 use stats_csv::{Table, escape_field, session_table, tool_table};
@@ -258,4 +258,10 @@ fn a_ragged_row_is_rendered_as_given() {
         String::from("3"),
     ]);
     assert_eq!(table.render(), "a,b\r\n1\r\n1,2,3\r\n");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod telemetry {
+    pub use super::stats_csv as stats_csv;
 }

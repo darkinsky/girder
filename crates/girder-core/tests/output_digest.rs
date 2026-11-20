@@ -14,8 +14,8 @@
 //! The source is included by path rather than through a crate re-export, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/output_digest.rs"]
-mod output_digest;
+#[path = "../src/core/output_digest.rs"]
+pub mod output_digest;
 
 use output_digest::{Importance, classify, digest, has_errors};
 
@@ -407,4 +407,10 @@ fn chinese_digest_keeps_context() {
         text, "构建开始\n错误: 无法打开文件\n构建结束",
         "a three-line block fits whole, so nothing is omitted"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::output_digest as output_digest;
 }

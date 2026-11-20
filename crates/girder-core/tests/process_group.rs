@@ -7,7 +7,7 @@
 //! The properties, in the order they matter:
 //!
 //! - **a background child is gone when the command returns** — the core case. `sh -c "sleep 999 &"`
-//!   exits immediately and leaves a survivor, which is exactly what `subprocess::run` strands today.
+//!   exits immediately and leaves a survivor, which is exactly what `shell::subprocess::run` strands today.
 //! - **that survivor does not delay the caller** — it held the stdout pipe open, so a drain that
 //!   ran before the group kill would block for the survivor's lifetime.
 //! - **a timeout reports itself and kills the group**, not just the leader

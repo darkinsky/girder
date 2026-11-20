@@ -10,8 +10,8 @@
 //! Every test runs in its own scratch directory because two of them depend on the parent directory
 //! being writable and traversable: a shared root would make the symlink cases depend on each other.
 
-#[path = "../src/sandbox_path.rs"]
-mod sandbox_path;
+#[path = "../src/sandbox/path.rs"]
+pub mod sandbox_path;
 
 use std::path::{Path, PathBuf};
 
@@ -427,4 +427,10 @@ fn an_unknown_verdict_explains_itself() {
         Verdict::Unknown { detail } => assert!(!detail.is_empty(), "detail is empty"),
         other => panic!("expected Unknown, got {other:?}"),
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod sandbox {
+    pub use super::sandbox_path as path;
 }

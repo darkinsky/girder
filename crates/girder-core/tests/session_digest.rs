@@ -11,8 +11,8 @@
 //! against it as written even before the crate root wires it in. It resolves `girder_core::…` through
 //! the alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/session_digest.rs"]
-mod session_digest;
+#[path = "../src/session/digest.rs"]
+pub mod session_digest;
 
 use girder_core::{
     ChatMessage, ChatRole, ContextForm, MessageId, MessageSource, SessionEvent, ToolCallId,
@@ -467,4 +467,10 @@ fn a_digest_survives_a_round_trip_through_json() {
     let back: Digest = serde_json::from_str(&json).expect("digest deserialises");
 
     assert_eq!(back, summary);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_digest as digest;
 }

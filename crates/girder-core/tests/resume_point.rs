@@ -19,8 +19,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/resume_point.rs"]
-mod resume_point;
+#[path = "../src/session/resume_point.rs"]
+pub mod resume_point;
 
 use girder_core::{SessionEvent, ToolCallId, TurnEndReason};
 
@@ -625,4 +625,10 @@ fn a_point_lands_where_its_reason_says() {
         closed.get(bounded.at - 1),
         Some(SessionEvent::TurnEnd { .. })
     ));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::resume_point as resume_point;
 }

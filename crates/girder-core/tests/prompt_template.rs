@@ -15,7 +15,7 @@
 //! `prompt_template` is not exported from the crate root yet; the wiring is a separate change to
 //! `lib.rs`. Compiling the exact source file here keeps these tests runnable and independent of
 //! that wiring, while still exercising the same code a consumer will reach through
-//! `girder_core::prompt_template`. Nothing is duplicated: this is the real file. The same approach
+//! `girder_core::core::prompt_template`. Nothing is duplicated: this is the real file. The same approach
 //! is used by `tests/system_prompt.rs`.
 #![allow(
     clippy::unwrap_used,
@@ -23,8 +23,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/prompt_template.rs"]
-mod prompt_template;
+#[path = "../src/core/prompt_template.rs"]
+pub mod prompt_template;
 
 use prompt_template::{TemplateError, Variables, render};
 
@@ -461,4 +461,10 @@ fn renders_a_realistic_deployment_template() {
          Current branch: release/2026-11.\n\
          Current date: 2026-11-14.",
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::prompt_template as prompt_template;
 }

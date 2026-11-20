@@ -11,8 +11,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests
 //! compile against it as written even before the crate root wires it in.
 
-#[path = "../src/undo_log.rs"]
-mod undo_log;
+#[path = "../src/fs/undo_log.rs"]
+pub mod undo_log;
 
 use undo_log::{Change, DEFAULT_CAPACITY, Log};
 
@@ -205,4 +205,10 @@ fn a_mixed_stack_undoes_creations_and_edits_together() {
     let edit_back = log.undo().expect("the edit was recorded first");
     assert_eq!(edit_back.path, "existing.txt");
     assert_eq!(edit_back.before.as_deref(), Some("old"));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod fs {
+    pub use super::undo_log as undo_log;
 }

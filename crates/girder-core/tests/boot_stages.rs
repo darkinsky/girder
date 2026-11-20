@@ -7,10 +7,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from `lib.rs`
 //! is a separate change. When it is exported, this can become
-//! `use girder_core::boot_stages::{BootTrace, Stage, StageOutcome};`.
+//! `use girder_core::boot::stages::{BootTrace, Stage, StageOutcome};`.
 
-#[path = "../src/boot_stages.rs"]
-mod boot_stages;
+#[path = "../src/boot/stages.rs"]
+pub mod boot_stages;
 
 use boot_stages::{BootTrace, Stage, StageOutcome};
 
@@ -252,4 +252,10 @@ fn outcome_accessors_describe_the_variant() {
     assert!(fatal.is_fatal());
     assert!(!fatal.is_degraded());
     assert_eq!(fatal.reason(), Some("no config"));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod boot {
+    pub use super::boot_stages as stages;
 }

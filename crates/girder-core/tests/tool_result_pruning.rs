@@ -14,8 +14,8 @@
 //! compile against it as written even before the crate root wires it in. That is why nothing here
 //! reaches for anything else in `girder_core`.
 
-#[path = "../src/tool_result_pruning.rs"]
-mod tool_result_pruning;
+#[path = "../src/core/tool_result_pruning.rs"]
+pub mod tool_result_pruning;
 
 use std::fmt::Write as _;
 
@@ -332,4 +332,10 @@ fn head_tail_of_more_lines_than_exist_is_a_no_op() {
         },
     );
     assert_eq!(rendered, content);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_result_pruning as tool_result_pruning;
 }

@@ -6,10 +6,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from
 //! `lib.rs` is a separate change made by whoever wires it up. When it is exported, this can become
-//! `use girder_core::workspace_diff::{LineDiff, MAX_DIFF_LINES, diff_text};`.
+//! `use girder_core::workspace::diff::{LineDiff, MAX_DIFF_LINES, diff_text};`.
 
-#[path = "../src/workspace_diff.rs"]
-mod workspace_diff;
+#[path = "../src/workspace/diff.rs"]
+pub mod workspace_diff;
 
 use workspace_diff::{DEFAULT_CONTEXT, FileChange, LineDiff, MAX_DIFF_LINES, TextDiff, diff_text};
 
@@ -456,4 +456,10 @@ fn a_file_change_carries_counts_and_an_optional_diff() {
     );
     // A file may be listed by counts alone; the diff is a preview, not part of the identity.
     assert!(without.diff.is_none());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod workspace {
+    pub use super::workspace_diff as diff;
 }

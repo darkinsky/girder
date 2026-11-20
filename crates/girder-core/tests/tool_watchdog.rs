@@ -9,8 +9,8 @@
 //! cancellation, because interrupting a half-written file is worse than waiting. The clock is injected everywhere, so
 //! every boundary is asserted exactly, with no sleep and no tolerance window.
 
-#[path = "../src/tool_watchdog.rs"]
-mod tool_watchdog;
+#[path = "../src/core/tool_watchdog.rs"]
+pub mod tool_watchdog;
 
 use tool_watchdog::{Policy, Verdict, Watch};
 
@@ -149,4 +149,10 @@ fn the_default_policy_bounds_every_tool_and_cancels() {
     assert!(policy.cancel_on_timeout);
     assert_eq!(policy.timeout_for("bash"), Policy::DEFAULT_MS);
     assert_eq!(policy.timeout_for("read"), Policy::DEFAULT_MS);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_watchdog as tool_watchdog;
 }

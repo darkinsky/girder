@@ -7,8 +7,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the tool as written even before the crate root wires it in. It resolves `girder_core::…`
 // through the alias the library declares for itself, which is why the same source builds here.
-#[path = "../src/instructions_tool.rs"]
-mod instructions_tool;
+#[path = "../src/context/instructions_tool.rs"]
+pub mod instructions_tool;
 
 use std::path::PathBuf;
 
@@ -221,4 +221,10 @@ async fn multiple_files_are_listed_outermost_first() {
     assert!(root_at < nested_at, "paths follow discovery order: {text}");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod context {
+    pub use super::instructions_tool as instructions_tool;
 }

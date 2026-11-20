@@ -16,8 +16,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile against it
 //! as written even before the crate root wires it in.
 
-#[path = "../src/mcp_client.rs"]
-mod mcp_client;
+#[path = "../src/mcp/client.rs"]
+pub mod mcp_client;
 
 use std::collections::HashSet;
 
@@ -647,4 +647,10 @@ fn a_configuration_without_a_program_or_namespace_is_refused_at_construction() {
         direct.validate(),
         Err(McpError::InvalidServerName { .. })
     ));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod mcp {
+    pub use super::mcp_client as client;
 }

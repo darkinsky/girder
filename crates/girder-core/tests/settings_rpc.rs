@@ -36,8 +36,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/settings_rpc.rs"]
-mod settings_rpc;
+#[path = "../src/settings/rpc.rs"]
+pub mod settings_rpc;
 
 use std::sync::Arc;
 
@@ -899,4 +899,10 @@ async fn the_implemented_methods_are_all_reachable() {
             "`{method}` must not have a handler"
         );
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod settings {
+    pub use super::settings_rpc as rpc;
 }

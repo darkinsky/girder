@@ -14,8 +14,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/session_workspace.rs"]
-mod session_workspace;
+#[path = "../src/session/workspace.rs"]
+pub mod session_workspace;
 
 use session_workspace::{Association, Index, WorkspaceError, WorkspaceId};
 
@@ -355,4 +355,10 @@ fn a_new_index_answers_every_question_emptily() {
 fn the_default_index_is_empty() {
     assert_eq!(Index::default(), Index::new());
     assert!(Index::default().is_empty());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_workspace as workspace;
 }

@@ -7,8 +7,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against the source as written even before the crate root wires it in.
 
-#[path = "../src/subagent_depth.rs"]
-mod subagent_depth;
+#[path = "../src/subagent/depth.rs"]
+pub mod subagent_depth;
 
 use subagent_depth::{Depth, DepthError, Limit};
 
@@ -199,4 +199,10 @@ fn a_limit_above_the_counter_bound_still_refuses_by_ceiling_first() {
             max: u32::MAX,
         })
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod subagent {
+    pub use super::subagent_depth as depth;
 }

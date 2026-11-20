@@ -11,7 +11,7 @@
 //! `stream_validate` is not exported from the crate root; the wiring is a separate change to
 //! `lib.rs`. Compiling the exact source file here keeps these tests runnable and independent of
 //! that wiring, while still exercising the same code a consumer will reach through
-//! `girder_core::stream_validate`. Nothing is duplicated: this is the real file. This mirrors how
+//! `girder_core::llm::stream_validate`. Nothing is duplicated: this is the real file. This mirrors how
 //! `tests/block_assembler.rs` tests the assembler before it was exported.
 #![allow(
     clippy::unwrap_used,
@@ -19,8 +19,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/stream_validate.rs"]
-mod stream_validate;
+#[path = "../src/llm/stream_validate.rs"]
+pub mod stream_validate;
 
 use girder_core::{ContentBlock, FinishReason, StreamChunk, TokenUsage, ToolCallId};
 use stream_validate::{Ending, Problem, ProblemKind, is_fatal, validate, validate_with};
@@ -641,4 +641,10 @@ fn problems_point_at_the_offending_chunk() {
             },
         ]
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::stream_validate as stream_validate;
 }

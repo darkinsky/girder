@@ -19,8 +19,8 @@
 
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the checker as written even before the crate root wires it in.
-#[path = "../src/pattern_check.rs"]
-mod pattern_check;
+#[path = "../src/guard/pattern_check.rs"]
+pub mod pattern_check;
 
 use pattern_check::{Outcome, check, check_enum, check_length};
 
@@ -505,4 +505,10 @@ fn a_quoted_file_name_with_an_extension_is_matched_by_an_escaped_dot() {
     assert_matches("^[a-z]+\\.rs$", "lib.rs");
     assert_no_match("^[a-z]+\\.rs$", "libXrs");
     assert_no_match("^[a-z]+\\.rs$", "lib.rs.bak");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod guard {
+    pub use super::pattern_check as pattern_check;
 }

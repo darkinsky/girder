@@ -9,8 +9,8 @@
 //! is a separate change, which is also why nothing here reaches for the rest of `girder_core`: the
 //! only dependency is the module itself.
 
-#[path = "../src/share_link.rs"]
-mod share_link;
+#[path = "../src/api/share_link.rs"]
+pub mod share_link;
 
 use std::cell::Cell;
 
@@ -411,4 +411,10 @@ fn prune_reports_every_removal() {
 
     assert_eq!(shares.prune(10), 5);
     assert!(shares.is_empty());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::share_link as share_link;
 }

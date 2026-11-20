@@ -13,8 +13,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/cancel_orchestra.rs"]
-mod cancel_orchestra;
+#[path = "../src/core/cancel_orchestra.rs"]
+pub mod cancel_orchestra;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -251,4 +251,10 @@ fn a_drain_this_module_did_not_perform_is_not_claimed_as_quiescent() {
     girder_core::run_cleanups(&root);
 
     assert!(!is_quiescent(&root));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::cancel_orchestra as cancel_orchestra;
 }

@@ -33,8 +33,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_static.rs"]
-mod session_static;
+#[path = "../src/session/session_static.rs"]
+pub mod session_static;
 
 use girder_core::{ContentBlock, MessageId, SessionEvent, ToolCallId};
 use session_static::{MAX_PAGE_BYTES, Page, escape, render};
@@ -531,4 +531,10 @@ fn settings_events_are_not_rendered() {
         html.contains("This session has no messages."),
         "with nothing left, the page is the empty one"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_static as session_static;
 }

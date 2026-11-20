@@ -8,8 +8,8 @@
 //! written even before the crate root wires it in. That is why nothing here reaches for anything else in
 //! `girder_core`.
 
-#[path = "../src/str_replace_editor.rs"]
-mod str_replace_editor;
+#[path = "../src/fs/str_replace_editor.rs"]
+pub mod str_replace_editor;
 
 use str_replace_editor::{EditFailure, Replacement, apply};
 
@@ -383,4 +383,10 @@ fn a_window_at_the_end_of_the_file_does_not_run_past_it() {
         "rendered: {rendered}"
     );
     assert!(!rendered.contains("later line"), "rendered: {rendered}");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod fs {
+    pub use super::str_replace_editor as str_replace_editor;
 }

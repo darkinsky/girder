@@ -6,7 +6,7 @@
 //!
 //! These go through the crate's public surface rather than a private path, so a re-export that
 //! stopped carrying an item would fail here instead of leaving the API untested. `Scope` is bound
-//! to [`CancelScope`], the name the crate exports it under: `scope::Scope` already owns the plain
+//! to [`CancelScope`], the name the crate exports it under: `core::scope::Scope` already owns the plain
 //! name.
 
 use std::sync::Arc;

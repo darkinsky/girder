@@ -11,10 +11,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from `lib.rs`
 //! is a separate change. When it is exported, this can become
-//! `use girder_core::plugin_lifecycle::{allows, Cause, History, State, Transition};`.
+//! `use girder_core::boot::plugin_lifecycle::{allows, Cause, History, State, Transition};`.
 
-#[path = "../src/plugin_lifecycle.rs"]
-mod plugin_lifecycle;
+#[path = "../src/boot/plugin_lifecycle.rs"]
+pub mod plugin_lifecycle;
 
 use plugin_lifecycle::{Cause, History, State, Transition, TransitionError, allows};
 
@@ -680,4 +680,10 @@ fn states_render_readably_including_the_failure_reason() {
     assert_eq!(State::Stopped.to_string(), "stopped");
     assert_eq!(State::Removed.to_string(), "removed");
     assert_eq!(failed_because("boom").to_string(), "failed (boom)");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod boot {
+    pub use super::plugin_lifecycle as plugin_lifecycle;
 }

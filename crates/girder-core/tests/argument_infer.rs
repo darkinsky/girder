@@ -14,8 +14,8 @@
 //! The module is included by path rather than through the crate root, so these tests compile against
 //! it before `lib.rs` declares it, and nothing here touches the rest of `girder_core`.
 
-#[path = "../src/argument_infer.rs"]
-mod argument_infer;
+#[path = "../src/core/argument_infer.rs"]
+pub mod argument_infer;
 
 use argument_infer::{Provenance, complete_from_defaults, provenance};
 use serde_json::{Value, json};
@@ -558,4 +558,10 @@ fn filled_paths_quote_keys_that_are_not_identifiers() {
     assert_eq!(Provenance::Absent.as_str(), "absent");
     assert_eq!(Provenance::Defaulted.as_str(), "defaulted");
     assert_eq!(Provenance::Provided.as_str(), "provided");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::argument_infer as argument_infer;
 }

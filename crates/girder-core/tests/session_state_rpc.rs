@@ -37,8 +37,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_state_rpc.rs"]
-mod session_state_rpc;
+#[path = "../src/session/state_rpc.rs"]
+pub mod session_state_rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -136,7 +136,31 @@ struct TitledCatalog {
 
 impl SessionCatalog for TitledCatalog {
     fn list(&self) -> BoxFut<Vec<SessionRecord>> {
-        Box::pin(async { Vec::new() })
+        // Names only. `events` stays empty, which is the catalog contract `session.control` has to
+        // survive: a baseline that folded this slice would report every session as blank.
+        let root = self.root.clone();
+        Box::pin(async move {
+            let mut records = Vec::new();
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                return records;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let Some(id) = name.strip_suffix(".jsonl.zst") else {
+                    continue;
+                };
+                records.push(SessionRecord {
+                    id: id.to_owned(),
+                    updated_at: 0,
+                    blank: false,
+                    integrity: girder_core::LogIntegrity::default(),
+                    events: Vec::new(),
+                });
+            }
+            records.sort_by(|left, right| left.id.cmp(&right.id));
+            records
+        })
     }
 
     fn read(&self, id: &str) -> BoxFut<Option<SessionRecord>> {
@@ -652,4 +676,36 @@ async fn the_value_serialises_with_the_documented_field_names() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn control_baselines_each_session_from_its_own_log() {
+    let dir = scratch("control");
+    seed(&dir, "s1", 1);
+    let second = store(&dir, "s2");
+    second.touch().expect("created");
+    second
+        .append(&SessionEvent::TurnStart { turn: 7 })
+        .expect("appended");
+
+    let raw = registry(&catalog(&dir), &projections())
+        .dispatch(NAMESPACE, "control", call(json!({})))
+        .await
+        .expect("baseline");
+
+    assert_eq!(raw["type"], "baseline");
+    assert_eq!(raw["done"], false);
+    let blocks = &raw["value"]["projections"];
+    assert_eq!(blocks["s1"]["asOfSeq"], 1);
+    assert_eq!(blocks["s1"]["values"]["turnBoundary"]["lastTurn"], 0);
+    assert_eq!(blocks["s2"]["asOfSeq"], 1);
+    assert_eq!(blocks["s2"]["values"]["turnBoundary"]["lastTurn"], 7);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_state_rpc as state_rpc;
 }

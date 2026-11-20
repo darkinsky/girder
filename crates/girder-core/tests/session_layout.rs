@@ -10,8 +10,8 @@
 //! The module is included by path rather than through the crate root, so these tests compile against
 //! it as written even before the crate root wires it in.
 
-#[path = "../src/session_layout.rs"]
-mod session_layout;
+#[path = "../src/session/layout.rs"]
+pub mod session_layout;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -427,4 +427,10 @@ fn a_removed_session_disappears_from_the_listing_and_the_count() {
     assert_eq!(layout.ids().expect("readable"), vec!["s2".to_owned()]);
     assert_eq!(layout.count().expect("readable"), 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_layout as layout;
 }

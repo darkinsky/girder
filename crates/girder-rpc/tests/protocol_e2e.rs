@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use girder_core::{
-    EventBus, RemoteCall, RemoteError, RemoteRegistry, api_config::WorkspaceRegistry,
+    EventBus, RemoteCall, RemoteError, RemoteRegistry, api::config::WorkspaceRegistry,
 };
 use girder_rpc::{INVOKE_PATH, WEB_INDEX_PATH};
 use serde_json::{Value, json};

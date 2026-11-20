@@ -20,7 +20,7 @@
 //!
 //! The stream is not exported from the crate root yet; that wiring is a separate change to `lib.rs`.
 //! Compiling the exact source file here — rather than a copy — keeps these tests exercising the same code a
-//! consumer will reach through `girder_core::session_stream`.
+//! consumer will reach through `girder_core::session::stream`.
 
 #![allow(
     clippy::unwrap_used,
@@ -28,8 +28,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/session_stream.rs"]
-mod session_stream;
+#[path = "../src/session/stream.rs"]
+pub mod session_stream;
 
 use girder_core::{ChatRole, ContentBlock, SessionEvent, ToolCallId, TurnEndReason};
 
@@ -419,4 +419,10 @@ fn a_message_event_keeps_its_role_through_the_frame() {
     };
     assert_eq!(message.role, ChatRole::User);
     assert_eq!(message.content.len(), 1);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_stream as stream;
 }

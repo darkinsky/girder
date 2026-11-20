@@ -11,8 +11,8 @@
 
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the module as written even before the crate root wires it in.
-#[path = "../src/session_recovery.rs"]
-mod session_recovery;
+#[path = "../src/session/recovery.rs"]
+pub mod session_recovery;
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -412,4 +412,10 @@ fn every_event_reported_readable_is_actually_readable() {
     let events = girder_core::read_session_file(&path).expect("decodes");
     assert_eq!(events.len(), diagnosis.readable);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_recovery as recovery;
 }

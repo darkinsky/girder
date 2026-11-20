@@ -13,8 +13,8 @@
 //! the module as written even before the crate root declares it. That is also why nothing here
 //! touches the rest of `girder_core`.
 
-#[path = "../src/tool_contracts.rs"]
-mod tool_contracts;
+#[path = "../src/core/tool_contracts.rs"]
+pub mod tool_contracts;
 
 use serde_json::{Value, json};
 use tool_contracts::{FailureKind, MAX_DEPTH, Violation, validate_arguments, violations};
@@ -477,4 +477,10 @@ fn a_violation_renders_its_remedy() {
     assert!(rendered.contains("NOT_FOUND"), "{rendered}");
     assert!(rendered.contains("no such file"), "{rendered}");
     assert!(rendered.contains("check the path"), "{rendered}");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_contracts as tool_contracts;
 }

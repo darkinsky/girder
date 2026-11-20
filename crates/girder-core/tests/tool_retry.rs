@@ -8,8 +8,8 @@
 //! the attempt budget bounds the loop, and that every corrective message tells the model what to
 //! change rather than only that something was wrong.
 
-#[path = "../src/tool_retry.rs"]
-mod tool_retry;
+#[path = "../src/core/tool_retry.rs"]
+pub mod tool_retry;
 
 use tool_retry::{Failure, FailureReason, Policy, PolicyError, corrective_message};
 
@@ -367,4 +367,10 @@ fn a_large_position_does_not_overflow() {
         },
     );
     assert!(corrective_message(&failure).contains("line 999999, column 5"));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_retry as tool_retry;
 }

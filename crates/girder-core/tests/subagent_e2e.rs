@@ -1,7 +1,7 @@
 //! End-to-end tests for the delegation path: admission, release, depth, interrupt, and failure.
 //!
 //! Everything here drives the *real* pipeline — `traced_subagent_tool` → `SubagentRegistry` →
-//! `delegate` → `agent_loop::run` → a provider — instead of the primitives in isolation. That is
+//! `delegate` → `core::agent_loop::run` → a provider — instead of the primitives in isolation. That is
 //! deliberate: `subagent_pool.rs`, `subagent_depth.rs`, `subagent_interrupt.rs` and
 //! `subagent_tools.rs` each have unit tests, and a unit test of a part cannot show that the parts
 //! are wired to each other or that the numbers they hold agree with the text a parent's model reads.

@@ -18,7 +18,7 @@ use anyhow::{Context as _, Result};
 use clap::Parser as _;
 use futures::StreamExt as _;
 use girder_core::{
-    AgentId, EventBus, LoopContext, LoopStep, MemorySession, SessionStore, StreamChunk,
+    AgentId, EventBus, LoopContext, LoopStep, SessionStore, StreamChunk,
     ToolDefinition, ToolRegistry, ToolRegistryView, ToolResult,
 };
 use tokio_util::sync::CancellationToken;
@@ -85,7 +85,7 @@ struct Cli {
 
     /// Provider/model routes a subagent may be given, as `provider/model` pairs.
     ///
-    /// Each pair is validated through `subagent_final_gap::assert_allowed_routes`, which refuses a
+    /// Each pair is validated through `subagent::subagent_final::assert_allowed_routes`, which refuses a
     /// duplicate, an empty half, or a malformed entry. **Refusing at startup rather than at the first
     /// delegation** is the point: a deployment that mistyped a route would otherwise discover it when
     /// a model asked to delegate, and the failure would arrive as a tool error attributed to the
@@ -114,7 +114,7 @@ enum Command {
     /// Explain how a plugin installation spec is understood.
     ///
     /// The spec grammar decides what a `plugins` entry names: a registry package at a version range,
-    /// a git repository at a pinned commit, or a path. `boot_gap::parse_install_spec` is where that
+    /// a git repository at a pinned commit, or a path. `boot::install::parse_install_spec` is where that
     /// grammar lives, and this subcommand is how a person checks that what they wrote means what
     /// they meant before an install reads the network.
     Plugin {
@@ -189,6 +189,10 @@ async fn main() -> Result<()> {
         let names = probe_tool_names();
         if let Some(audit) = audit_tool_report(&names) {
             print!("{audit}");
+        }
+        println!("unmounted (compiled, no caller on the running path):");
+        for (module, reason) in girder_core::unmounted_gaps() {
+            println!("  {module}: {reason}");
         }
         return Ok(());
     }
@@ -295,7 +299,7 @@ fn path_policy(mode: &str, workspace: &std::path::Path) -> Result<girder_core::P
             "`--sandbox {mode}` is not a mode; expected one of read-only, workspace-write, danger-full-access"
         )
     })?;
-    let mut policy = girder_core::PathPolicy::new(workspace);
+    let mut policy = girder_core::PathPolicy::new(workspace).confined(parsed);
     match parsed {
         girder_core::SandboxMode::ReadOnly => {
             // Nothing writable, and the workspace stays readable: the point of read-only is to look.
@@ -384,7 +388,7 @@ fn configured_routes(model: &str) -> std::collections::BTreeMap<String, String> 
         eprintln!("[settings] {} has no `providers` block", path.display());
         return std::collections::BTreeMap::new();
     };
-    match girder_core::pi_ai_apply_gap::providers_from_json(providers) {
+    match girder_core::llm::pi_ai_apply::providers_from_json(providers) {
         Ok(profiles) => profiles
             .into_iter()
             .map(|(name, profile)| {
@@ -448,17 +452,21 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     };
 
     print_banner(address, &selected);
+    tokio::spawn(async {
+        if let Err(error) = girder_core::llm::listing_fetch::refresh_from_env().await {
+            eprintln!("[models] {error}");
+        }
+    });
 
     let catalog = session_catalog();
-    let provider = resolve_provider(&cli);
+    let provider = build_provider(&cli);
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let tools = girder_core::ToolRegistry::new();
     tools.register(list_tool());
-    tools.register(girder_core::bash_tool(path_policy(
-        &cli.sandbox,
-        &workspace,
-    )?));
+    // The same file, search, todo, and web tools a one-shot prompt registers. The server used to
+    // stop at `list` and `bash`, so a client turn could not read or edit a file.
+    let (directory, plans) = register_tools(&tools, &workspace, &cli.sandbox)?;
 
     // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
     // loop still believed was open. Defined before the runtime because the runtime takes the same `Arc`: built
@@ -491,6 +499,27 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // the conversation has accumulated and learns the answer from the provider's error, which names a limit without
     // saying how far past it the request was.
     apply_model_limits(&mut runtime, &routes, &cli.model);
+    // The same ask as a one-shot prompt. A server turn goes through this runtime, so the approver
+    // has to be installed here or `bash` and file changes run without a person.
+    if cli.sandbox == "workspace-write" {
+        girder_core::AgentRuntime::set_approval(
+            &mut runtime,
+            std::sync::Arc::new(girder_core::StdinApprover::new()),
+            std::sync::Arc::new(workspace_write_rules()),
+        );
+    }
+    girder_core::AgentRuntime::set_permissions(&mut runtime, session_permissions(&cli.sandbox));
+    if let Some(directory) = directory {
+        girder_core::AgentRuntime::set_working_directory(&mut runtime, directory);
+    }
+    girder_core::AgentRuntime::set_tool_settings(
+        &mut runtime,
+        std::sync::Arc::new(girder_core::FileSettingsStore::open(
+            sessions_root().join("settings.json"),
+        )),
+    );
+    girder_core::AgentRuntime::set_refine_titles(&mut runtime, true);
+    girder_core::AgentRuntime::set_plan_sessions(&mut runtime, plans);
 
     let mut remote = girder_core::registry_with_routes(&catalog, &runtime, &routes);
 
@@ -500,7 +529,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // Assembled rather than empty. Every projection existed and none was registered, so
     // `session.state` answered `projections: {}` -- a session with no state, not because anything
     // failed but because nothing was ever put in the registry.
-    let projections = girder_core::projection_setup::assemble()
+    let projections = girder_core::session::projection_setup::assemble()
         .map_err(|error| anyhow::anyhow!("projection registry: {error}"))?;
 
     // Background jobs, with the registry the server keeps for this process.
@@ -528,12 +557,22 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     // The capability tools, including `goal`, register against the state defined above: a second `GoalState` here
     // would be the exact defect being fixed, because the model would edit a copy the loop never reads.
     register_capability_tools(&tools, &workspace, &goals);
+    // The servers in settings, started once and held so a later restart stops the child that is
+    // actually answering. An empty list is a deployment with no MCP, not a failure.
+    let (mcp_servers, mcp_live) = mount_mcp(&tools).await;
 
     // Workspace registrations: the directories a session may run in.
-    let workspaces = Arc::new(girder_core::api_config::WorkspaceRegistry::new());
+    let workspaces = Arc::new(girder_core::api::config::WorkspaceRegistry::new());
     // Browsing a workspace: the same filesystem the tools use, so a client sees what a model sees.
     let fs: Arc<dyn girder_core::FileSystem> = Arc::new(girder_core::LocalFileSystem);
-    register_workspace_file_surface(&mut remote, &fs, &workspaces, &routes);
+    register_workspace_file_surface(
+        &mut remote,
+        &fs,
+        &workspaces,
+        &routes,
+        &mcp_servers,
+        &mcp_live,
+    );
 
     // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
     // the catalog does not show.
@@ -577,7 +616,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let directory = match std::env::var("GIRDER_REQUIRE_PEER").as_deref() {
         Ok("1" | "true" | "yes") => {
             println!("peer identity: required (a connection must present a credential)");
-            Some(Arc::new(girder_core::gateway_gap::PeerDirectory::new()))
+            Some(Arc::new(girder_core::api::gateway::PeerDirectory::new()))
         }
         _ => None,
     };
@@ -691,7 +730,10 @@ fn register_tools(
     tools: &girder_core::ToolRegistry,
     workspace: &std::path::Path,
     sandbox: &str,
-) -> Result<()> {
+) -> Result<(
+    Option<Arc<tokio::sync::Mutex<girder_core::shell::working_dir::WorkingDirectory>>>,
+    Arc<girder_core::core::plan_mode::PlanSessions>,
+)> {
     tools.register(girder_core::bash_tool(path_policy(sandbox, workspace)?));
     tools.register(girder_core::read_tool(workspace.to_path_buf()));
     tools.register(girder_core::write_tool(workspace.to_path_buf()));
@@ -728,7 +770,35 @@ fn register_tools(
         tools.register(girder_core::fetch_tool(Arc::clone(&web)));
         tools.register(girder_core::search_tool(web));
     }
-    Ok(())
+    let directory = session_directory(workspace);
+    if let Some(state) = directory.clone() {
+        tools.register(girder_core::shell::working_dir::working_directory_tool(state));
+    }
+    let plans = Arc::new(girder_core::core::plan_mode::PlanSessions::new());
+    tools.register(girder_core::core::plan_mode::exit_plan_mode_tool(
+        Arc::clone(&plans),
+        Arc::new(girder_core::StdinApprover::new()),
+    ));
+    Ok((directory, plans))
+}
+
+/// The directory a session starts in, shared by the tool and the loop.
+///
+/// Absolute, because a relative fallback would resolve against whatever directory the process
+/// happened to have. Canonical when the path exists, so a later `cd` compares the same spelling.
+fn session_directory(
+    workspace: &std::path::Path,
+) -> Option<Arc<tokio::sync::Mutex<girder_core::shell::working_dir::WorkingDirectory>>> {
+    let absolute = match workspace.canonicalize() {
+        Ok(path) => path,
+        Err(_) if workspace.is_absolute() => workspace.to_path_buf(),
+        Err(_) => return None,
+    };
+    let state = girder_core::shell::working_dir::WorkingDirectory::new(
+        absolute.to_string_lossy().into_owned(),
+    )
+    .ok()?;
+    Some(Arc::new(tokio::sync::Mutex::new(state)))
 }
 
 /// Registers the host-facing methods: handing a workspace path to the desktop.
@@ -789,8 +859,10 @@ fn register_lifecycle_surface(
 fn register_workspace_file_surface(
     remote: &mut girder_core::RemoteRegistry,
     fs: &Arc<dyn girder_core::FileSystem>,
-    workspaces: &Arc<girder_core::api_config::WorkspaceRegistry>,
+    workspaces: &Arc<girder_core::api::config::WorkspaceRegistry>,
     routes: &Arc<girder_core::RouteRegistry>,
+    mcp_servers: &Arc<Vec<girder_core::mcp::config::ServerConfig>>,
+    mcp_live: &Arc<girder_core::McpRegistry>,
 ) {
     // Settings share this function rather than `serve` because they are the other half of what a client configures --
     // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
@@ -808,7 +880,7 @@ fn register_workspace_file_surface(
     // `llm.*`: the runtime answers about the adapters this deployment registered. Built here
     // rather than in `serve` because it is one more thing a client can ask about, and `serve` is at
     // the length the linter enforces.
-    match girder_core::llm_remote::runtime_from_routes(routes) {
+    match girder_core::llm::remote::runtime_from_routes(routes) {
         Ok(runtime) => {
             let _ = girder_core::register_llm_remote(remote, &runtime);
         }
@@ -816,21 +888,21 @@ fn register_workspace_file_surface(
     }
     // `sessionReferenceResolver.candidates`: the sessions a `@`-mention may point at, ranked so the
     // caller's own directory comes first.
-    girder_core::session_reference::register_session_reference_methods(remote, &session_catalog());
+    girder_core::session::reference::register_session_reference_methods(remote, &session_catalog());
     // `subagents.{prompt, interruptByUser}`: delivering input to a running child. The substrate is
     // the two inbox queues the agent loop already reads, so this is not a resident-session
     // subsystem -- it is the way to put a message into a session from outside.
-    girder_core::subagent_rpc::register_subagent_methods(
+    girder_core::subagent::rpc::register_subagent_methods(
         remote,
-        &Arc::new(girder_core::subagent_rpc::RunningChildren::new()),
+        &Arc::new(girder_core::subagent::rpc::RunningChildren::new()),
     );
     // `skills.list`: the ranked catalog over the six roots upstream scans, with the project's own
     // skill shadowing a bundled one of the same name. `skill_catalog` renders a prompt and does not
     // rank; serving a client that will *invoke* a name needs the ranking.
-    girder_core::skill_final_gap::register_skill_methods(
+    girder_core::skill::skill_final::register_skill_methods(
         remote,
-        Arc::new(girder_core::skill_final_gap::FilesystemHost::new(
-            Arc::new(girder_core::skill_final_gap::FixedSessions::new()),
+        Arc::new(girder_core::skill::skill_final::FilesystemHost::new(
+            Arc::new(girder_core::skill::skill_final::FixedSessions::new()),
             std::env::current_dir().map_or_else(
                 |_| ".".to_owned(),
                 |path| path.to_string_lossy().into_owned(),
@@ -850,19 +922,23 @@ fn register_workspace_file_surface(
     // is what an `@` completion queries. The implementation was complete and unregistered -- and the
     // endpoint survey that reported 126/126 had only scanned `src/index.ts`, so this one lives in
     // `file-references.ts` and was not counted.
-    girder_core::api_tools_gap::register_file_reference_methods(remote, move |_agent: &str| {
+    girder_core::api::tools::register_file_reference_methods(remote, move |_agent: &str| {
         Some(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
     });
     // `mcpManager.{probe, restart}`: the MCP subsystem was already here -- wire layer, stdio framing,
     // child lifecycle, handshake -- and had no endpoint. Configured servers come from settings.
-    girder_core::mcp_manager_rpc::register_mcp_manager_methods(remote, &Arc::new(Vec::new()));
+    girder_core::mcp::manager_rpc::register_mcp_manager_methods(
+        remote,
+        mcp_servers,
+        Some(Arc::clone(mcp_live)),
+    );
     // `pluginManager.*`: the seven reads answer from an explicit entry registry -- the replacement
     // for the Cordis tree -- and the mutations refuse with `no_installer`, because this build mounts
     // plugins at compile time.
-    girder_core::plugin_manager_rpc::register_plugin_manager_methods(remote, &{
+    girder_core::boot::plugin_manager_rpc::register_plugin_manager_methods(remote, &{
         // The plugins this build actually mounts, as entries.
-        let mut entries = girder_core::plugin_entries::Registry::new();
-        entries.insert(girder_core::plugin_entries::Entry {
+        let mut entries = girder_core::boot::plugin_entries::Registry::new();
+        entries.insert(girder_core::boot::plugin_entries::Entry {
             entry_id: "cli".to_owned(),
             module_name: "@deepseek-ai/dsh".to_owned(),
             options_id: "@deepseek-ai/dsh".to_owned(),
@@ -870,9 +946,9 @@ fn register_workspace_file_surface(
         entries.set_owner("cli");
         Arc::new(entries)
     });
-    girder_core::plugin_manager_rpc::register_plugin_inventory_methods(remote, &{
-        let mut entries = girder_core::plugin_entries::Registry::new();
-        entries.insert(girder_core::plugin_entries::Entry {
+    girder_core::boot::plugin_manager_rpc::register_plugin_inventory_methods(remote, &{
+        let mut entries = girder_core::boot::plugin_entries::Registry::new();
+        entries.insert(girder_core::boot::plugin_entries::Entry {
             entry_id: "cli".to_owned(),
             module_name: "@deepseek-ai/dsh".to_owned(),
             options_id: "@deepseek-ai/dsh".to_owned(),
@@ -881,7 +957,7 @@ fn register_workspace_file_surface(
     });
     // `officeKit.*`: the rendering generation is answered; `render` refuses with `no_renderer`
     // because converting a document needs an engine this build does not embed.
-    girder_core::office_kit::register_office_kit_methods(remote);
+    girder_core::document::office_kit::register_office_kit_methods(remote);
     // `account.*`: the credential store answers `getState`; everything that needs a Platform
     // endpoint refuses with `no_platform` rather than answering `null`, which a client would read as
     // "signed out" for a deployment where signing in cannot succeed.
@@ -890,41 +966,41 @@ fn register_workspace_file_surface(
     // `credentials.{describe,set,unset}`: the store `account.getState` reads. It was written and
     // never registered, so a client could ask about an account but not configure one.
     girder_core::register_credential_methods(remote, &credentials);
-    girder_core::account_rpc::register_account_methods(
+    girder_core::credentials::account_rpc::register_account_methods(
         remote,
         &credentials,
         std::env::var("DEEPSEEK_API_KEY").is_ok(),
     );
     // `agentTeams.setEnabled`: whether a session's tree runs as a team. The root is the caller's
     // assertion, checked rather than trusted, because this build holds no subagent tree to derive it.
-    girder_core::agent_teams::register_agent_team_methods(remote, &session_catalog());
+    girder_core::team::agent_teams::register_agent_team_methods(remote, &session_catalog());
     // `agentPresets.*`: the capability sets a session may start from. This build's presets name
     // tools and a model rather than a Cordis plugin list, which is stated in the module.
-    girder_core::agent_presets::register_agent_preset_methods(
+    girder_core::preset::agent_presets::register_agent_preset_methods(
         remote,
-        &girder_core::agent_presets::default_registry(),
+        &girder_core::preset::agent_presets::default_registry(),
     );
     // `messageFeedback.*`: feedback is a log event, so `list` replays and `put`/`delete` need a
     // store this deployment's catalog does not hold -- they answer `store_unavailable` rather than
     // claiming a write.
-    girder_core::message_feedback::register_message_feedback_methods(remote, &session_catalog());
-    girder_core::message_feedback::register_session_feedback_methods(remote, &session_catalog());
+    girder_core::feedback::message_feedback::register_message_feedback_methods(remote, &session_catalog());
+    girder_core::feedback::message_feedback::register_session_feedback_methods(remote, &session_catalog());
     // `web.listProviders`: the search and fetch endpoints this deployment registered. Empty when it
     // has none, which is the honest answer rather than an absent method.
-    girder_core::web_rpc::register_web_methods(
+    girder_core::web::rpc::register_web_methods(
         remote,
-        &Arc::new(girder_core::web_rpc::WebProviders::from_environment()),
+        &Arc::new(girder_core::web::rpc::WebProviders::from_environment()),
     );
     // `permissionPresets.catalog`: the same built-in set the approval layer enforces, so a client
     // reading this and a rule refusing a call cannot disagree about which presets exist.
-    girder_core::permission_presets_rpc::register_permission_preset_methods(
+    girder_core::credentials::permission_presets_rpc::register_permission_preset_methods(
         remote,
-        &girder_core::permission_presets_rpc::default_catalogue(),
-        girder_core::permission_presets_rpc::DEFAULT_PRESET,
+        &girder_core::credentials::permission_presets_rpc::default_catalogue(),
+        girder_core::credentials::permission_presets_rpc::DEFAULT_PRESET,
     );
     // `pluginMarket.*`: the market index this build already parses, reachable from a client.
-    let market = Arc::new(girder_core::plugin_market_rpc::MarketCatalog::new());
-    girder_core::plugin_market_rpc::register_market_methods(remote, &market);
+    let market = Arc::new(girder_core::boot::plugin_market_rpc::MarketCatalog::new());
+    girder_core::boot::plugin_market_rpc::register_market_methods(remote, &market);
     // `workspace.initializeDefault`: creates the first workspace, and only when there is none. The
     // directory is the deployment's, taken from the same sessions root the catalog reads -- a server
     // that picked one itself would be writing into a path nobody chose.
@@ -989,10 +1065,10 @@ fn print_schema(format: Option<&str>) -> Result<()> {
         Some("openapi") => {
             // The three catalogues are separate because the namespaces were written separately; a document
             // that showed one of them would be a document of a third of the surface.
-            let mut catalogue = girder_core::api_session::session_catalogue();
+            let mut catalogue = girder_core::api::session::session_catalogue();
             for other in [
-                girder_core::api_config::config_catalogue(),
-                girder_core::api_job::job_catalogue(),
+                girder_core::api::config::config_catalogue(),
+                girder_core::api::job::job_catalogue(),
             ] {
                 for method in other.methods {
                     catalogue.add(method);
@@ -1090,25 +1166,44 @@ fn print_schema(format: Option<&str>) -> Result<()> {
 ///
 /// Extracted from `serve` rather than left inline: that function had reached the length the linter enforces, and a
 /// block that reads a route table is a function whether or not it has a name.
+struct ResolvedModelLimits {
+    window: Option<u64>,
+    output: Option<u32>,
+    images: bool,
+}
+
+fn model_limits_for(
+    routes: &girder_core::RouteRegistry,
+    model: &str,
+) -> Option<ResolvedModelLimits> {
+    let Ok((_route, resolved)) = routes.resolve(model, None) else {
+        return None;
+    };
+    let output = resolved
+        .max_tokens
+        .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
+    Some(ResolvedModelLimits {
+        window: resolved.context_window,
+        output,
+        images: resolved
+            .input_modalities
+            .contains(&girder_core::Modality::Image),
+    })
+}
+
 fn apply_model_limits(
     runtime: &mut Arc<girder_core::AgentRuntime>,
     routes: &Arc<girder_core::RouteRegistry>,
     model: &str,
 ) {
-    let Ok((_route, resolved)) = routes.resolve(model, None) else {
+    let Some(limits) = model_limits_for(routes, model) else {
         return;
     };
-    let output = resolved
-        .max_tokens
-        .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX));
-    girder_core::AgentRuntime::set_model_limits(runtime, resolved.context_window, output);
+    girder_core::AgentRuntime::set_model_limits(runtime, limits.window, limits.output);
     // The route states which modalities it takes. A text-only route given an image does not fail --
     // it drops the block and answers about what it never saw -- so this is read here rather than
     // discovered from a provider's complaint.
-    let images = resolved
-        .input_modalities
-        .contains(&girder_core::Modality::Image);
-    girder_core::AgentRuntime::set_accepts_images(runtime, images);
+    girder_core::AgentRuntime::set_accepts_images(runtime, limits.images);
 }
 
 /// Prints how healthy this deployment's sessions are.
@@ -1145,6 +1240,52 @@ fn print_health() {
     for (kind, count) in counts {
         println!("  {kind}: {count}");
     }
+}
+
+/// The MCP servers written under `mcp.servers`. A missing or unreadable list is no servers.
+fn configured_mcp_servers() -> Vec<girder_core::mcp::config::ServerConfig> {
+    let settings: Arc<dyn girder_core::SettingsStore> = Arc::new(
+        girder_core::FileSettingsStore::open(sessions_root().join("settings.json")),
+    );
+    match settings.get("mcp.servers") {
+        Some(value) => girder_core::parse_mcp_config(&value).unwrap_or_else(|error| {
+            eprintln!("[mcp] `mcp.servers` was not used: {error}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    }
+}
+
+/// Starts each enabled server and registers its tools on the same registry the model calls.
+async fn mount_mcp(
+    tools: &girder_core::ToolRegistry,
+) -> (
+    Arc<Vec<girder_core::mcp::config::ServerConfig>>,
+    Arc<girder_core::McpRegistry>,
+) {
+    let configs = configured_mcp_servers();
+    let registry = Arc::new(girder_core::McpRegistry::new());
+    for server in configs.iter().filter(|server| server.enabled) {
+        let transport = Arc::new(girder_core::McpSubprocess::new(
+            server.command.clone(),
+            server.args.clone(),
+        ));
+        if registry.add(server.name.clone(), transport).is_err() {
+            eprintln!("[mcp] {} skipped (the name is already used)", server.name);
+            continue;
+        }
+        match registry.start(&server.name).await {
+            Ok(catalogue) => {
+                eprintln!("[mcp] {}: {} tool(s)", server.name, catalogue.tools.len());
+            }
+            Err(error) => eprintln!("[mcp] {}: failed ({error})", server.name),
+        }
+    }
+    let registered = girder_core::register_mcp_tools(tools, &registry);
+    if registered > 0 {
+        eprintln!("[mcp] registered {registered} tool(s)");
+    }
+    (Arc::new(configs), registry)
 }
 
 /// Starts the MCP servers the settings document configures, and reports what each one offered.
@@ -1444,15 +1585,15 @@ fn call_config_table() -> girder_core::ConfigTable {
 ///
 /// `boot_app_gap` implements upstream's `readEnvLayer`/`loadLayeredEnv` as pure functions: the text is
 /// read here, and every judgement about whether a file may set a variable is made by
-/// [`girder_core::boot_app_gap::check_env_layer`]. That split is why the refusal can be tested at all,
+/// [`girder_core::boot::app::check_env_layer`]. That split is why the refusal can be tested at all,
 /// and why this type carries values rather than reopening the files when it reports them.
 struct EnvLayers {
     /// The variables this run would see, ranked process > project > harness home.
-    snapshot: girder_core::boot_app_gap::EnvSnapshot,
+    snapshot: girder_core::boot::app::EnvSnapshot,
     /// The invoking directory's layer, when it has a `.env`.
-    project: Option<girder_core::boot_app_gap::EnvLayer>,
+    project: Option<girder_core::boot::app::EnvLayer>,
     /// The harness home's layer, when it has a `.env` and is not the invoking directory.
-    home: Option<girder_core::boot_app_gap::EnvLayer>,
+    home: Option<girder_core::boot::app::EnvLayer>,
 }
 
 /// The harness home, spelled the way the rest of the harness resolves it.
@@ -1475,7 +1616,7 @@ fn harness_home() -> String {
 ///
 /// A missing file is no layer — that is what a fresh clone looks like, and reporting it would make
 /// every clone look misconfigured. Everything else is decided by
-/// [`girder_core::boot_app_gap::check_env_layer`], including the rule that matters: a `.env` travels
+/// [`girder_core::boot::app::check_env_layer`], including the rule that matters: a `.env` travels
 /// with a repository, so it may not set a variable that decides how the process starts, where its code
 /// and instructions load from, or where its requests go. `LD_PRELOAD` is the example the policy names —
 /// a clone that could set it would choose which shared library loads into the parent process — and the
@@ -1487,7 +1628,7 @@ fn harness_home() -> String {
 fn read_env_layer(
     dir: &str,
     home: &str,
-) -> Result<Option<girder_core::boot_app_gap::EnvLayer>, girder_core::Finding> {
+) -> Result<Option<girder_core::boot::app::EnvLayer>, girder_core::Finding> {
     let path = std::path::Path::new(dir).join(".env");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -1501,17 +1642,17 @@ fn read_env_layer(
             ));
         }
     };
-    girder_core::boot_app_gap::check_env_layer(dir, home, &text)
+    girder_core::boot::app::check_env_layer(dir, home, &text)
         .map(Some)
         .map_err(|refusal| match refusal.kind {
-            girder_core::boot_app_gap::EnvErrorKind::Refused => girder_core::Finding::fatal(
+            girder_core::boot::app::EnvErrorKind::Refused => girder_core::Finding::fatal(
                 format!(
                     "`{}` sets `{}`, which only the launching environment may set",
                     refusal.path, refusal.name
                 ),
                 refusal.remedy,
             ),
-            girder_core::boot_app_gap::EnvErrorKind::Unreadable => girder_core::Finding::fatal(
+            girder_core::boot::app::EnvErrorKind::Unreadable => girder_core::Finding::fatal(
                 format!("`{}` cannot be read", refusal.path),
                 refusal.remedy,
             ),
@@ -1524,7 +1665,7 @@ fn read_env_layer(
 ///
 /// Returns the fatal finding for a layer that may not be applied, or that cannot be read.
 fn boot_env_layers() -> Result<EnvLayers, girder_core::Finding> {
-    use girder_core::boot_app_gap as env;
+    use girder_core::boot::app as env;
     let dir =
         std::env::current_dir().map_or_else(|_| ".".to_owned(), |path| path.display().to_string());
     let home = harness_home();
@@ -1557,7 +1698,7 @@ fn boot_env_layers() -> Result<EnvLayers, girder_core::Finding> {
 fn boot_env_report(layers: &EnvLayers) -> Option<String> {
     use std::fmt::Write as _;
 
-    use girder_core::boot_app_gap::{EnvSource, is_bootstrap_only, is_home_layer_route_name};
+    use girder_core::boot::app::{EnvSource, is_bootstrap_only, is_home_layer_route_name};
 
     if layers.project.is_none() && layers.home.is_none() {
         return None;
@@ -1646,7 +1787,7 @@ fn probe_tool_names() -> Vec<String> {
 /// rows a loader reported: a required entry that did not activate is fatal, and the same list carried
 /// as a warning when only optional ones are inactive. The loader this build has is not a Cordis entry
 /// tree, so the rows have to be derived — one row per
-/// [`girder_core::boot_app_gap::REQUIRED_STARTUP_ENTRY_IDS`] id whose tools this build registers.
+/// [`girder_core::boot::app::REQUIRED_STARTUP_ENTRY_IDS`] id whose tools this build registers.
 ///
 /// The mapping is the point. Each id names a capability the list is *for*: `tool-executor-native` is
 /// the native tools, `tool-executor-ptc` the programmatic ones, `webserver` the job tools,
@@ -1669,8 +1810,8 @@ fn probe_tool_names() -> Vec<String> {
 /// Ids this build has no capability for at all (`acp`, `modules`, `connection`, `sdk-jsonrpc-server`)
 /// are not audited: reporting a capability the deployment never offered would make every start look
 /// broken for a reason nobody can fix.
-fn audit_tool_surface(tool_names: &[String]) -> girder_core::boot_app_gap::StartupVerdict {
-    use girder_core::boot_app_gap::{InactiveEntry, InactiveOutcome, REQUIRED_STARTUP_ENTRY_IDS};
+fn audit_tool_surface(tool_names: &[String]) -> girder_core::boot::app::StartupVerdict {
+    use girder_core::boot::app::{InactiveEntry, InactiveOutcome, REQUIRED_STARTUP_ENTRY_IDS};
 
     /// What an entry id's inactivity means.
     #[derive(Clone, Copy)]
@@ -1760,13 +1901,13 @@ fn audit_tool_surface(tool_names: &[String]) -> girder_core::boot_app_gap::Start
             },
         });
     }
-    girder_core::boot_app_gap::audit_startup_entries("girder", &inactive)
+    girder_core::boot::app::audit_startup_entries("girder", &inactive)
 }
 
 /// Renders the startup audit's verdict as lines, or `None` when every claimed entry activated.
 ///
-/// The text is the module's own, not a rewrite: [`girder_core::boot_app_gap::startup_diagnostic`] and
-/// [`girder_core::boot_app_gap::activation_diagnostic`] are what the upstream suites pin verbatim, and
+/// The text is the module's own, not a rewrite: [`girder_core::boot::app::startup_diagnostic`] and
+/// [`girder_core::boot::app::activation_diagnostic`] are what the upstream suites pin verbatim, and
 /// a second phrasing here would be the copy that drifts.
 fn audit_tool_report(tool_names: &[String]) -> Option<String> {
     let verdict = audit_tool_surface(tool_names);
@@ -1943,6 +2084,17 @@ fn register_capability_tools(
 /// A deployment decision rather than a library default: what to drop when a conversation outgrows the window is not
 /// something a library should decide on an operator's behalf. The default trigger is high enough that a normal
 /// conversation never compacts, so a truncation is a deliberate threshold rather than an accident of counting.
+fn session_permissions(mode: &str) -> std::sync::Arc<girder_core::PermissionState> {
+    let mut state = girder_core::PermissionState::default();
+    let knobs = match girder_core::parse_mode(mode) {
+        Some(girder_core::SandboxMode::ReadOnly) => girder_core::Knobs::read_only(),
+        Some(girder_core::SandboxMode::Full) => girder_core::Knobs::unrestricted(),
+        _ => girder_core::Knobs::workspace(),
+    };
+    state.set_knobs(knobs);
+    std::sync::Arc::new(state)
+}
+
 fn compaction_policy() -> girder_core::CompactionPolicy {
     girder_core::CompactionPolicy {
         trigger_messages: std::env::var("GIRDER_COMPACT_AFTER")
@@ -1970,19 +2122,6 @@ fn session_catalog() -> Arc<dyn girder_core::SessionCatalog> {
     Arc::new(girder_core::DirectoryCatalog::new(root))
 }
 
-/// The live provider when a key is present, the scripted one otherwise.
-fn resolve_provider(cli: &Cli) -> Arc<dyn girder_core::LlmProvider> {
-    if let Ok(provider) = girder_core::provider_from_env() {
-        eprintln!("[provider] live: {}", cli.model);
-        provider
-    } else {
-        eprintln!("[provider] offline (set DEEPSEEK_API_KEY for real turns)");
-        Arc::new(OfflineProvider {
-            tool: cli.tool.clone(),
-        })
-    }
-}
-
 /// Runs one prompt through the loop and prints the answer.
 /// Parses and validates `--subagent-model` values.
 ///
@@ -1995,20 +2134,43 @@ fn resolve_provider(cli: &Cli) -> Arc<dyn girder_core::LlmProvider> {
 /// A value with no `/`, or a route set `assert_allowed_routes` refuses: an empty half, or a duplicate.
 fn validate_subagent_models(
     specs: &[String],
-) -> Result<Vec<girder_core::subagent_final_gap::AllowedModelRoute>> {
+) -> Result<Vec<girder_core::subagent::subagent_final::AllowedModelRoute>> {
     let routes = specs
         .iter()
         .map(|spec| {
             let (provider, model) = spec.split_once('/').ok_or_else(|| {
                 anyhow::anyhow!("`--subagent-model {spec}` must be PROVIDER/MODEL")
             })?;
-            girder_core::subagent_final_gap::AllowedModelRoute::new(provider, model)
+            girder_core::subagent::subagent_final::AllowedModelRoute::new(provider, model)
                 .map_err(|error| anyhow::anyhow!("`--subagent-model {spec}`: {error}"))
         })
         .collect::<Result<Vec<_>>>()?;
-    girder_core::subagent_final_gap::assert_allowed_routes(&routes)
+    girder_core::subagent::subagent_final::assert_allowed_routes(&routes)
         .map_err(|error| anyhow::anyhow!("`--subagent-model`: {error}"))?;
     Ok(routes)
+}
+
+/// Rules for `workspace-write`: reads run, a command or a file change waits for a person.
+///
+/// The allow-all rule is added first and the ask rules after it, because the newest matching rule
+/// wins. A later allow would swallow the ask.
+fn workspace_write_rules() -> girder_core::ApprovalRules {
+    let mut rules = girder_core::ApprovalRules::new();
+    rules.add(girder_core::ApprovalRule {
+        tool: "*".to_owned(),
+        contains: Vec::new(),
+        action: girder_core::ApprovalAction::Allow,
+        reason: "a call that does not change files runs without a prompt".to_owned(),
+    });
+    for tool in ["bash", "write", "edit", "patch"] {
+        rules.add(girder_core::ApprovalRule {
+            tool: tool.to_owned(),
+            contains: Vec::new(),
+            action: girder_core::ApprovalAction::Ask,
+            reason: "workspace-write asks before a command or a file change".to_owned(),
+        });
+    }
+    rules
 }
 
 async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
@@ -2024,7 +2186,17 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
 
     let session: Arc<dyn girder_core::Session> = match &cli.session {
         Some(path) => Arc::new(SessionStore::new(path)),
-        None => Arc::new(MemorySession::new()),
+        None => {
+            let path = sessions_root().join(format!(
+                "prompt-{}.jsonl.zst",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis())
+                    .unwrap_or(0)
+            ));
+            eprintln!("[session] {}", path.display());
+            Arc::new(SessionStore::new(path))
+        }
     };
 
     // The same tool set the server offers, from one function: a prompt run through the CLI used to have three tools
@@ -2035,10 +2207,17 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     // `&ToolRegistry`, and converting first would leave the traced `subagent` tool unregistered while the plain one it
     // replaces is absent too.
     let tools = Arc::new(ToolRegistry::new());
-    register_tools(&tools, &workspace, &cli.sandbox)?;
+    let (directory, plans) = register_tools(&tools, &workspace, &cli.sandbox)?;
     // The capability tools need a goal state; a prompt run gets its own, which is the same lifetime as the run.
     let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
     register_capability_tools(&tools, &workspace, &goals);
+    let _mcp = mount_mcp(&tools).await;
+
+    tokio::spawn(async {
+        if let Err(error) = girder_core::llm::listing_fetch::refresh_from_env().await {
+            eprintln!("[models] {error}");
+        }
+    });
 
     let provider = build_provider(&cli);
 
@@ -2052,6 +2231,32 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     );
     context.max_turns = cli.max_turns;
     context.max_depth = cli.max_depth;
+    // workspace-write asks before a command or a file change. danger-full-access does not ask, and
+    // read-only has nothing to ask about because the path policy already refuses the write.
+    if cli.sandbox == "workspace-write" {
+        context.approver = Some(std::sync::Arc::new(girder_core::StdinApprover::new()));
+        context.approval_rules = Some(std::sync::Arc::new(workspace_write_rules()));
+    }
+    // The same history policy, image capability, read cache, and per-tool deadline the server loop
+    // installs. A one-shot prompt used to keep every message and treat every route as text-only.
+    context.permissions = Some(session_permissions(&cli.sandbox));
+    context.working_directory = directory;
+    context.compaction = Some(compaction_policy());
+    context.goal = Some(std::sync::Arc::clone(&goals));
+    let routes = build_routes(&cli.model);
+    if let Some(limits) = model_limits_for(&routes, &cli.model) {
+        context.accepts_images = limits.images;
+        context.context_window = limits.window;
+        context.max_output_tokens = limits.output;
+    }
+    let mut context = context
+        .with_tool_cache(32)
+        .with_tool_timeout(girder_core::core::tool_watchdog::Policy::default())
+        .with_tool_budget(std::sync::Arc::new(girder_core::FileSettingsStore::open(
+            sessions_root().join("settings.json"),
+        )));
+    context.refine_titles = true;
+    context.plan_sessions = Some(plans);
     // Validated once, at startup. The routes are parsed into the typed form the module owns rather
     // than kept as strings: `assert_allowed_routes` is what refuses a duplicate or an empty half, and
     // running it here is what turns a mistyped route into a startup failure instead of a tool error
@@ -2065,12 +2270,17 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     // The traced variant replaces the plain one rather than joining it: both are named `subagent`, and two tools under
     // one name would leave whichever was registered last silently shadowing the other. Tracing is what gives
     // `subagent_list` and `subagent_wait` anything to report.
+    let subagents = girder_core::SubagentRegistry::shared();
     girder_core::register_subagent_tools(
         &tools,
-        girder_core::SubagentRegistry::shared(),
+        Arc::clone(&subagents),
         Arc::clone(&context),
         cli.max_depth,
     );
+    tools.register(girder_core::subagent_interrupt_tool(
+        Arc::clone(&subagents),
+        subagents.cancellers(),
+    ));
 
     let mut stream = Box::pin(girder_core::run(context, prompt, cancel));
     let mut failed = None;

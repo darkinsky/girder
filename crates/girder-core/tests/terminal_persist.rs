@@ -27,8 +27,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/terminal_persist.rs"]
-mod terminal_persist;
+#[path = "../src/terminal/persist.rs"]
+pub mod terminal_persist;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -537,4 +537,10 @@ fn the_stored_file_holds_the_transcript_as_plain_text() {
     fixture.store.save("terminal-1", "hello\n").expect("saved");
     let bytes = std::fs::read(fixture.root.join("terminal-1.log")).expect("read");
     assert_eq!(bytes, b"hello\n");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_persist as persist;
 }

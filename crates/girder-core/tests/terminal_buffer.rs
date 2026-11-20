@@ -9,8 +9,8 @@
 //! file as it is written. Compiling the file directly also means this suite fails if the module stops being
 //! self-contained.
 
-#[path = "../src/terminal_buffer.rs"]
-mod terminal_buffer;
+#[path = "../src/terminal/buffer.rs"]
+pub mod terminal_buffer;
 
 use terminal_buffer::Buffer;
 
@@ -288,4 +288,10 @@ fn appending_nothing_changes_nothing() {
     assert_eq!(buffer.total_bytes(), 4);
     assert_eq!(buffer.first_readable(), 0);
     assert_eq!(read_to_end(&buffer, 0), "kept");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_buffer as buffer;
 }

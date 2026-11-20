@@ -12,8 +12,8 @@
 //! against it as written even before the crate root wires it in. It resolves `girder_core::…` through
 //! the alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/event_index.rs"]
-mod event_index;
+#[path = "../src/core/event_index.rs"]
+pub mod event_index;
 
 use girder_core::{SessionEvent, ToolCallId, TurnEndReason};
 
@@ -401,4 +401,10 @@ fn a_long_run_of_empty_turns_stays_addressable() {
         assert_eq!(index.turn_of(start), Some(turn));
         assert_eq!(index.turn_of(start + 1), Some(turn));
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::event_index as event_index;
 }

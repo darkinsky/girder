@@ -12,7 +12,7 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from
 //! `lib.rs` is a separate change. When it is exported, the import below can become
-//! `use girder_core::llm_openai::{...}`.
+//! `use girder_core::llm::openai::{...}`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

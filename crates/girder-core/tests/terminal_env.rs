@@ -34,8 +34,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/terminal_env.rs"]
-mod terminal_env;
+#[path = "../src/terminal/env.rs"]
+pub mod terminal_env;
 
 use std::path::{Path, PathBuf};
 
@@ -620,4 +620,10 @@ fn the_environment_is_cloneable_and_comparable() {
     let copy = environment.clone();
     assert_eq!(environment, copy);
     assert_eq!(environment.shells.len(), copy.shells.len());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_env as env;
 }

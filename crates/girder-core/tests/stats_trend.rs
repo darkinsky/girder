@@ -14,7 +14,7 @@
 //!
 //! The trend module is not exported from the crate root yet; that wiring is a separate change to `lib.rs`.
 //! Compiling the exact source file here -- rather than a copy -- keeps these tests exercising the same code a
-//! consumer will reach through `girder_core::stats_trend`.
+//! consumer will reach through `girder_core::telemetry::stats_trend`.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,8 +23,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/stats_trend.rs"]
-mod stats_trend;
+#[path = "../src/telemetry/stats_trend.rs"]
+pub mod stats_trend;
 
 use stats_trend::{Point, Trend, analyze, compare, outliers};
 
@@ -331,4 +331,10 @@ fn a_window_can_be_summarised_flagged_and_compared() {
     );
     // And the rise is visible in the comparison, tempered by the same outlier sitting in the mean.
     assert!(comparison.change_pct > 0.0, "got {}", comparison.change_pct);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod telemetry {
+    pub use super::stats_trend as stats_trend;
 }

@@ -8,8 +8,8 @@
 //! The module is included by path rather than through the crate root, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/stream_stall.rs"]
-mod stream_stall;
+#[path = "../src/llm/stream_stall.rs"]
+pub mod stream_stall;
 
 use stream_stall::{Detector, Health, Policy};
 
@@ -377,4 +377,10 @@ fn a_wait_that_rewinds_is_reported_as_zero_not_wrapped() {
         Policy::new(120_000, 30_000).check(&detector, 1_000),
         Health::WaitingForFirst { elapsed_ms: 0 }
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::stream_stall as stream_stall;
 }

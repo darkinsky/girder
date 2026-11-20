@@ -21,8 +21,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/canonical.rs"]
-mod canonical;
+#[path = "../src/util/canonical.rs"]
+pub mod canonical;
 
 use canonical::{Encoder, canonical_json, key_of};
 use serde_json::{Value, json};
@@ -325,4 +325,10 @@ fn key_of_handles_unicode_by_byte_length() {
     // point too far.
     assert_eq!(key_of(&["你好"]), "1:6:你好");
     assert_ne!(key_of(&["你"]), key_of(&["你好"]));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod util {
+    pub use super::canonical as canonical;
 }

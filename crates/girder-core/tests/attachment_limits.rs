@@ -7,8 +7,8 @@
 //! against the checker as written even before the crate root wires it in. That is also why nothing
 //! here reaches for the rest of `girder_core`: the only dependency is the module itself.
 
-#[path = "../src/attachment_limits.rs"]
-mod attachment_limits;
+#[path = "../src/attachment/limits.rs"]
+pub mod attachment_limits;
 
 use attachment_limits::{Policy, RejectReason, Verdict, check, is_image};
 
@@ -391,4 +391,10 @@ fn check_does_not_count_attachments_itself() {
         check(&policy, "a.png", "image/png", 10, 99),
         Verdict::Reject(RejectReason::SessionFull { limit }) if limit == policy.max_per_session
     ));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod attachment {
+    pub use super::attachment_limits as limits;
 }

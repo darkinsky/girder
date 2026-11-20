@@ -17,8 +17,8 @@
 //! against it as written even before the crate root wires it in. It names the crate through
 //! `::girder_core`, which the library alias lets resolve from either side.
 
-#[path = "../src/session_health.rs"]
-mod session_health;
+#[path = "../src/session/health.rs"]
+pub mod session_health;
 
 use girder_core::{ContentBlock, SessionEvent, ToolCallId, TurnEndReason};
 
@@ -519,4 +519,10 @@ fn duplicate_ids_are_reported_once_each_and_survive_as_an_orphan_check() {
             .iter()
             .any(|issue| issue.kind == Kind::OutOfOrder && issue.severity == Severity::Warning)
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_health as health;
 }

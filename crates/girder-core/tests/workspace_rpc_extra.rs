@@ -32,12 +32,12 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/workspace_rpc_extra.rs"]
-mod workspace_rpc_extra;
+#[path = "../src/workspace/rpc_extra.rs"]
+pub mod workspace_rpc_extra;
 
 use std::sync::Arc;
 
-use girder_core::api_config::WorkspaceRegistry;
+use girder_core::api::config::WorkspaceRegistry;
 use girder_core::{
     BoxFut, ReadOnly, RemoteCall, RemoteError, RemoteRegistry, SessionCatalog, SessionRecord,
 };
@@ -1048,4 +1048,10 @@ async fn every_method_declares_a_write_so_a_read_only_policy_refuses_it() {
 #[test]
 fn the_declared_access_is_a_write() {
     assert_eq!(DECLARED_ACCESS, girder_core::Access::Write);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod workspace {
+    pub use super::workspace_rpc_extra as rpc_extra;
 }

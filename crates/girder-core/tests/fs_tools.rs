@@ -11,8 +11,8 @@
 //! compile against the tool as written even before the crate root wires it in. `lib.rs` aliases the
 //! crate to itself, so the module's `girder_core::…` imports resolve here too.
 
-#[path = "../src/fs_tools.rs"]
-mod fs_tools;
+#[path = "../src/fs/tools.rs"]
+pub mod fs_tools;
 
 use std::path::{Path, PathBuf};
 
@@ -959,4 +959,10 @@ async fn the_root_guard_holds_when_the_root_is_reached_through_a_link() {
     assert!(dir.join("a.txt").exists());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&outside);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod fs {
+    pub use super::fs_tools as tools;
 }

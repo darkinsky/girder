@@ -24,7 +24,7 @@
 //!
 //! The table is not exported from the crate root yet; that wiring is a separate change to `lib.rs`.
 //! Compiling the exact source file here — rather than a copy — keeps these tests exercising the same
-//! code a consumer will reach through `girder_core::stream_method`.
+//! code a consumer will reach through `girder_core::llm::stream_method`.
 
 #![allow(
     clippy::unwrap_used,
@@ -32,8 +32,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/stream_method.rs"]
-mod stream_method;
+#[path = "../src/llm/stream_method.rs"]
+pub mod stream_method;
 
 use std::marker::PhantomData;
 
@@ -403,4 +403,10 @@ fn a_shared_table_serves_two_threads() {
 
     // Every open was matched by a close, so nothing is left behind.
     assert_eq!(streams.open_count(), 0);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::stream_method as stream_method;
 }

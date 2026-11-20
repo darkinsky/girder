@@ -29,8 +29,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/mcp_config.rs"]
-mod mcp_config;
+#[path = "../src/mcp/config.rs"]
+pub mod mcp_config;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -464,4 +464,10 @@ fn the_parse_feeds_the_start() {
     assert_eq!(started[0].failed, None);
     assert_eq!((started[1].name.as_str(), started[1].tools), ("off", 0));
     assert_eq!(started[1].failed, None);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod mcp {
+    pub use super::mcp_config as config;
 }

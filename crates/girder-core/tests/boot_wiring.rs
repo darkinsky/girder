@@ -5,7 +5,7 @@
 //!
 //! `tests/boot_app_gap.rs` compiles the module's source by path, because when it was written the
 //! module was not declared in `lib.rs`. It is declared now, so these tests import
-//! `girder_core::boot_app_gap` and exercise the code the binary actually links. That difference
+//! `girder_core::boot::app` and exercise the code the binary actually links. That difference
 //! matters for exactly the failure this file is about: a module that compiles in a test binary but
 //! is unreachable from the crate would pass every `#[path]` test and still be dead at runtime.
 //!
@@ -17,7 +17,7 @@
 //! [`BOOTSTRAP_PREFIXES`]. A test that only checked one name would pass while the list was emptied, so
 //! these walk the whole list, and the suite's real subject is that the list is consulted at all.
 
-use girder_core::boot_app_gap::{
+use girder_core::boot::app::{
     BOOTSTRAP_NAMES, BOOTSTRAP_PREFIXES, EnvErrorKind, EnvSource, InactiveEntry, InactiveOutcome,
     REQUIRED_STARTUP_ENTRY_IDS, audit_startup_entries, check_env_layer, is_bootstrap_only,
     is_home_layer_route_name, layer_env, parse_env,

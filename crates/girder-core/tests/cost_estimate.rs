@@ -11,8 +11,8 @@
 //! wiring `pub mod cost_estimate;` belongs to the integrator. `cost_estimate` imports nothing from
 //! the crate, so it needs no shim here — unlike `tests/token_meter.rs`, which does.
 
-#[path = "../src/cost_estimate.rs"]
-mod cost_estimate;
+#[path = "../src/llm/cost_estimate.rs"]
+pub mod cost_estimate;
 
 use cost_estimate::{
     Batch, Estimate, Price, TOKENS_PER_MILLION, Table, Usage, estimate, estimate_batch,
@@ -372,4 +372,10 @@ fn estimate_is_reusable_and_does_not_mutate_the_table() {
     let second: Option<Estimate> = estimate(&table, &usage("deepseek-chat", 1_000_000, 0));
     assert_eq!(first, second);
     assert_eq!(table, before);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::cost_estimate as cost_estimate;
 }

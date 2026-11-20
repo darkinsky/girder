@@ -13,8 +13,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-#[path = "../src/provider_health.rs"]
-mod provider_health;
+#[path = "../src/llm/provider_health.rs"]
+pub mod provider_health;
 
 use provider_health::{Health, HealthTracker};
 
@@ -347,4 +347,10 @@ fn providers_are_tracked_independently() {
         Health::Unavailable { .. }
     ));
     assert_eq!(tracker.health("beta", 1_000), Health::Healthy);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::provider_health as provider_health;
 }

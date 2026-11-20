@@ -9,8 +9,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the redactor as written even before the crate root wires it in. That is also why nothing
 // here reaches for the rest of `girder_core`.
-#[path = "../src/credential_ref.rs"]
-mod credential_ref;
+#[path = "../src/credentials/credential_ref.rs"]
+pub mod credential_ref;
 
 use credential_ref::{CredentialRef, KNOWN_PREFIXES, RefError, redact};
 
@@ -310,4 +310,10 @@ fn a_credential_next_to_punctuation_is_still_found() {
     let (output, count) = redact(r#"{"api_key":"sk-abcdefghijklmnop","x":1}"#);
     assert_eq!(count, 1, "got {output}");
     assert_eq!(output, r#"{"api_key":"sk-abcd...","x":1}"#);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod credentials {
+    pub use super::credential_ref as credential_ref;
 }

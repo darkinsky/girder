@@ -33,8 +33,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/terminal_attach_rpc.rs"]
-mod terminal_attach_rpc;
+#[path = "../src/terminal/attach_rpc.rs"]
+pub mod terminal_attach_rpc;
 
 use girder_core::TerminalFanout as Fanout;
 
@@ -318,4 +318,10 @@ fn a_reconnected_viewer_continues_without_repeating_the_past() {
     assert_eq!(frames[0].text, "b");
     assert_eq!(frames[0].from, saved);
     assert_eq!(frames[0].to, saved + 1);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_attach_rpc as attach_rpc;
 }

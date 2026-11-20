@@ -8,8 +8,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/session_filter.rs"]
-mod session_filter;
+#[path = "../src/session/filter.rs"]
+pub mod session_filter;
 
 use session_filter::{Filter, Order, SessionSummary, apply};
 
@@ -412,4 +412,10 @@ fn apply_preserves_the_selected_values() {
     let kept = apply(&Filter::default(), vec![row.clone()], Order::OldestFirst);
 
     assert_eq!(kept, vec![row]);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_filter as filter;
 }

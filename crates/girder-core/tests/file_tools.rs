@@ -77,6 +77,26 @@ async fn a_read_range_returns_only_those_lines() {
 }
 
 #[tokio::test]
+async fn a_read_resolves_a_relative_path_from_the_session_directory() {
+    let dir = scratch("cwd");
+    std::fs::create_dir(dir.join("sub")).expect("created");
+    std::fs::write(dir.join("a.txt"), "root\n").expect("written");
+    std::fs::write(dir.join("sub").join("a.txt"), "nested\n").expect("written");
+    let tool = read_tool(dir.clone());
+    let mut ctx = context(None);
+    ctx.cwd = Some(dir.join("sub"));
+
+    let result = (tool.execute)(serde_json::json!({"path": "a.txt"}), ctx)
+        .await
+        .expect("read");
+
+    let text = text_of(&result);
+    assert!(text.contains("nested"), "{text}");
+    assert!(!text.contains("root"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn a_read_of_a_missing_file_is_a_result_not_an_error() {
     let dir = scratch("read-missing");
     let tool = read_tool(dir.clone());
@@ -653,4 +673,48 @@ async fn an_ambiguous_edit_names_the_lines_it_found() {
         "the file is untouched"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_read_only_session_refuses_a_write_inside_the_workspace() {
+    let dir = scratch("readonly");
+    let mut ctx = context(None);
+    let mut state = girder_core::PermissionState::default();
+    state.set_knobs(girder_core::Knobs::read_only());
+    ctx.permissions = Some(Arc::new(state));
+    let tool = write_tool(dir.clone());
+
+    let result = (tool.execute)(
+        serde_json::json!({"path": "a.txt", "content": "no"}),
+        ctx,
+    )
+    .await
+    .expect("write");
+
+    assert!(result.is_error);
+    assert!(text_of(&result).contains("read-only"), "{}", text_of(&result));
+    assert!(!dir.join("a.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_approved_write_may_leave_the_workspace() {
+    let dir = scratch("grant-home");
+    let outside = scratch("grant-out");
+    let mut ctx = context(None);
+    ctx.outside_granted = true;
+    let tool = write_tool(dir.clone());
+    let path = outside.join("a.txt");
+
+    let result = (tool.execute)(
+        serde_json::json!({"path": path, "content": "out"}),
+        ctx,
+    )
+    .await
+    .expect("write");
+
+    assert!(!result.is_error, "{}", text_of(&result));
+    assert_eq!(std::fs::read_to_string(&path).expect("written"), "out");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&outside);
 }

@@ -18,8 +18,8 @@
 //! written, before the crate root wires it in. It names the crate through `::girder_core`, which
 //! the library alias lets resolve from either side.
 
-#[path = "../src/tool_retry_plan.rs"]
-mod tool_retry_plan;
+#[path = "../src/core/tool_retry_plan.rs"]
+pub mod tool_retry_plan;
 
 use tool_retry_plan::{Failure, Kind, Plan, plan};
 
@@ -322,4 +322,10 @@ fn a_reason_without_a_tool_message_does_not_invent_one() {
         why.contains("no message"),
         "an empty message is reported as absent: {why}"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_retry_plan as tool_retry_plan;
 }

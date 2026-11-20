@@ -11,8 +11,8 @@
 //! not be run against the file as it is written. Compiling the file directly also means this suite
 //! fails if the module stops being self-contained.
 
-#[path = "../src/terminal_attach.rs"]
-mod terminal_attach;
+#[path = "../src/terminal/attach.rs"]
+pub mod terminal_attach;
 
 use terminal_attach::{Attachment, Chunk, DEFAULT_BACKLOG_BYTES, Fanout};
 
@@ -450,4 +450,10 @@ fn a_fanout_viewer_that_stops_polling_does_not_stall_the_broadcast() {
         assert!(fanout.poll(watcher).is_some());
     }
     assert_eq!(fanout.offset(), 11_000);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_attach as attach;
 }

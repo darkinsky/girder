@@ -13,8 +13,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/session_replay.rs"]
-mod session_replay;
+#[path = "../src/session/replay.rs"]
+pub mod session_replay;
 
 use girder_core::{SessionEvent, TurnEndReason};
 use session_replay::{Diff, Snapshot, diff, divergence_turn, replay_until, snapshot};
@@ -411,4 +411,10 @@ fn snapshots_that_differ_imply_logs_that_differ() {
     let after = snapshot(&fork);
     assert_ne!(before, after);
     assert_eq!(before.events, diff(&parent, &fork).common_prefix);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_replay as replay;
 }

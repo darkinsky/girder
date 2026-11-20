@@ -8,8 +8,8 @@
 //!
 //! The module is included by path rather than through the crate's re-exports, so these tests
 //! compile against it as written even before the crate root wires it in.
-#[path = "../src/tool_schema_export.rs"]
-mod tool_schema_export;
+#[path = "../src/core/tool_schema_export.rs"]
+pub mod tool_schema_export;
 
 use std::sync::Arc;
 
@@ -318,4 +318,10 @@ fn ordering_is_by_name_regardless_of_registration_order() {
         to_openai(&forward).to_string(),
         to_openai(&backward).to_string()
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_schema_export as tool_schema_export;
 }

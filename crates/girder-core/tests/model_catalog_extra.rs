@@ -18,8 +18,8 @@
 //! has not been wired to it yet. It resolves `girder_core::…` through the alias the library declares
 //! for itself, which is why the same source builds here.
 
-#[path = "../src/model_catalog_extra.rs"]
-mod model_catalog_extra;
+#[path = "../src/llm/model_catalog_extra.rs"]
+pub mod model_catalog_extra;
 
 use model_catalog_extra::{Capabilities, ModelEntry, filter_by, to_catalog_json};
 
@@ -421,4 +421,10 @@ fn equal_keys_keep_the_callers_order() {
     assert_eq!(matched.len(), 2);
     assert_eq!(matched[0].capabilities, second.capabilities);
     assert_eq!(matched[1].capabilities, first.capabilities);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::model_catalog_extra as model_catalog_extra;
 }

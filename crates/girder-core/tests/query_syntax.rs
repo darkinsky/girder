@@ -10,8 +10,8 @@
 //! The module is included by path rather than through the crate root, so these tests compile against
 //! it as written even before the crate root wires it in.
 
-#[path = "../src/query_syntax.rs"]
-mod query_syntax;
+#[path = "../src/session/query_syntax.rs"]
+pub mod query_syntax;
 
 use query_syntax::{Expr, QueryError, matches, parse};
 
@@ -266,4 +266,10 @@ fn the_headline_query_works() {
         "thread panicked with an error: warning"
     ));
     assert!(!matches(&expression, "everything is fine"));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::query_syntax as query_syntax;
 }

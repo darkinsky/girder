@@ -25,8 +25,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/health_trend.rs"]
-mod health_trend;
+#[path = "../src/telemetry/health_trend.rs"]
+pub mod health_trend;
 
 use girder_core::{ContentBlock, SessionEvent, ToolCallId, TurnEndReason};
 
@@ -477,4 +477,10 @@ fn two_windows_from_logs_report_a_real_trend() {
     assert!(trend.degrading);
     assert!(trend.summary.contains("100.0%"), "{}", trend.summary);
     assert!(trend.summary.contains("75.0%"), "{}", trend.summary);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod telemetry {
+    pub use super::health_trend as health_trend;
 }

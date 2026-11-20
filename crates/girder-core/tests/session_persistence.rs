@@ -29,8 +29,8 @@
               the indexes are over fixed-size literals defined in the test itself"
 )]
 
-#[path = "../src/session_persistence.rs"]
-mod session_persistence;
+#[path = "../src/session/persistence.rs"]
+pub mod session_persistence;
 
 use girder_core::{CheckpointKind, StoredCheckpoint};
 use session_persistence::{Footprint, Persistence, Pruned};
@@ -671,4 +671,10 @@ fn prune_leaves_the_session_log_of_a_pruned_session() {
         b"the conversation",
         "pruning a session's sidecars must never touch its log"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_persistence as persistence;
 }

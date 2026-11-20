@@ -34,8 +34,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/schedule_rpc.rs"]
-mod schedule_rpc;
+#[path = "../src/schedule/rpc.rs"]
+pub mod schedule_rpc;
 
 use std::sync::Arc;
 
@@ -518,4 +518,10 @@ async fn deleting_inactive_tasks_leaves_the_active_ones() {
     dispatch(&registry, VIEW_METHOD, json!({"id": keep}))
         .await
         .expect("the active task is untouched");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod schedule {
+    pub use super::schedule_rpc as rpc;
 }

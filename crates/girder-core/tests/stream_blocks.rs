@@ -22,8 +22,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/stream_blocks.rs"]
-mod stream_blocks;
+#[path = "../src/llm/stream_blocks.rs"]
+pub mod stream_blocks;
 
 use girder_core::{
     AssistantMessage, ContentBlock, FinishReason, StreamChunk, TokenUsage, ToolCallId,
@@ -592,4 +592,10 @@ fn an_unmatched_placeholder_id_is_ignored_by_the_first_id_rule() {
     );
     assert_eq!(placeholder_id().as_str(), "invalid");
     assert_agrees(&chunks);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::stream_blocks as stream_blocks;
 }

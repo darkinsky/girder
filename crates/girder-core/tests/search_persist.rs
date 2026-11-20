@@ -24,8 +24,8 @@
     clippy::too_many_lines
 )]
 
-#[path = "../src/search_persist.rs"]
-mod search_persist;
+#[path = "../src/session/search_persist.rs"]
+pub mod search_persist;
 
 #[allow(unused_imports)]
 use girder_core as _;
@@ -660,4 +660,10 @@ fn an_index_rebuilt_after_load_keeps_working() {
     assert!(index.get("s1", size).is_some());
     assert!(index.get("s2", 8).is_some());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::search_persist as search_persist;
 }

@@ -8,8 +8,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/compaction_summary.rs"]
-mod compaction_summary;
+#[path = "../src/compaction/summary.rs"]
+pub mod compaction_summary;
 
 use compaction_summary::{render, summarize};
 use girder_core::{
@@ -603,4 +603,10 @@ fn a_user_message_that_merely_mentions_one_tag_is_still_a_request() {
     let segment = summarize(&[user(1, text)]);
 
     assert_eq!(segment.requests, vec![text]);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod compaction {
+    pub use super::compaction_summary as summary;
 }

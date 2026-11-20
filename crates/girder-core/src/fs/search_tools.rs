@@ -1,0 +1,473 @@
+//! The discovery tools: `glob` and `grep`.
+//!
+//! A coding agent spends much of its time looking for things: which file has this name, where is this symbol used.
+//! These two tools answer those questions, and both have a property that matters more than speed — a result that says
+//! it is complete must be complete.
+//!
+//! # Why a missing match list is different from a truncated one
+//!
+//! "No file matches" and "I stopped looking" are different facts. A model told the first stops; a model told the
+//! second asks a narrower question. Both tools therefore bound their output and say so, rather than silently capping.
+//!
+//! # Why `grep` prefers ripgrep and falls back
+//!
+//! Ripgrep is fast, honours `.gitignore`, and is what a person expects. It is not always installed, so the fallback
+//! walks the tree itself: slower, but a tool that only works where one binary happens to exist is worse than a slow
+//! one.
+//!
+//! # Why patterns are matched case-insensitively by default
+//!
+//! A person searching for `SessionStore` usually means the concept, not the exact spelling. Both tools take a flag to
+//! make it exact, so the default serves the common case and the flag serves the careful one.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::json;
+
+use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+
+/// How many results one call returns before it stops and says so.
+///
+/// 200: enough to see a pattern across a project and far below the point where a model can read the list.
+pub const DEFAULT_LIMIT: usize = 200;
+
+/// How much of one matched line a model is shown.
+///
+/// A single minified line can be hundreds of kilobytes; a preview keeps the match identifiable
+/// without spending the whole budget on one hit.
+pub const GREP_PREVIEW_BYTES: usize = 400;
+
+/// How deep a walk descends before it gives up.
+///
+/// A guard against a symlink loop, which would otherwise run until the limit happened to stop it.
+const MAX_DEPTH: usize = 32;
+
+/// Whether a directory should not be walked.
+///
+/// The set every project has and no one wants searched. Ripgrep applies the same exclusions through `.gitignore`,
+/// and the fallback needs them spelled out.
+fn is_ignored(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".venv"
+            | "__pycache__"
+            | ".mypy_cache"
+    )
+}
+
+/// Builds the `glob` tool.
+#[must_use]
+pub fn glob_tool(workspace: PathBuf) -> ToolDefinition {
+    ToolDefinition::new(
+        "glob",
+        "Finds files whose path matches a glob pattern",
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern, such as `**/*.rs` or `src/**/*.ts`"
+                },
+                "limit": { "type": "number", "description": "Maximum files to return" }
+            },
+            "required": ["pattern"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, ctx: ToolRunContext| {
+            let workspace = workspace.clone();
+            let start = ctx.path_base(&workspace).to_path_buf();
+            Box::pin(async move { Ok(glob(&args, &start, &workspace)) })
+        }),
+    )
+}
+
+fn glob(args: &serde_json::Value, start: &Path, workspace: &Path) -> ToolResult {
+    let pattern = args
+        .get("pattern")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if pattern.trim().is_empty() {
+        return ToolResult::error("`pattern` is required");
+    }
+    let limit = usize::try_from(
+        args.get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(DEFAULT_LIMIT as u64),
+    )
+    .unwrap_or(DEFAULT_LIMIT)
+    .max(1);
+
+    // The suffix after the last `/` is what each name is matched against, and the prefix is where to start walking:
+    // a pattern that began with a literal directory would otherwise be matched against every path in the tree.
+    let (start, matcher) = split_pattern(start, pattern);
+
+    let mut found = Vec::new();
+    let mut truncated = false;
+    let boundary = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    walk_within(&start, &matcher, 0, Some(&boundary), &mut |path| {
+        if found.len() >= limit {
+            truncated = true;
+            return;
+        }
+        found.push(path.to_path_buf());
+    });
+
+    if found.is_empty() {
+        return ToolResult::text(format!("no files match `{pattern}`"));
+    }
+
+    let mut out = String::new();
+    for path in &found {
+        let shown = crate::workspace::path::display(Some(workspace), path);
+        out.push_str(&shown);
+        out.push('\n');
+    }
+    if truncated {
+        // Said explicitly: a model that believed this was the whole list would draw a conclusion it has not earned.
+        use std::fmt::Write as _;
+        let _ = write!(
+            out,
+            "\n(stopped after {limit} files; narrow the pattern to see the rest)\n"
+        );
+    }
+    ToolResult::text(out)
+}
+
+/// Splits a glob into a starting directory and a matcher for the final path component.
+fn split_pattern(workspace: &Path, pattern: &str) -> (PathBuf, GlobMatcher) {
+    let normalized = pattern.replace('\\', "/");
+    let (directory, name) = match normalized.rsplit_once('/') {
+        // A pattern like `**/*.rs` starts at the workspace: the `**` means "any depth" and a literal join would ask
+        // for a directory named `**`.
+        Some((prefix, name)) if !prefix.is_empty() && prefix != "**" => {
+            let prefix = prefix.trim_end_matches("/**").trim_end_matches("**");
+            let prefix = prefix.trim_end_matches('/');
+            if prefix.is_empty() {
+                (workspace.to_path_buf(), name)
+            } else {
+                // The prefix comes from the pattern, so it can climb: `../outside/*.rs` named a sibling directory and the
+                // walk listed it. A pattern is model input like any other path and gets the same boundary.
+                let joined = crate::workspace::path::normalize(&workspace.join(prefix));
+                if crate::workspace::path::contains(workspace, &joined) {
+                    (joined, name)
+                } else {
+                    // A start that leaves the workspace matches nothing rather than being silently rewritten to the
+                    // root: the caller asked for something outside, and an empty answer is the honest one.
+                    (workspace.join("\u{0}no-such-start"), name)
+                }
+            }
+        }
+        // A bare pattern has no directory, so the walk covers the workspace and the whole name is the matcher.
+        _ => (workspace.to_path_buf(), normalized.as_str()),
+    };
+    (directory, GlobMatcher::new(name))
+}
+
+/// A glob matcher for one path component.
+#[derive(Debug)]
+struct GlobMatcher {
+    pattern: String,
+}
+
+impl GlobMatcher {
+    fn new(pattern: &str) -> Self {
+        Self {
+            pattern: pattern.to_lowercase(),
+        }
+    }
+
+    /// Whether a name matches.
+    ///
+    /// Supports `*`, `?`, and a literal prefix or suffix, which is what a file search actually uses. A full glob
+    /// grammar with character classes would be more correct and is not worth the parser for the patterns people
+    /// write.
+    fn matches(&self, name: &str) -> bool {
+        if self.pattern == "*" || self.pattern.is_empty() {
+            return true;
+        }
+        let name = name.to_lowercase();
+        if let Some(suffix) = self.pattern.strip_prefix('*') {
+            return if suffix.contains('*') {
+                // A middle wildcard falls back to a substring test rather than a wrong answer.
+                let parts: Vec<&str> = suffix.split('*').filter(|p| !p.is_empty()).collect();
+                parts.iter().all(|part| name.contains(part))
+            } else {
+                name.ends_with(suffix)
+            };
+        }
+        if let Some(prefix) = self.pattern.strip_suffix('*') {
+            return name.starts_with(prefix);
+        }
+        if self.pattern.contains('*') {
+            let parts: Vec<&str> = self.pattern.split('*').collect();
+            let mut rest = name.as_str();
+            for (index, part) in parts.iter().enumerate() {
+                if part.is_empty() {
+                    continue;
+                }
+                match rest.find(part) {
+                    Some(at) => {
+                        if index == 0 && at != 0 {
+                            return false;
+                        }
+                        rest = &rest[at + part.len()..];
+                    }
+                    None => return false,
+                }
+            }
+            return parts
+                .last()
+                .is_none_or(|last| last.is_empty() || rest.is_empty() || name.ends_with(last));
+        }
+        self.pattern == name
+    }
+}
+
+/// Walks a directory, calling `visit` for each matching file.
+fn walk(directory: &Path, matcher: &GlobMatcher, depth: usize, visit: &mut dyn FnMut(&Path)) {
+    walk_within(directory, matcher, depth, None, visit);
+}
+
+/// Walks `directory`, never following a link that leaves `boundary`.
+///
+/// A symlink inside the workspace that points outside it is a real escape: `read_dir` follows it, so a directory listing
+/// would report files the tool was never given access to. The boundary is checked with the same lexical rule the rest of
+/// the crate uses, and only when walking -- a link whose target is inside the workspace is followed normally.
+fn walk_within(
+    directory: &Path,
+    matcher: &GlobMatcher,
+    depth: usize,
+    boundary: Option<&Path>,
+    visit: &mut dyn FnMut(&Path),
+) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_ignored(&name) {
+            continue;
+        }
+        // Where the entry really points, when it is a link: a lexical check on the link's own name says "inside" while the
+        // kernel would read somewhere else.
+        let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let outside =
+            boundary.is_some_and(|boundary| !crate::workspace::path::contains(boundary, &real));
+        if outside {
+            continue;
+        }
+        if path.is_dir() {
+            walk_within(&path, matcher, depth + 1, boundary, visit);
+        } else if matcher.matches(&name) {
+            visit(&path);
+        }
+    }
+}
+
+/// Builds the `grep` tool.
+#[must_use]
+pub fn grep_tool(workspace: PathBuf) -> ToolDefinition {
+    ToolDefinition::new(
+        "grep",
+        "Searches file contents for a pattern",
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string", "description": "Text to search for" },
+                "path": { "type": "string", "description": "File or directory to search; defaults to the workspace" },
+                "case_sensitive": { "type": "boolean", "description": "Match exactly; off by default" },
+                "limit": { "type": "number", "description": "Maximum matching lines to return" }
+            },
+            "required": ["pattern"]
+        }),
+        std::sync::Arc::new(move |args: serde_json::Value, ctx: ToolRunContext| {
+            let workspace = workspace.clone();
+            let base = ctx.path_base(&workspace).to_path_buf();
+            Box::pin(async move { Ok(grep(&args, &base, &workspace)) })
+        }),
+    )
+}
+
+fn grep(args: &serde_json::Value, base: &Path, workspace: &Path) -> ToolResult {
+    let pattern = args
+        .get("pattern")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if pattern.trim().is_empty() {
+        return ToolResult::error("`pattern` is required");
+    }
+    let case_sensitive = args
+        .get("case_sensitive")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let limit = usize::try_from(
+        args.get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(DEFAULT_LIMIT as u64),
+    )
+    .unwrap_or(DEFAULT_LIMIT)
+    .max(1);
+    // Confined like every other path a model supplies. A search root outside the workspace reads files the tool was
+    // never given access to, and it did: `../outside` was answered with the contents of a sibling directory.
+    let root = match args.get("path").and_then(serde_json::Value::as_str) {
+        Some(path) => {
+            let lexical = crate::workspace::path::normalize(&crate::workspace::path::resolve(
+                Some(base),
+                path,
+            ));
+            if !crate::workspace::path::contains(workspace, &lexical) {
+                return ToolResult::error(format!("`path` = `{path}` is outside the workspace"));
+            }
+            lexical
+        }
+        None => {
+            if crate::workspace::path::contains(workspace, base) {
+                base.to_path_buf()
+            } else {
+                workspace.to_path_buf()
+            }
+        }
+    };
+
+    // Ripgrep when it is installed: it honours `.gitignore`, which is the difference between searching a project and
+    // searching its build output.
+    if let Some(result) = grep_with_ripgrep(&root, pattern, case_sensitive, limit) {
+        return result;
+    }
+    grep_in_process(&root, workspace, pattern, case_sensitive, limit)
+}
+
+/// Searches with ripgrep, returning `None` when the binary is not available.
+fn grep_with_ripgrep(
+    root: &Path,
+    pattern: &str,
+    case_sensitive: bool,
+    limit: usize,
+) -> Option<ToolResult> {
+    let mut command = std::process::Command::new("rg");
+    command
+        .arg("--line-number")
+        .arg("--no-heading")
+        .arg("--color")
+        .arg("never")
+        // One file over the limit is enough to know the result is partial, so no file is read past it.
+        .arg("--max-count")
+        .arg(limit.to_string())
+        .arg("--")
+        .arg(pattern)
+        .arg(root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if !case_sensitive {
+        command.arg("-i");
+    }
+
+    let output = command.output().ok()?;
+    // Exit code 2 means ripgrep could not run (a bad pattern, a missing path); falling back is better than
+    // reporting that as "no matches".
+    if output.status.code() == Some(2) {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines: Vec<&str> = text.lines().collect();
+    let truncated = lines.len() > limit;
+    lines.truncate(limit);
+
+    if lines.is_empty() {
+        return Some(ToolResult::text(format!("no matches for `{pattern}`")));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    if truncated {
+        use std::fmt::Write as _;
+        let _ = write!(out, "\n(stopped after {limit} matches)\n");
+    }
+    Some(ToolResult::text(out))
+}
+
+/// Searches by walking, for a host with no ripgrep.
+fn grep_in_process(
+    root: &Path,
+    workspace: &Path,
+    pattern: &str,
+    case_sensitive: bool,
+    limit: usize,
+) -> ToolResult {
+    let needle = if case_sensitive {
+        pattern.to_owned()
+    } else {
+        pattern.to_lowercase()
+    };
+
+    // Matches are collected as records rather than pre-formatted lines, because the presentation
+    // half (`fs_gap`) needs the path, the line number and the text separately: it truncates the
+    // text per line, groups by file, and reports `Found K of N` from the counts it is given.
+    let mut matches: Vec<crate::fs::search_view::GrepMatch> = Vec::new();
+    let mut seen: usize = 0;
+    let mut truncated = false;
+
+    let mut files = Vec::new();
+    if root.is_file() {
+        files.push(root.to_path_buf());
+    } else {
+        walk(root, &GlobMatcher::new("*"), 0, &mut |path| {
+            files.push(path.to_path_buf());
+        });
+    }
+
+    for file in files {
+        // No early exit on the cap: `seen` has to count every hit in the tree, not the hits before
+        // the first file that filled the page. Stopping here is what made `Found 12 of 100` claim
+        // the tree held 100 when it held 300.
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            // A binary or unreadable file is skipped rather than reported: the caller asked where a pattern appears,
+            // not which files could not be decoded.
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let haystack = if case_sensitive {
+                line.to_owned()
+            } else {
+                line.to_lowercase()
+            };
+            if !haystack.contains(&needle) {
+                continue;
+            }
+            // Counted before the cap is applied, so `seen` stays a fact about the tree while `kept`
+            // is a fact about the answer. Collapsing them is what makes a model believe a partial
+            // result is complete.
+            seen += 1;
+            if matches.len() >= limit {
+                truncated = true;
+                continue;
+            }
+            matches.push(crate::fs::search_view::GrepMatch {
+                path: crate::workspace::path::display(Some(workspace), &file),
+                line_number: index as u64 + 1,
+                line: line.to_owned(),
+            });
+        }
+    }
+
+    // Through `fs_gap` rather than a local join: that module owns the bounded presentation — the
+    // per-line preview, the file grouping, the `Found K of N` header, and the zero-result wording.
+    // A second join here is what made a truncated search read as a complete one.
+    let mut retained = crate::fs::search_view::retain_grep_matches(matches, limit, GREP_PREVIEW_BYTES);
+    // The retainer only sees what was collected, so its `seen` counts the matches it was handed.
+    // The walk above saw more: it counted every hit before the cap bit. The larger number is the
+    // fact about the tree, and the header has to report that one.
+    retained.seen = retained.seen.max(seen as u64);
+    retained.truncated |= truncated;
+    // `format_retained_grep` rather than `format_grep_output`: the former names a zero-result
+    // search as an answer ("No matches found") instead of a count that reads like a failure.
+    ToolResult::text(crate::fs::search_view::format_retained_grep(&retained, None))
+}

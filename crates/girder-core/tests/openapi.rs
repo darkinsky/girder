@@ -11,8 +11,8 @@
 //! against it as written before the crate root declares it. It names its dependencies through
 //! `girder_core::…`, which resolves here because the library aliases itself under that name.
 
-#[path = "../src/openapi.rs"]
-mod openapi;
+#[path = "../src/api/openapi.rs"]
+pub mod openapi;
 
 use girder_core::{Catalogue, Field, Method, ObjectSchema, Parameter, Schema};
 use serde_json::Value;
@@ -544,4 +544,10 @@ fn walk_refs(value: &Value, found: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::openapi as openapi;
 }

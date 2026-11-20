@@ -13,11 +13,11 @@
 //! # The gap this test file documents
 //!
 //! `ContentBlock::Image` carries an `attachment` string and nothing else. No media type, no byte
-//! count, no prepared version. `deepseek_files_gap::plan_upload` needs all three. That is why the
+//! count, no prepared version. `llm::deepseek_files::plan_upload` needs all three. That is why the
 //! provider has two entry points and why one of them reports a *missing preparation* instead of
 //! guessing a media type and a size.
 
-use girder_core::deepseek_files_gap::{
+use girder_core::llm::deepseek_files::{
     FilePolicy, RequestImage, UploadIndex, UploadRecord, file_scope,
 };
 use girder_core::{ContentBlock, DeepSeekConfig, DeepSeekProvider, LlmRequest, Message, Role};
@@ -62,13 +62,13 @@ fn request_with_images(ids: &[&str]) -> LlmRequest {
 }
 
 /// The scope the provider derives, so a test can seed an index it will actually be judged against.
-fn scope() -> girder_core::deepseek_files_gap::FileScope {
+fn scope() -> girder_core::llm::deepseek_files::FileScope {
     let mut headers = std::collections::BTreeMap::new();
     headers.insert("anthropic-version".to_owned(), "2023-06-01".to_owned());
     headers.insert("x-api-key".to_owned(), "test-key".to_owned());
     file_scope(
         "http://localhost:1",
-        &girder_core::deepseek_files_gap::scope_credentials(&headers),
+        &girder_core::llm::deepseek_files::scope_credentials(&headers),
     )
 }
 
@@ -85,7 +85,7 @@ fn variant_of(attachment: &str, media_type: &str, data: &[u8]) -> String {
     input.extend_from_slice(&(data.len() as u64).to_be_bytes());
     format!(
         "sha256:{}",
-        girder_core::migration_steps_gap::sha256_hex(&input)
+        girder_core::session::migration_steps::sha256_hex(&input)
     )
 }
 
@@ -97,7 +97,7 @@ fn seeded_index(attachment: &str, data: &[u8], file_id: &str) -> UploadIndex {
         scope: scope.clone(),
         attachment_id: attachment.to_owned(),
         variant_id: variant,
-        file_id: girder_core::deepseek_files_gap::FileId::new(file_id).expect("valid id"),
+        file_id: girder_core::llm::deepseek_files::FileId::new(file_id).expect("valid id"),
         bytes: data.len() as u64,
         created_at: 1_000,
         // Far enough out that the default one-hour refresh margin cannot make it read as absent.
@@ -121,9 +121,9 @@ fn now_millis() -> u64 {
 #[allow(clippy::pedantic)]
 fn prepared<'a>(
     data: &'a [u8],
-) -> impl Fn(&str) -> Option<girder_core::deepseek_serialize_gap::SerializeImage> + 'a {
+) -> impl Fn(&str) -> Option<girder_core::llm::deepseek_serialize::SerializeImage> + 'a {
     move |attachment: &str| {
-        Some(girder_core::deepseek_serialize_gap::SerializeImage::inline(
+        Some(girder_core::llm::deepseek_serialize::SerializeImage::inline(
             attachment,
             format!("[image {attachment}]"),
             PNG,
@@ -290,7 +290,7 @@ fn an_expired_mapping_is_planned_as_a_fresh_upload() {
         scope: scope(),
         attachment_id: "a".to_owned(),
         variant_id: variant,
-        file_id: girder_core::deepseek_files_gap::FileId::new("file-old").expect("valid"),
+        file_id: girder_core::llm::deepseek_files::FileId::new("file-old").expect("valid"),
         bytes: data.len() as u64,
         created_at: 1_000,
         // Already past: the provider must not cite an id the API is about to forget.
@@ -313,7 +313,7 @@ fn an_expired_mapping_is_planned_as_a_fresh_upload() {
 fn an_unsupported_media_type_is_refused_before_any_transport() {
     let data = png_bytes();
     let lookup = |attachment: &str| {
-        Some(girder_core::deepseek_serialize_gap::SerializeImage::inline(
+        Some(girder_core::llm::deepseek_serialize::SerializeImage::inline(
             attachment,
             "handle",
             "image/bmp",
@@ -340,7 +340,7 @@ fn an_image_above_the_size_limit_is_refused_rather_than_uploaded() {
     // that starts and is then refused has already spent the bytes.
     let oversized = vec![
         0_u8;
-        usize::try_from(girder_core::deepseek_files_gap::MAX_IMAGE_BYTES + 1)
+        usize::try_from(girder_core::llm::deepseek_files::MAX_IMAGE_BYTES + 1)
             .expect("fits")
     ];
     let plans = provider()
@@ -396,7 +396,7 @@ fn different_media_types_of_one_attachment_are_different_variants() {
     // old file id: the provider keys its own file on that type.
     let data = png_bytes();
     let as_jpeg = |attachment: &str| {
-        Some(girder_core::deepseek_serialize_gap::SerializeImage::inline(
+        Some(girder_core::llm::deepseek_serialize::SerializeImage::inline(
             attachment,
             "handle",
             "image/jpeg",
@@ -443,7 +443,7 @@ fn a_request_whose_first_image_resolves_and_second_does_not_fails_whole() {
     let data = png_bytes();
     let lookup = |attachment: &str| {
         if attachment == "ok" {
-            Some(girder_core::deepseek_serialize_gap::SerializeImage::inline(
+            Some(girder_core::llm::deepseek_serialize::SerializeImage::inline(
                 attachment,
                 "handle",
                 PNG,
@@ -485,7 +485,7 @@ fn the_plan_agrees_with_plan_upload_called_directly() {
         bytes: data.len() as u64,
         media_type: PNG.to_owned(),
     };
-    let direct = girder_core::deepseek_files_gap::plan_upload(
+    let direct = girder_core::llm::deepseek_files::plan_upload(
         &request_image,
         &UploadIndex::empty(),
         &scope(),
@@ -496,7 +496,7 @@ fn the_plan_agrees_with_plan_upload_called_directly() {
     assert_eq!(
         plans[0].upload_filename(),
         match &direct {
-            girder_core::deepseek_files_gap::UploadPlan::Upload { filename, .. } => {
+            girder_core::llm::deepseek_files::UploadPlan::Upload { filename, .. } => {
                 Some(filename.as_str())
             }
             _ => None,

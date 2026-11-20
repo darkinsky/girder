@@ -18,8 +18,8 @@
 //! uses. That is also why the tests never touch the filesystem: every input is a constructed
 //! [`Footprint`], and none of the arithmetic here needs a disk.
 
-#[path = "../src/storage_quota.rs"]
-mod storage_quota;
+#[path = "../src/storage/quota.rs"]
+pub mod storage_quota;
 
 use storage_quota::{Footprint, Quota, evict, is_oversized, usage};
 
@@ -352,4 +352,10 @@ fn a_single_session_over_the_ceiling_is_evicted_even_at_the_smallest_quota() {
     let footprints = [footprint("only", 1, 0)];
 
     assert_eq!(evict(&footprints, &exact(0)), vec!["only".to_owned()]);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod storage {
+    pub use super::storage_quota as quota;
 }

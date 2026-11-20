@@ -10,8 +10,8 @@
 //! against the checker as written even before the crate root wires it in. That is also why nothing
 //! here reaches for the rest of `girder_core`: the only dependency is the module itself.
 
-#[path = "../src/argument_limits.rs"]
-mod argument_limits;
+#[path = "../src/core/argument_limits.rs"]
+pub mod argument_limits;
 
 use argument_limits::{Kind, Limits, check, defaults};
 
@@ -328,4 +328,10 @@ fn non_string_values_are_not_measured_against_the_string_limit() {
         ),
         None
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::argument_limits as argument_limits;
 }

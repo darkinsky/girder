@@ -7,8 +7,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/image_block.rs"]
-mod image_block;
+#[path = "../src/llm/image_block.rs"]
+pub mod image_block;
 
 use image_block::{
     ImageError, ImagePayload, MAX_BYTES, SUPPORTED_TYPES, decode, encode, sniff_type,
@@ -285,4 +285,10 @@ fn sniff_agrees_with_every_supported_type() {
             "{media_type} is supported but not sniffable"
         );
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::image_block as image_block;
 }

@@ -1,0 +1,25 @@
+//! Upstream `packages/api`.
+
+pub mod catalog;
+pub mod config;
+pub mod controller;
+pub mod extra;
+pub mod api_final;
+pub mod job;
+pub mod key;
+pub mod remotes;
+pub mod session;
+pub mod tools;
+pub mod version;
+pub mod gateway_client;
+pub mod gateway;
+pub mod inbox;
+pub mod method_surface;
+pub mod openapi;
+pub mod openapi_full;
+pub mod remote;
+pub mod remote_access;
+pub mod remote_service;
+pub mod result_paging;
+pub mod rpc_limits;
+pub mod share_link;

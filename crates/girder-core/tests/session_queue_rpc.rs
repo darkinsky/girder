@@ -30,8 +30,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_queue_rpc.rs"]
-mod session_queue_rpc;
+#[path = "../src/session/queue_rpc.rs"]
+pub mod session_queue_rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -619,4 +619,10 @@ fn a_closure_is_a_queue_source() {
 #[allow(dead_code)]
 fn cleanup(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_queue_rpc as queue_rpc;
 }

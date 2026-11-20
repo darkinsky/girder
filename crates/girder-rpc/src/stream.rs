@@ -354,7 +354,12 @@ pub const SUBSCRIBABLE_METHODS: &[&str] = &[
     "session.observeProjections",
     "session.observeState",
     "session.follow",
+    "session.wait",
+    "session.control",
     "job.follow",
+    "userQuestions.attachWait",
+    "mcpManager.watch",
+    "workspaceFiles.watch",
 ];
 
 /// How often a subscription re-invokes its method when the client asks for no interval.

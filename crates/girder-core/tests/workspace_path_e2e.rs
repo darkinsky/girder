@@ -2,7 +2,7 @@
 //!
 //! # Why this is an end-to-end test rather than a unit test
 //!
-//! `workspace_path::contains` and `sandbox_path::Sandbox` are already unit-tested for the answer
+//! `workspace::path::contains` and `sandbox::path::Sandbox` are already unit-tested for the answer
 //! they compute, and that answer is correct. The question this file asks is different and narrower:
 //! does the tool a model actually calls *consult* that answer? A correct containment helper that no
 //! tool body reaches leaves a workspace with no boundary at all, and every unit test of the helper

@@ -14,8 +14,8 @@
 //! The module is included by path rather than through the crate root, so these tests compile against
 //! it as written even before the crate root wires it in.
 
-#[path = "../src/session_archive.rs"]
-mod session_archive;
+#[path = "../src/session/archive.rs"]
+pub mod session_archive;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -539,4 +539,10 @@ fn the_store_reads_the_trimmed_log_as_its_own_history() {
         "the kept tail must still be a recognisable conversation"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_archive as archive;
 }

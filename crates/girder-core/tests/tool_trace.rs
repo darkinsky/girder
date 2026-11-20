@@ -9,10 +9,10 @@
 //!
 //! The module is included by path because `girder-core`'s crate root does not declare it yet —
 //! wiring `mod tool_trace;` and its re-exports belongs to the integrator. Once that lands, the
-//! `#[path]` line should be replaced with `use girder_core::tool_trace::*;`.
+//! `#[path]` line should be replaced with `use girder_core::core::tool_trace::*;`.
 
-#[path = "../src/tool_trace.rs"]
-mod tool_trace;
+#[path = "../src/core/tool_trace.rs"]
+pub mod tool_trace;
 
 use tool_trace::{Phase, Summary, Trace, summarize};
 
@@ -286,4 +286,10 @@ fn saturating_total_does_not_overflow() {
     );
     assert_eq!(trace.total_ms(), u64::MAX);
     assert_eq!(trace.slowest(), Some((Phase::Executing, u64::MAX)));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_trace as tool_trace;
 }

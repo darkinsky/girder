@@ -1,6 +1,6 @@
 //! End-to-end tests for the goal path through `AgentRuntime`.
 //!
-//! `tests/goal_wiring.rs` proves that `agent_loop::run` continues when its `LoopContext` carries an armed
+//! `tests/goal_wiring.rs` proves that `core::agent_loop::run` continues when its `LoopContext` carries an armed
 //! goal. That is necessary and not sufficient: the defect this file exists to catch was in the *runtime*,
 //! which built a context without ever reading the goal it had been handed. A loop-level test passes while
 //! the shipped product has a goal tool mutating a state no loop ever reads.

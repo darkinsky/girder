@@ -30,8 +30,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/tool_budget_config.rs"]
-mod tool_budget_config;
+#[path = "../src/core/tool_budget_config.rs"]
+pub mod tool_budget_config;
 
 use std::sync::Arc;
 
@@ -536,4 +536,10 @@ fn budget_compares_by_value() {
         },
         "two reads of different versions are different budgets"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_budget_config as tool_budget_config;
 }

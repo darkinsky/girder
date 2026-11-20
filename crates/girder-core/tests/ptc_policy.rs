@@ -7,10 +7,10 @@
 //!
 //! The module is compiled into this test binary through `#[path]` because exporting it from
 //! `lib.rs` is a separate change. When it is exported, this can become
-//! `use girder_core::ptc_policy::{Decision, ExecRequest, Limits, Policy};`.
+//! `use girder_core::ptc::policy::{Decision, ExecRequest, Limits, Policy};`.
 
-#[path = "../src/ptc_policy.rs"]
-mod ptc_policy;
+#[path = "../src/ptc/policy.rs"]
+pub mod ptc_policy;
 
 use std::path::Path;
 
@@ -268,4 +268,10 @@ fn the_reported_allow_is_the_effective_plan() {
             allowed_paths: vec![workspace().to_path_buf()],
         })
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod ptc {
+    pub use super::ptc_policy as policy;
 }

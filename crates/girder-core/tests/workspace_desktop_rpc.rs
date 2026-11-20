@@ -32,8 +32,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/workspace_desktop_rpc.rs"]
-mod workspace_desktop_rpc;
+#[path = "../src/workspace/desktop_rpc.rs"]
+pub mod workspace_desktop_rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -793,4 +793,10 @@ async fn the_default_registration_answers_the_desktop_methods_on_this_machine() 
     assert_eq!(can_open, desktop["available"]);
 
     let _ = std::fs::remove_dir_all(&workspace);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod workspace {
+    pub use super::workspace_desktop_rpc as desktop_rpc;
 }

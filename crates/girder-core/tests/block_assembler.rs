@@ -9,15 +9,15 @@
 //! `block_assembler` is not exported from the crate root yet; the wiring is a separate change to
 //! `lib.rs`. Compiling the exact source file here keeps these tests runnable and independent of
 //! that wiring, while still exercising the same code a consumer will reach through
-//! `girder_core::block_assembler`. Nothing is duplicated: this is the real file.
+//! `girder_core::llm::block_assembler`. Nothing is duplicated: this is the real file.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/block_assembler.rs"]
-mod block_assembler;
+#[path = "../src/llm/block_assembler.rs"]
+pub mod block_assembler;
 
 use block_assembler::{Assembler, AssemblyError};
 use girder_core::{ContentBlock, FinishReason, StreamChunk, TokenUsage, ToolCallId};
@@ -564,4 +564,10 @@ fn a_block_end_without_a_start_is_accepted() {
 
     assert!(!assembler.has_open_blocks());
     assert_eq!(assembler.finish().expect("closed"), vec![visible("whole")]);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::block_assembler as block_assembler;
 }

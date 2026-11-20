@@ -10,8 +10,8 @@
 //! against it as written before the crate root declares it. It names its dependencies through
 //! `girder_core::…`, which resolves here because the library aliases itself under that name.
 
-#[path = "../src/typert_json.rs"]
-mod typert_json;
+#[path = "../src/typert/json.rs"]
+pub mod typert_json;
 
 use girder_core::{Catalogue, Field, Method, ObjectSchema, Parameter, Schema, Variant};
 use serde_json::Value;
@@ -489,4 +489,10 @@ fn an_empty_catalogue_is_still_a_valid_document() {
         json.get("$defs").is_none(),
         "nothing to define, nothing emitted"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod typert {
+    pub use super::typert_json as json;
 }

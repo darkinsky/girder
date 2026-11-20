@@ -18,8 +18,8 @@
 //! against the pager as written even before the crate root wires it in. That is also why nothing here
 //! reaches for the rest of `girder_core`: the only dependency is the module itself.
 
-#[path = "../src/result_paging.rs"]
-mod result_paging;
+#[path = "../src/api/result_paging.rs"]
+pub mod result_paging;
 
 use result_paging::{Cursor, CursorError, MAX_PAGE_LINES, Page, Request, page, page_from};
 
@@ -435,4 +435,10 @@ fn a_cursor_carries_no_readable_position_for_a_client_to_depend_on() {
         Cursor::parse(cursor.as_str()).expect("its own form"),
         cursor
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::result_paging as result_paging;
 }

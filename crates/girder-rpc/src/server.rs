@@ -29,7 +29,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use girder_core::EventBus;
-use girder_core::gateway_gap::{
+use girder_core::api::gateway::{
     Connection, ConnectionOutcome, Credential, Peer, PeerDirectory, Rejection,
 };
 use tokio::sync::mpsc;
@@ -345,7 +345,7 @@ impl RpcServer {
 
 /// The largest request body the invoke endpoint accepts.
 ///
-/// Chosen to match what `rpc_limits::Quota::default` describes. A tool call carries its arguments inline and the largest
+/// Chosen to match what `api::rpc_limits::Quota::default` describes. A tool call carries its arguments inline and the largest
 /// one this build produces is a `write` of a source file, so a megabyte is generous for the protocol and small enough that
 /// a hostile body is refused before it is parsed.
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
@@ -374,7 +374,7 @@ pub const INVOKE_PATH: &str = "/api/remote.invoke";
 /// Without a [`PeerDirectory`] this is the legacy path: `request.peer` is copied into the call and
 /// carried unverified, which is what every client of this crate speaks today. With a directory the
 /// request is admitted first, the admitted [`Peer`] builds the call through
-/// [`admitted_call`](girder_core::gateway_gap::admitted_call), and `request.peer` is only ever
+/// [`admitted_call`](girder_core::api::gateway::admitted_call), and `request.peer` is only ever
 /// compared — never used. The two modes are one handler so a deployment cannot end up running a
 /// different code path than the one its tests exercised.
 async fn invoke(
@@ -436,7 +436,7 @@ async fn invoke(
                     );
                 }
             }
-            match girder_core::gateway_gap::admitted_call(
+            match girder_core::api::gateway::admitted_call(
                 &peer,
                 serde_json::Value::Object(request.args),
             ) {
@@ -841,7 +841,7 @@ pub async fn serve_with_peers(
     bus: Arc<EventBus>,
     watch: Vec<&'static str>,
     remote: Option<Arc<girder_core::RemoteRegistry>>,
-    directory: Arc<girder_core::gateway_gap::PeerDirectory>,
+    directory: Arc<girder_core::api::gateway::PeerDirectory>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
     let mut server = RpcServer::new(bus)

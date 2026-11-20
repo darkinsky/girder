@@ -682,7 +682,7 @@ fn a_reasoning_history_declares_thinking_and_keeps_the_block() {
 
 #[test]
 fn probe_serializer_directly() {
-    use girder_core::deepseek_serialize_gap::{SerializeRoute, serialize_llm_request};
+    use girder_core::llm::deepseek_serialize::{SerializeRoute, serialize_llm_request};
     let prompt = Message::new(
         Role::User,
         vec![ContentBlock::Text {

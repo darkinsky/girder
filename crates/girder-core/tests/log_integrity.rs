@@ -14,8 +14,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/log_integrity.rs"]
-mod log_integrity;
+#[path = "../src/session/log_integrity.rs"]
+pub mod log_integrity;
 
 use log_integrity::{Integrity, inspect};
 
@@ -184,4 +184,10 @@ fn a_newline_alone_is_a_complete_record_not_an_empty_log() {
         }
     );
     assert!(!verdict.is_empty());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::log_integrity as log_integrity;
 }

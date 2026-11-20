@@ -28,8 +28,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_export_rpc.rs"]
-mod session_export_rpc;
+#[path = "../src/session/export_rpc.rs"]
+pub mod session_export_rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -407,4 +407,10 @@ fn the_method_name_is_the_one_upstream_declares() {
     // The default format is the one a caller gets for free; pinning it here keeps a rename from
     // silently changing what an existing client receives.
     assert_eq!(session_export_rpc::DEFAULT_FORMAT, "markdown");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_export_rpc as export_rpc;
 }

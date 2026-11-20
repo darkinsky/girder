@@ -9,8 +9,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the renderer as written even before the crate root wires it in. That is also why nothing
 // here reaches for the rest of `girder_core`.
-#[path = "../src/tool_value.rs"]
-mod tool_value;
+#[path = "../src/core/tool_value.rs"]
+pub mod tool_value;
 
 use serde_json::json;
 use tool_value::{Table, Value, infer, render};
@@ -290,4 +290,10 @@ fn ordinary_prose_is_not_inferred() {
     ] {
         assert_eq!(infer(text), None, "inferred a structure from {text:?}");
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_value as tool_value;
 }

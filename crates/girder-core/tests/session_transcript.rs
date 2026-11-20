@@ -29,8 +29,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/session_transcript.rs"]
-mod session_transcript;
+#[path = "../src/session/transcript.rs"]
+pub mod session_transcript;
 
 use girder_core::{ChatMessage, ChatRole, ContentBlock, MessageId, MessageSource, ToolCallId};
 use girder_core::{SessionEvent, TurnEndReason};
@@ -699,4 +699,10 @@ fn a_transcript_built_by_hand_keeps_its_roles_verbatim() {
     let body = to_json(&transcript, Format::OpenAi);
 
     assert_eq!(body["messages"][0]["role"], "tool");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_transcript as transcript;
 }

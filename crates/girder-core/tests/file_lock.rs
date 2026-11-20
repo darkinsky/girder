@@ -17,8 +17,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/file_lock.rs"]
-mod file_lock;
+#[path = "../src/fs/file_lock.rs"]
+pub mod file_lock;
 
 use file_lock::{Contention, Lock, Locks};
 
@@ -375,4 +375,10 @@ fn the_default_table_is_empty() {
 
     assert!(locks.is_empty());
     assert!(locks.holder("/anything").is_none());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod fs {
+    pub use super::file_lock as file_lock;
 }

@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use girder_core::persistent_shell::{Config, PersistentShell, ShellError};
+use girder_core::shell::persistent_shell::{Config, PersistentShell, ShellError};
 
 /// A scratch directory under the target dir, unique per test.
 ///

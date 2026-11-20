@@ -1,0 +1,1225 @@
+//! The session seam: durable event log, JSONL framing, and zstd compression.
+//!
+//! Upstream's session is a zstd-compressed JSONL file of typed events. This module carries the
+//! event vocabulary the vertical slice needs — six variants, not the 60+ upstream has — plus the
+//! store that appends and replays them.
+//!
+//! # Why the log is the source of truth
+//!
+//! A session is not a mutable object that a store updates. It is an append-only sequence of events,
+//! and every derived view (the conversation, the token count, the tool history) is a fold over that
+//! sequence. That is what makes `session/fork`, replay, and crash recovery the same operation:
+//! re-read the log. The alternative — mutating a conversation object and persisting it whole —
+//! loses the intermediate states that a fork needs and makes a partial write unrecoverable.
+//!
+//! # Compression
+//!
+//! Upstream zstd-compresses the JSONL. Each event is one JSON object on one line, so a truncated
+//! tail loses at most the final event. Writing the frame with `zstd::Encoder` at a fixed level keeps
+//! the file streamable: a reader decompresses incrementally rather than needing the whole file.
+//!
+//! # What is deliberately not here
+//!
+//! Upstream's `request-header`, `seq-ranges`, `repair`, `surface`, and `fork` modules exist because
+//! a real session is resumed, compacted, and branched. The slice needs append and replay only; the
+//! rest belongs with phase 5+ once there is a reason to resume.
+
+
+pub mod checkpoint_store;
+pub mod content_projection;
+pub mod export_bundle;
+pub mod format_catalog;
+pub mod log_compact;
+pub mod log_integrity;
+pub mod message;
+pub mod migration_steps;
+pub mod projection;
+pub mod projection_extra;
+pub mod projection_cache;
+pub mod change_feed;
+pub mod projection_host;
+pub mod projection_setup;
+pub mod query_syntax;
+pub mod resume_point;
+pub mod retention;
+pub mod search_index;
+pub mod search_persist;
+pub mod archive;
+pub mod backend;
+pub mod branch;
+pub mod client;
+pub mod controller;
+pub mod digest;
+pub mod engine;
+pub mod export_rpc;
+pub mod extra;
+pub mod filter;
+pub mod session_final;
+pub mod telemetry;
+pub mod health;
+pub mod layout;
+pub mod lifecycle_rpc;
+pub mod link;
+pub mod metrics;
+pub mod migration;
+pub mod observe;
+pub mod persistence;
+pub mod portable;
+pub mod preview;
+pub mod proj_extra;
+pub mod query;
+pub mod query_plan;
+pub mod query_rpc;
+pub mod queue_rpc;
+pub mod recovery;
+pub mod reference;
+pub mod replay;
+pub mod resume_rpc;
+pub mod rewind;
+pub mod search_tool;
+pub mod snapshot;
+pub mod state_rpc;
+pub mod session_static;
+pub mod stats;
+pub mod stats_rollup;
+pub mod stream;
+pub mod tag;
+pub mod timeline;
+pub mod title;
+pub mod title_dispatch;
+pub mod title_llm;
+pub mod top;
+pub mod transcript;
+pub mod wait;
+pub mod window;
+pub mod workspace;
+pub mod transcript_import;
+
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::util::brand::ToolCallId;
+use crate::llm::{ContentBlock, FinishReason};
+use crate::core::scope::BoxFut;
+
+/// Why a turn ended.
+///
+/// A tagged union rather than a reuse of [`FinishReason`]: a turn can end for reasons a model never
+/// reports — a cancellation, a blocked step, a tool that failed to activate. Overloading the model's
+/// stop reason would make "the model finished" and "the user pressed Ctrl-C" the same value in the
+/// log, and a replay could not tell them apart.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TurnEndReason {
+    /// The model finished its work.
+    Completed,
+
+    /// The caller cancelled.
+    Aborted {
+        /// Why, so a replay can distinguish a user request from a timeout.
+        cause: String,
+    },
+
+    /// A step was blocked before it could run.
+    Blocked,
+
+    /// The session's token budget ran out.
+    ///
+    /// Distinct from `Blocked`: nothing objected to the step, the session simply had no more to spend. A reader
+    /// investigating a stopped session needs to tell those apart.
+    Budget,
+
+    /// The turn failed.
+    Failed {
+        /// The failure, flattened to text and a code.
+        message: String,
+        /// A stable code a reader can branch on.
+        code: String,
+    },
+}
+
+impl From<FinishReason> for TurnEndReason {
+    fn from(reason: FinishReason) -> Self {
+        match reason {
+            FinishReason::Stop | FinishReason::ToolCalls => Self::Completed,
+            FinishReason::Length => Self::Failed {
+                message: "the model reached its output limit".to_owned(),
+                code: "MAX_TOKENS".to_owned(),
+            },
+            FinishReason::Aborted => Self::Aborted {
+                cause: "aborted".to_owned(),
+            },
+            FinishReason::Error { message } => Self::Failed {
+                message,
+                code: "UNKNOWN".to_owned(),
+            },
+        }
+    }
+}
+
+/// One durable session event.
+///
+/// The list carries everything a replay needs to reconstruct a conversation and explain how it got
+/// there. Upstream has 54 event types across 30 domains; this is the conversation core — turn, step,
+/// message, tool — which is what every other domain's events attach to.
+///
+/// # Why `step` exists
+///
+/// A turn is not one model call. It is a sequence of steps, each one model call plus the tool
+/// executions that call requested. Recording only turns would lose which tool call answered which
+/// step, and a replay could not reconstruct the model's view at any point mid-turn.
+///
+/// # Adding a variant
+///
+/// A new variant is a compile error at every `match`, which is the point: the log writer must
+/// handle it rather than drop it silently.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SessionEvent {
+    /// A turn began.
+    #[serde(rename = "turn/start")]
+    TurnStart {
+        /// Turn number, starting at 1.
+        turn: u64,
+    },
+
+    /// A turn ended.
+    #[serde(rename = "turn/end")]
+    TurnEnd {
+        /// Turn number.
+        turn: u64,
+        /// Why it stopped.
+        reason: TurnEndReason,
+    },
+
+    /// A step began: one model call plus the tools it requested.
+    #[serde(rename = "step/start")]
+    StepStart {
+        /// Turn it belongs to.
+        turn: u64,
+        /// Step number within the turn, starting at 1.
+        step: u64,
+    },
+
+    /// A step ended.
+    #[serde(rename = "step/end")]
+    StepEnd {
+        /// Turn it belongs to.
+        turn: u64,
+        /// Step number.
+        step: u64,
+    },
+
+    /// A user-role message on the model-visible surface.
+    ///
+    /// One event for the person's prompt, a synthetic injection, and a relayed peer message: the
+    /// role is the same, and the message's `source` tells them apart. Splitting into three events
+    /// would make every consumer match three cases to read one turn.
+    #[serde(rename = "user/message")]
+    UserMessage {
+        /// The message, with its identity and provenance preserved.
+        message: crate::session::message::Message,
+    },
+
+    /// A developer-role message: a tool addition or removal riding the turn.
+    #[serde(rename = "developer/message")]
+    DeveloperMessage {
+        /// Turn it was admitted at.
+        turn: u64,
+        /// Step it was admitted at.
+        step: u64,
+        /// The message.
+        message: crate::session::message::Message,
+    },
+
+    /// The model's response for one step.
+    #[serde(rename = "assistant/message")]
+    AssistantMessage {
+        /// The message, carrying provider identity for replay.
+        message: crate::session::message::Message,
+    },
+
+    /// What one model call cost.
+    ///
+    /// A separate event rather than a field on the message: a message is content a reader renders, and a cost is
+    /// accounting a reader sums. Folding them together would make every consumer of the content carry a number it
+    /// does not use, and a replay that wanted only the cost would have to parse messages.
+    #[serde(rename = "model/usage")]
+    ModelUsage {
+        /// The model that answered.
+        model: String,
+        /// Tokens the prompt cost.
+        input_tokens: u64,
+        /// Tokens the answer cost.
+        output_tokens: u64,
+    },
+
+    /// A tool was invoked.
+    #[serde(rename = "tool/call")]
+    ToolCall {
+        /// Provider-issued call id.
+        id: ToolCallId,
+        /// Tool name.
+        name: String,
+        /// Raw JSON arguments, exactly as the model produced them.
+        arguments: String,
+    },
+
+    /// A tool produced a result.
+    #[serde(rename = "tool/result")]
+    ToolResult {
+        /// The call this answers.
+        id: ToolCallId,
+        /// What it produced.
+        content: Vec<ContentBlock>,
+        /// Whether it failed.
+        is_error: bool,
+    },
+
+    /// The rendered system prompt on the model-visible surface.
+    ///
+    /// Recorded per step rather than once, because the prompt can change between steps: an
+    /// instruction file is edited, a tool is added, the working directory moves. A replay that kept
+    /// only the first would show the model a prompt it never saw.
+    #[serde(rename = "system/message")]
+    SystemMessage {
+        /// Turn it was assembled in.
+        turn: u64,
+        /// Step it was assembled for.
+        step: u64,
+        /// The message.
+        message: crate::session::message::Message,
+    },
+
+    /// The model selection this step will use.
+    ///
+    /// Carries the selection rather than a `Value`: a selection has a shape — provider and model are
+    /// both required — and storing it loosely would let a log hold one half.
+    #[serde(rename = "model/selection")]
+    ModelSelection {
+        /// The selection.
+        selection: crate::core::agent::ModelSelection,
+    },
+
+    /// The capability preset in force.
+    ///
+    /// A preset decides what the model may do — read-only, edit, full access — so a replay without
+    /// it cannot explain why a tool was refused.
+    #[serde(rename = "permission/preset")]
+    PermissionPreset {
+        /// The preset name.
+        preset: String,
+    },
+
+    /// Whether plan mode is on.
+    ///
+    /// Plan mode changes the contract with the model: it must describe before acting. A turn
+    /// recorded without it looks like a model that failed to act.
+    #[serde(rename = "plan/mode")]
+    PlanMode {
+        /// Whether it is active.
+        active: bool,
+    },
+
+    /// The sandbox mode in force.
+    #[serde(rename = "sandbox/mode")]
+    SandboxMode {
+        /// The mode.
+        mode: String,
+        /// Where the setting came from, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+
+    /// The context window the request was planned against.
+    ///
+    /// Recorded because compaction decisions depend on it: a log without the window cannot explain
+    /// why a conversation was compacted when it looked small.
+    #[serde(rename = "request/context")]
+    RequestContext {
+        /// The provider.
+        provider: String,
+        /// The model.
+        model: String,
+        /// The window, when the catalogue declared one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
+    },
+
+    /// The exact request envelope a turn was built from.
+    ///
+    /// Upstream's `request/header`. Distinct from [`Self::RequestContext`], which records only the
+    /// provider and window for diagnostics: this one carries the **whole call configuration plus the
+    /// tool schemas**, because its purpose is replay. A `request/context` says which model ran; a
+    /// `request/header` says what bytes a replay would have to send to run it again.
+    ///
+    /// Serialized as one opaque object rather than exploded into typed fields: the header's shape is
+    /// `EpochHeader`'s, it is validated there (`canonical_header`), and duplicating its fields here
+    /// would be a second definition that could drift from the one the fold reads.
+    #[serde(rename = "request/header")]
+    RequestHeader {
+        /// The `EpochHeader`, as `request_header_gap` models it.
+        header: serde_json::Value,
+    },
+
+    /// The session's title, and what produced it.
+    #[serde(rename = "session/title")]
+    SessionTitle {
+        /// The title.
+        title: String,
+        /// The message sequence numbers it was derived from.
+        message_seqs: Vec<u64>,
+        /// Whether a human or a model produced it.
+        source: String,
+    },
+
+    /// An LLM request is about to be attempted.
+    ///
+    /// Recorded because a retry makes the log otherwise unexplainable: two assistant messages for
+    /// one step look like a protocol violation without the attempts between them.
+    #[serde(rename = "llm/retry")]
+    LlmRetry {
+        /// Which attempt this is, starting at 1.
+        attempt: u32,
+        /// Why the previous one failed, when this is a retry.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+
+    /// A message's feedback was recorded or replaced.
+    ///
+    /// Upstream's `feedback/message-put`, from `packages/feedback/message-feedback`. Feedback is a
+    /// log event rather than a side table because it belongs to a message and must survive the same
+    /// way the message does: a rating stored elsewhere would be lost by a fork or a compaction that
+    /// preserved the conversation.
+    #[serde(rename = "feedback/message-put")]
+    MessageFeedbackPut {
+        /// The message the feedback is about.
+        message_id: String,
+        /// `positive` or `negative`.
+        rating: crate::feedback::message_feedback::Rating,
+        /// A note, when the person wrote one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        /// A category, when the client supplied one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
+        /// The item's identity, so a replacement is recognisable as one.
+        version: String,
+        /// When the item was first recorded.
+        created_at: i64,
+        /// When it last changed.
+        updated_at: i64,
+    },
+
+    /// Whether this session's tree runs as a team.
+    ///
+    /// Upstream's `team/mode`, from `packages/team/agent-team`. A session with team mode on is one
+    /// whose root leads a tree of subagents that share a task graph; turning it off stops new team
+    /// tools from being offered without stopping the children already running, which is why this is
+    /// a recorded selection rather than a switch that kills anything.
+    #[serde(rename = "team/mode")]
+    TeamMode {
+        /// Whether the tree is a team.
+        enabled: bool,
+    },
+
+    /// A remark about the session as a whole.
+    ///
+    /// Upstream's `feedback/record`, from `packages/feedback/command-feedback`. Distinct from
+    /// [`Self::MessageFeedbackPut`] in what it answers about: this is "something about this session",
+    /// with no message to attach to, which is what the `/feedback` command writes.
+    #[serde(rename = "feedback/record")]
+    SessionFeedbackRecord {
+        /// The remark, omitted when only a category was given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        /// A category, when the caller supplied one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
+    },
+
+    /// A message's feedback was withdrawn.
+    ///
+    /// Upstream's `feedback/message-delete`. A separate event rather than a tombstone: the log is
+    /// append-only, and a reader that sees the put followed by the delete knows both that feedback
+    /// existed and that it was removed.
+    #[serde(rename = "feedback/message-delete")]
+    MessageFeedbackDelete {
+        /// The message whose feedback was withdrawn.
+        message_id: String,
+    },
+}
+
+impl SessionEvent {
+    /// The event's `type` tag, for diagnostics and filtering.
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::TurnStart { .. } => "turn/start",
+            Self::TurnEnd { .. } => "turn/end",
+            Self::StepStart { .. } => "step/start",
+            Self::StepEnd { .. } => "step/end",
+            Self::ModelUsage { .. } => "model/usage",
+            Self::UserMessage { .. } => "user/message",
+            Self::DeveloperMessage { .. } => "developer/message",
+            Self::AssistantMessage { .. } => "assistant/message",
+            Self::ToolCall { .. } => "tool/call",
+            Self::ToolResult { .. } => "tool/result",
+            Self::SystemMessage { .. } => "system/message",
+            Self::ModelSelection { .. } => "model/selection",
+            Self::PermissionPreset { .. } => "permission/preset",
+            Self::PlanMode { .. } => "plan/mode",
+            Self::SandboxMode { .. } => "sandbox/mode",
+            Self::RequestContext { .. } => "request/context",
+            Self::RequestHeader { .. } => "request/header",
+            Self::SessionTitle { .. } => "session/title",
+            Self::LlmRetry { .. } => "llm/retry",
+            Self::MessageFeedbackPut { .. } => "feedback/message-put",
+            Self::MessageFeedbackDelete { .. } => "feedback/message-delete",
+            Self::SessionFeedbackRecord { .. } => "feedback/record",
+            Self::TeamMode { .. } => "team/mode",
+        }
+    }
+
+    /// The turn this event belongs to, when it names one.
+    #[must_use]
+    pub fn turn(&self) -> Option<u64> {
+        match self {
+            Self::TurnStart { turn }
+            | Self::TurnEnd { turn, .. }
+            | Self::StepStart { turn, .. }
+            | Self::StepEnd { turn, .. }
+            | Self::DeveloperMessage { turn, .. }
+            | Self::SystemMessage { turn, .. } => Some(*turn),
+            Self::UserMessage { .. }
+            | Self::AssistantMessage { .. }
+            | Self::ModelUsage { .. }
+            | Self::ToolCall { .. }
+            | Self::ToolResult { .. }
+            | Self::ModelSelection { .. }
+            | Self::PermissionPreset { .. }
+            | Self::PlanMode { .. }
+            | Self::SandboxMode { .. }
+            | Self::RequestContext { .. }
+            | Self::RequestHeader { .. }
+            | Self::SessionTitle { .. }
+            | Self::LlmRetry { .. }
+            // Feedback answers about a message, not about a turn: it may be recorded long after the
+            // turn that produced the message, so attributing it to one would be a claim the event
+            // does not make.
+            | Self::MessageFeedbackPut { .. }
+            | Self::MessageFeedbackDelete { .. }
+            | Self::SessionFeedbackRecord { .. }
+            | Self::TeamMode { .. } => None,
+        }
+    }
+}
+
+/// A failure raised by the session store.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    /// The underlying file could not be read or written.
+    #[error("session io: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// A line was not valid JSON or not a known event.
+    #[error("session log line {line}: {source}")]
+    Corrupt {
+        /// 1-based line number.
+        line: usize,
+        /// The decoder's error.
+        source: serde_json::Error,
+    },
+
+    /// The log's format version is newer than this build understands.
+    ///
+    /// Distinct from [`Self::Corrupt`] because the two demand opposite actions: corrupt means the
+    /// file is damaged and nothing can read it, newer means a *newer build* wrote it and this one
+    /// must not guess. A reader told "corrupt" would delete the file; told this, it upgrades.
+    #[error(
+        "session log uses format v{stored}, but this build reads up to v{current}; \
+         a newer build wrote it"
+    )]
+    FormatTooNew {
+        /// The version the log declares.
+        stored: u64,
+        /// The newest version this build reads.
+        current: u64,
+    },
+
+    /// The log's format version is older than current, and no migration reaches it.
+    ///
+    /// Separate from [`Self::FormatTooNew`] because the fix differs: one is an upgrade, this one is
+    /// a build that should have carried the edge and does not.
+    #[error(
+        "session log uses format v{stored}, and no migration from it is implemented (this build \
+         writes v{current})"
+    )]
+    FormatUnsupported {
+        /// The version the log declares.
+        stored: u64,
+        /// The version this build writes.
+        current: u64,
+    },
+
+    /// A zstd frame could not be decoded.
+    #[error("session compression: {0}")]
+    Compression(String),
+}
+
+/// A durable, append-only session log.
+///
+/// Writes are buffered per event: [`SessionStore::append`] opens, writes, and closes, so a crash
+/// loses at most the event being written. That is slower than holding a handle, but it means a
+/// crashed harness leaves a readable log rather than an empty one — the property that makes
+/// recovery possible at all.
+pub struct SessionStore {
+    /// The cross-process write lease, held for this store's lifetime.
+    ///
+    /// **Separate from the `Mutex` around `append`**, and both are needed: the mutex serialises
+    /// writers inside one process, and the lease is a kernel file lock that stops a *second process*
+    /// from appending to the same log. Without it two `girder` processes on one session interleave
+    /// compressed frames, and a reader gets a stream that decodes into a mixture of both.
+    ///
+    /// `None` when the store was built without one, which is what a test and an in-memory session
+    /// want: acquiring a lease creates a directory and a lock file, and a caller that never writes to
+    /// disk should not pay for that.
+    lease: Option<std::sync::Arc<crate::storage::persistence_lease::SessionWriteLease>>,
+
+    path: PathBuf,
+    /// Compression level. 3 is zstd's default and balances speed against size for log text.
+    level: i32,
+    /// The last decoded log, while the file has not grown.
+    ///
+    /// Shared between clones so two handles on one path do not each decode: the loop reads the log every step, and
+    /// a log that takes a millisecond to decode would add a millisecond to every step of a long turn.
+    cached: Arc<std::sync::RwLock<Option<Cached>>>,
+}
+
+/// One decoded log, with the file size it was decoded from.
+///
+/// `Clone` rather than a reference: the read path holds it while decoding is skipped, and holding a lock across the
+/// caller's use of the events would block the next append.
+#[derive(Clone)]
+struct Cached {
+    /// The size the file was when this was decoded.
+    ///
+    /// A size rather than a modification time: an append always changes the size, and a rewrite that kept the size
+    /// would also keep the content this cache holds.
+    len: u64,
+    /// The events, as a chunked list so a clone shares the chunks rather than copying the vector.
+    events: crate::util::chunked_list::List<SessionEvent>,
+}
+
+/// One lock per log path, process-wide.
+///
+/// [`SessionStore::append`] is read-modify-write: it decodes the whole frame, pushes one event, and
+/// rewrites it. Two appends to the same file that interleave therefore lose one of them, and both
+/// writing the same staging file corrupts the result further. Measured before this lock existed:
+/// 80 concurrent appends left 12 events and 41 errors.
+///
+/// Keyed by path rather than held in the store because a store is cheap to construct — the RPC
+/// layer builds one per call — so a per-instance mutex would not serialise anything.
+/// A per-path async lock for writers whose critical section contains an `await`.
+///
+/// A `std::sync::Mutex` guard is not `Send`, so holding one across an `await` makes the future
+/// un-spawnable. Anything that must await inside its critical section — a file write, a version
+/// check that reads metadata — uses this instead.
+pub(crate) fn async_path_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+
+    let locks = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guards = locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(guards.entry(path.to_path_buf()).or_default())
+}
+
+pub(crate) fn path_lock(path: &Path) -> Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+
+    let locks = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guards = locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(guards.entry(path.to_path_buf()).or_default())
+}
+
+impl SessionStore {
+    /// Creates an empty session file if none exists.
+    ///
+    /// An empty file is a valid session: `read_all` treats a zero-length file as "no events", so a
+    /// created session is visible to `list` before anything happens in it. Writing a placeholder
+    /// event instead was the earlier approach, and it made a session that had never been prompted
+    /// look like it had a turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error when the file cannot be created.
+    pub fn touch(&self) -> Result<bool, SessionError> {
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.path)
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Opens a store at `path`. The file is created on the first append or by [`touch`].
+    ///
+    /// [`touch`]: SessionStore::touch
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            level: 3,
+            lease: None,
+            cached: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Opens a store that holds the cross-process write lease.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::storage::persistence_lease::LeaseError`] when another holder has it, or the directory
+    /// cannot be created. Reported rather than retried: the lock is non-blocking on purpose, because
+    /// waiting on a wedged holder is an unbounded hang with no diagnostic.
+    pub fn with_lease(
+        path: impl Into<PathBuf>,
+        id: impl Into<String>,
+    ) -> Result<Self, crate::storage::persistence_lease::LeaseError> {
+        let path = path.into();
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let lease = crate::storage::persistence_lease::SessionWriteLease::acquire(dir, id)?;
+        Ok(Self {
+            path,
+            level: 3,
+            lease: Some(std::sync::Arc::new(lease)),
+            cached: Arc::new(std::sync::RwLock::new(None)),
+        })
+    }
+
+    /// Whether this store holds the cross-process write lease.
+    ///
+    /// Exposed so a caller can tell "I may write here" from "another process is writing here" without
+    /// attempting an append that would fail.
+    #[must_use]
+    pub fn holds_lease(&self) -> bool {
+        self.lease.is_some()
+    }
+
+    /// Sets the zstd compression level.
+    #[must_use]
+    pub fn with_level(mut self, level: i32) -> Self {
+        self.level = level;
+        self
+    }
+
+    /// The file this store writes.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one event, compressing the whole file.
+    ///
+    /// zstd frames cannot be appended without re-encoding, so this rewrites the file: read the
+    /// current frame, decode, append the line, re-encode. That is O(file) per event, which is
+    /// acceptable for the slice (a conversation is kilobytes) and is the reason phase 5 will move
+    /// to an uncompressed working file with periodic compaction.
+    pub fn append(&self, event: &SessionEvent) -> Result<(), SessionError> {
+        // Serialised per path so two appends cannot interleave their frame writes. The lock is still
+        // needed although this is a pure append: a torn write would corrupt the frame.
+        let lock = path_lock(&self.path);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let line = serde_json::to_string(event).map_err(|error| {
+            SessionError::Compression(format!("failed to encode event: {error}"))
+        })?;
+        let mut payload = line.into_bytes();
+        payload.push(b'\n');
+
+        // One compressed frame per append, concatenated onto the file.
+        //
+        // zstd decodes concatenated frames as a single stream, so a reader still sees the whole log.
+        // This replaces a read-modify-write of the entire file: append cost was O(log size) and grew
+        // quadratically, measured at 4.3 ms for a 500-message session.
+        //
+        // Appending trades crash-atomicity for that: a torn tail loses the event being written,
+        // where a rewrite-and-rename could not. The format already tolerated a truncated tail for
+        // exactly this reason, and the reader treats an unparseable line as content.
+        let frame = zstd::encode_all(payload.as_slice(), self.level)
+            .map_err(|error| SessionError::Compression(error.to_string()))?;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        std::io::Write::write_all(&mut file, &frame)?;
+        // Deliberately *not* `sync_data` per event. It costs about 3 ms here, twenty times the
+        // compress-and-write. The checkpoint before a model request and before a tool body is the
+        // cadence that asks for durability; this write only needs to reach the page cache.
+        Ok(())
+    }
+
+    /// Reads every event, in order.
+    ///
+    /// A missing file reads as an empty session rather than an error: a store that has never been
+    /// written is not corrupt.
+    pub fn read_all(&self) -> Result<Vec<SessionEvent>, SessionError> {
+        // A cached read is returned while the file has not grown. The check is one `metadata` call, and the
+        // alternative is decompressing the whole log again to learn nothing new — which the loop does once per
+        // step, so a long turn paid for it dozens of times.
+        if let Some(cached) = self.cached.read().ok().and_then(|cached| cached.clone()) {
+            let current = std::fs::metadata(&self.path).map_or(0, |meta| meta.len());
+            if current == cached.len {
+                return Ok(cached.events.iter().cloned().collect());
+            }
+        }
+
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+
+        if file.metadata()?.len() == 0 {
+            return Ok(Vec::new());
+        }
+
+        let decoder = zstd::stream::read::Decoder::new(BufReader::new(file))
+            .map_err(|error| SessionError::Compression(error.to_string()))?;
+        let reader = BufReader::new(decoder);
+
+        let mut events = Vec::new();
+        for (index, line) in reader.lines().enumerate() {
+            let line = line.map_err(SessionError::Io)?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: SessionEvent =
+                serde_json::from_str(&line).map_err(|source| SessionError::Corrupt {
+                    line: index + 1,
+                    source,
+                })?;
+            events.push(event);
+        }
+
+        // Stored as a chunked list so a later append shares every chunk it can rather than copying the vector:
+        // the cached value is read far more often than it is written.
+        let list = events
+            .iter()
+            .fold(crate::util::chunked_list::List::new(), |list, event| {
+                list.push(event.clone())
+            });
+        if let Ok(mut cached) = self.cached.write() {
+            *cached = Some(Cached {
+                len: std::fs::metadata(&self.path).map_or(0, |meta| meta.len()),
+                events: list,
+            });
+        }
+        Ok(events)
+    }
+
+    /// Whether the session has any user message, without decoding the whole log.
+    ///
+    /// A list view needs one bit per session: "has this conversation started". Decoding every event
+    /// of every session to compute it is O(sessions x events) of disk and zstd work for a boolean —
+    /// measured at 10,200 events decoded to render 200 rows.
+    ///
+    /// The scan stops at the first user message, and a session with no messages is most often a
+    /// short one, so the common cases are cheap.
+    pub fn has_user_message(&self) -> Result<bool, SessionError> {
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if file.metadata()?.len() == 0 {
+            return Ok(false);
+        }
+
+        let decoder = zstd::stream::read::Decoder::new(BufReader::new(file))
+            .map_err(|error| SessionError::Compression(error.to_string()))?;
+        for line in BufReader::new(decoder).lines() {
+            let line = line.map_err(SessionError::Io)?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            // A line that will not parse still counts as content: the session is not blank, and
+            // hiding a corrupt log behind "blank" would be worse than showing it.
+            match serde_json::from_str::<SessionEvent>(&line) {
+                // A line that will not parse still counts as content: the session is not blank, and
+                // hiding a corrupt log behind "blank" would be worse than showing it.
+                Ok(SessionEvent::UserMessage { .. }) | Err(_) => return Ok(true),
+                Ok(_) => {}
+            }
+        }
+        Ok(false)
+    }
+
+    /// Flushes the log to durable storage.
+    ///
+    /// Appends are not synced individually because the cost is twenty times the write and buys
+    /// durability only against an OS crash. A caller that needs that guarantee — a host shutting
+    /// down, a checkpoint — calls this at its own cadence.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error when the file cannot be opened or synced.
+    pub fn sync(&self) -> Result<(), SessionError> {
+        match File::open(&self.path) {
+            Ok(file) => file.sync_all().map_err(SessionError::Io),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Counts events without materializing them all.
+    pub fn len(&self) -> Result<usize, SessionError> {
+        Ok(self.read_all()?.len())
+    }
+
+    /// Whether the session has no events.
+    pub fn is_empty(&self) -> Result<bool, SessionError> {
+        Ok(self.len()? == 0)
+    }
+}
+
+/// The session seam: what the loop talks to.
+///
+/// A trait rather than the concrete [`SessionStore`] so a test can substitute an in-memory log, and
+/// so phase 5's remote or forked session is a different implementation rather than a different type
+/// at every call site.
+pub trait Session: Send + Sync {
+    /// Appends one event.
+    fn append(&self, event: SessionEvent) -> BoxFut<Result<(), SessionError>>;
+
+    /// Reads every event.
+    fn replay(&self) -> BoxFut<Result<Vec<SessionEvent>, SessionError>>;
+
+    /// Makes every event written so far durable.
+    ///
+    /// Called before a model request and before a tool body. A failure stops that work: a request
+    /// that ran after a failed flush would continue from a log the disk does not have.
+    fn flush(&self) -> BoxFut<Result<(), SessionError>>;
+}
+
+impl Session for SessionStore {
+    fn append(&self, event: SessionEvent) -> BoxFut<Result<(), SessionError>> {
+        let path = self.path.clone();
+        let level = self.level;
+        // The lease travels with the write. Dropping it here would release the cross-process lock
+        // while the append this future exists for has not happened yet, which is the one window the
+        // lease is for.
+        let lease = self.lease.clone();
+        Box::pin(async move {
+            SessionStore {
+                path,
+                level,
+                lease,
+                cached: Arc::new(std::sync::RwLock::new(None)),
+            }
+            .append(&event)
+        })
+    }
+
+    fn replay(&self) -> BoxFut<Result<Vec<SessionEvent>, SessionError>> {
+        let path = self.path.clone();
+        let level = self.level;
+        let lease = self.lease.clone();
+        Box::pin(async move {
+            SessionStore {
+                path,
+                level,
+                lease,
+                cached: Arc::new(std::sync::RwLock::new(None)),
+            }
+            .read_all()
+        })
+    }
+
+    fn flush(&self) -> BoxFut<Result<(), SessionError>> {
+        let result = self.sync();
+        Box::pin(async move { result })
+    }
+}
+
+/// An in-memory session, for tests and for a run with no persistence.
+#[derive(Default)]
+pub struct MemorySession {
+    events: std::sync::Mutex<Vec<SessionEvent>>,
+}
+
+impl MemorySession {
+    /// Creates an empty session.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The events recorded so far.
+    #[must_use]
+    pub fn events(&self) -> Vec<SessionEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Session for MemorySession {
+    fn append(&self, event: SessionEvent) -> BoxFut<Result<(), SessionError>> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn replay(&self) -> BoxFut<Result<Vec<SessionEvent>, SessionError>> {
+        let events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Box::pin(async move { Ok(events) })
+    }
+
+    fn flush(&self) -> BoxFut<Result<(), SessionError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// The registry key for the session store.
+pub struct SessionKey;
+
+impl crate::ServiceKey for SessionKey {
+    type Service = dyn Session;
+    const ID: &'static str = "session";
+}
+
+/// Reads a session file written by any compatible version.
+///
+/// Kept as a free function so a tool or a CLI subcommand can inspect a log without constructing a
+/// store.
+/// The `version` a session header declares, when the line is one.
+///
+/// A header is a line whose `type` is `session`. Anything else is an event, and an event has no
+/// version of its own -- a log is one format, stated once.
+fn header_version(value: &serde_json::Value) -> Option<u64> {
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("session") {
+        return None;
+    }
+    value.get("version").and_then(serde_json::Value::as_u64)
+}
+
+pub fn read_session_file(path: impl AsRef<Path>) -> Result<Vec<SessionEvent>, SessionError> {
+    let mut bytes = Vec::new();
+    File::open(path.as_ref())?.read_to_end(&mut bytes)?;
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let decoded = zstd::decode_all(&bytes[..])
+        .map_err(|error| SessionError::Compression(error.to_string()))?;
+    let text = String::from_utf8(decoded)
+        .map_err(|error| SessionError::Compression(format!("session log is not UTF-8: {error}")))?;
+
+    // The first line may be a session header carrying `version`. Classifying it before anything is
+    // parsed is what turns "a field is missing somewhere" into "this log is from a newer build":
+    // without it a v9 log parsed by a v4 reader fails on whichever field the reader needed first,
+    // and that message names a field rather than the difference that produced it.
+    if let Some(version) = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .as_ref()
+        .and_then(header_version)
+    {
+        if let Ok(catalog) = crate::session::format_catalog::FormatCatalog::released() {
+            match catalog.classify(version) {
+                crate::session::format_catalog::VersionClass::Current => {}
+                crate::session::format_catalog::VersionClass::NewerThanBuild { stored, current } => {
+                    return Err(SessionError::FormatTooNew { stored, current });
+                }
+                crate::session::format_catalog::VersionClass::MigrationRequired => {
+                    // The route is what says whether a migration exists, not the version number: a
+                    // stored version below current with no traversable edge is unsupported too, and
+                    // reporting it as "migration required" would start a loop that fails one edge
+                    // later.
+                    // `blocked_edge` is what says whether the path is walkable: a version below
+                    // current with no traversable edge is unsupported too, and reporting it as
+                    // "migration required" would start a loop that fails one edge later.
+                    let walkable = catalog
+                        .route(version)
+                        .is_ok_and(|route| route.blocked_edge().is_none());
+                    if !walkable {
+                        return Err(SessionError::FormatUnsupported {
+                            stored: version,
+                            current: *catalog.readable_versions().end(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut events = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // A header is metadata, not an event. It is skipped rather than parsed as one: this build's
+        // own logs begin with an event, and a log from a build that writes a header would otherwise
+        // fail on its first line with "unknown variant `session`" -- a message about the reader's
+        // vocabulary when the actual fact is that a header is there.
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return Err(SessionError::Corrupt {
+                line: index + 1,
+                source: serde_json::from_str::<SessionEvent>(line).expect_err("already failed"),
+            });
+        };
+        if header_version(&value).is_some() {
+            continue;
+        }
+        let event = serde_json::from_value(value).map_err(|source| SessionError::Corrupt {
+            line: index + 1,
+            source,
+        })?;
+        events.push(event);
+    }
+    Ok(events)
+}
+
+impl SessionEvent {
+    /// Builds a user-message event from text.
+    ///
+    /// A constructor rather than a literal at each call site: every user message needs an id and a
+    /// source, and repeating that at ten call sites is how one of them ends up with a duplicated id.
+    #[must_use]
+    pub fn user_text(id: &str, text: impl Into<String>) -> Self {
+        let message = crate::session::message::Message::new(
+            crate::util::brand::MessageId::new(id).unwrap_or_else(|_| {
+                crate::util::brand::MessageId::new("msg-invalid").expect("constant is valid")
+            }),
+            crate::session::message::Role::User,
+            crate::session::message::MessageSource::User { form: None },
+            vec![ContentBlock::Text { text: text.into() }],
+        );
+        Self::UserMessage { message }
+    }
+
+    /// Builds an assistant-message event from text.
+    #[must_use]
+    pub fn assistant_text(id: &str, text: impl Into<String>, provider: &str) -> Self {
+        let message = crate::session::message::Message::new(
+            crate::util::brand::MessageId::new(id).unwrap_or_else(|_| {
+                crate::util::brand::MessageId::new("msg-invalid").expect("constant is valid")
+            }),
+            crate::session::message::Role::Assistant,
+            crate::session::message::MessageSource::Model {
+                provider: provider.to_owned(),
+                model: provider.to_owned(),
+                replay_state: None,
+            },
+            vec![ContentBlock::Text { text: text.into() }],
+        );
+        Self::AssistantMessage { message }
+    }
+}
+
+impl SessionStore {
+    /// The events after `after_seq`, without handing back the ones the caller already has.
+    ///
+    /// [`SessionStore::read_all`] answers the same question by cloning every event, which is the right shape for a
+    /// caller that wants the log and the wrong one for a caller that already holds it: a poller resuming from a cursor
+    /// paid to copy the whole conversation on every poll it made no progress on.
+    ///
+    /// The cursor is one-based like every other sequence in this crate, so `after_seq = 0` means "from the start" and
+    /// `after_seq = n` means "everything after the nth event". A sequence past the end returns nothing rather than an
+    /// error: a poller that has not missed anything is the normal case, not a mistake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the log cannot be read or decoded. A truncated tail is not an error -- it is what
+    /// an interrupted write looks like, and [`SessionStore::read_all`] already treats it as one.
+    pub fn read_after(&self, after_seq: u64) -> Result<Vec<SessionEvent>, SessionError> {
+        let all = self.read_all()?;
+        // `skip` on a collected Vec would walk it; the index is what `after_seq` already is, since the sequence is
+        // one-based and the vector is zero-based.
+        let start = usize::try_from(after_seq).unwrap_or(usize::MAX);
+        Ok(all.into_iter().skip(start).collect())
+    }
+
+    /// The number of events in the log, without cloning them.
+    ///
+    /// A caller showing "3 of 40 events" needs the length, not the events, and asking for the events to count them is
+    /// how a status line ends up decoding a conversation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the log cannot be read.
+    pub fn event_count(&self) -> Result<u64, SessionError> {
+        let all = self.read_all()?;
+        Ok(u64::try_from(all.len()).unwrap_or(u64::MAX))
+    }
+}
+
+#[cfg(test)]
+mod flush_tests {
+    use super::{SessionEvent, SessionStore};
+
+    #[test]
+    fn a_missing_log_flushes_as_success() {
+        let path = std::env::temp_dir().join(format!(
+            "girder-flush-missing-{}-{}.jsonl.zst",
+            std::process::id(),
+            crate::now_millis()
+        ));
+        let _ = std::fs::remove_file(&path);
+        SessionStore::new(&path).sync().expect("nothing to persist");
+    }
+
+    #[test]
+    fn a_written_log_flushes() {
+        let path = std::env::temp_dir().join(format!(
+            "girder-flush-written-{}-{}.jsonl.zst",
+            std::process::id(),
+            crate::now_millis()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = SessionStore::new(&path);
+        store
+            .append(&SessionEvent::user_text("m", "hello"))
+            .expect("append");
+        store.sync().expect("sync");
+        assert_eq!(store.read_all().expect("read").len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+}

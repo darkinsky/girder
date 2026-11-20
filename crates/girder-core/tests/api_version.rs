@@ -24,8 +24,8 @@
 
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the checker as written even before the crate root wires it in.
-#[path = "../src/api_version.rs"]
-mod api_version;
+#[path = "../src/api/version.rs"]
+pub mod api_version;
 
 use api_version::{Compatibility, Deprecation, Requirement, Version, VersionError, check};
 
@@ -450,4 +450,10 @@ fn a_requirement_without_a_deprecation_never_reports_one() {
             Compatibility::Supported
         );
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod api {
+    pub use super::api_version as version;
 }

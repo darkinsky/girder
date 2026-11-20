@@ -12,7 +12,7 @@
 // The module is compiled into this test target by path so the suite runs before
 // `crates/girder-core/src/lib.rs` declares `pub mod session_migration;`. Once that wiring
 // exists this include can be dropped and the import below changed to
-// `girder_core::session_migration::{..}`; keep both in step with the library module.
+// `girder_core::session::migration::{..}`; keep both in step with the library module.
 use girder_core::{
     FormatVersion, Migration, MigrationError, Migrator, detect_format as detect,
     upgrade_event as upgrade, upgrade_in_session,

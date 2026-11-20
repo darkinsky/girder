@@ -9,7 +9,7 @@
 //!
 //! The queue is not exported from the crate root yet; that wiring is a separate change to `lib.rs`.
 //! Compiling the exact source file here — rather than a copy — keeps these tests exercising the same
-//! code a consumer will eventually reach through `girder_core::bounded_queue`.
+//! code a consumer will eventually reach through `girder_core::util::bounded_queue`.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,8 +17,8 @@
     reason = "tests assert by panicking; a failed unwrap is a failed test"
 )]
 
-#[path = "../src/bounded_queue.rs"]
-mod bounded_queue;
+#[path = "../src/util/bounded_queue.rs"]
+pub mod bounded_queue;
 
 use bounded_queue::{BoundedQueue, Closed, Overflow};
 
@@ -290,4 +290,10 @@ async fn concurrent_producers_never_exceed_the_bound() {
             .iter()
             .all(|value| *value < PRODUCERS * PER_PRODUCER)
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod util {
+    pub use super::bounded_queue as bounded_queue;
 }

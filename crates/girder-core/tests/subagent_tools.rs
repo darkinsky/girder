@@ -8,8 +8,8 @@
 // The module is included by path rather than through the crate's re-exports, so these tests compile
 // against the tools as written even before the crate root wires them in. It resolves `girder_core::…`
 // through the alias the library declares for itself, which is why the same source builds here.
-#[path = "../src/subagent_tools.rs"]
-mod subagent_tools;
+#[path = "../src/subagent/tools.rs"]
+pub mod subagent_tools;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -512,6 +512,31 @@ async fn sending_to_a_running_child_refuses_and_names_what_is_missing() {
 }
 
 #[tokio::test]
+async fn sending_to_a_child_with_an_inbox_is_read_before_the_next_step() {
+    let registry = SubagentRegistry::shared();
+    let id = registry.record_start("busy", Depth::root());
+    let agent = Arc::new(girder_core::Agent::new(
+        girder_core::AgentSpec::root(
+            girder_core::SessionId::new(id.clone()).expect("registry ids are valid session ids"),
+            girder_core::AgentOptions::new("child", "model"),
+        ),
+    ));
+    registry.attach_agent(&id, Arc::clone(&agent));
+
+    let tool = subagent_send_tool(registry);
+    let result = call(
+        &tool,
+        serde_json::json!({ "id": id, "message": "also check the tests" }),
+    )
+    .await;
+
+    assert!(!result.is_error, "{}", text_of(&result));
+    let queued = agent.take_queued_step();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].text(), "also check the tests");
+}
+
+#[tokio::test]
 async fn sending_to_a_finished_child_refuses_too() {
     // A one-shot child is not resumable either: `delegate` dropped its session when it returned.
     let registry = SubagentRegistry::shared();
@@ -671,4 +696,10 @@ fn the_scratch_directory_is_isolated() {
     assert_ne!(first, second);
     assert!(first.starts_with(std::env::temp_dir()), "{first:?}");
     assert!(first.exists(), "the directory is created: {first:?}");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod subagent {
+    pub use super::subagent_tools as tools;
 }

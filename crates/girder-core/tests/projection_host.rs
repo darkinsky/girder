@@ -12,8 +12,8 @@
 // The module is included by path rather than through the crate's re-exports, because the crate root
 // is being wired up separately. It resolves `girder_core::…` through the alias the library declares
 // for itself, which is why the same source builds here.
-#[path = "../src/projection_host.rs"]
-mod projection_host;
+#[path = "../src/session/projection_host.rs"]
+pub mod projection_host;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -605,4 +605,10 @@ fn a_model_selection_projection_folds_a_real_selection() {
         host.view()["modelSelection"]["lastUsed"]["model"],
         "deepseek-v4.1-flash"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::projection_host as projection_host;
 }

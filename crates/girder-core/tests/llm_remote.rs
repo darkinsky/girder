@@ -1,6 +1,6 @@
 //! `llm.*`: the three endpoints upstream marks `@Remote` on `LlmRuntime`.
 //!
-//! Before this, `llm_final_gap::Runtime` held the whole runtime and registered no endpoint, so a
+//! Before this, `llm::llm_final::Runtime` held the whole runtime and registered no endpoint, so a
 //! client could not ask a running harness which providers it has. The property under test is that
 //! the service's declared surface and its handlers agree, and that a call reaches the live runtime.
 
@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use girder_core::llm_final_gap::Runtime;
+use girder_core::llm::llm_final::Runtime;
 use girder_core::{RemoteCall, RemoteError, RemoteRegistry};
 use serde_json::{Value, json};
 

@@ -39,8 +39,8 @@
     reason = "tests assert by panicking; a failed unwrap or index is a failed test"
 )]
 
-#[path = "../src/terminal_retain_rpc.rs"]
-mod terminal_retain_rpc;
+#[path = "../src/terminal/retain_rpc.rs"]
+pub mod terminal_retain_rpc;
 
 use std::path::PathBuf;
 
@@ -432,4 +432,10 @@ fn the_description_agrees_with_what_the_parser_accepts() {
         described["inputSchema"]["additionalProperties"].is_null(),
         "the schema must not forbid fields the parser ignores"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_retain_rpc as retain_rpc;
 }

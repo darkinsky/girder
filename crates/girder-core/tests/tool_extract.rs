@@ -10,8 +10,8 @@
 //! The source is included by path rather than through a crate re-export, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/tool_extract.rs"]
-mod tool_extract;
+#[path = "../src/core/tool_extract.rs"]
+pub mod tool_extract;
 
 use tool_extract::{Extracted, extract, glob_paths, grep_paths};
 
@@ -367,4 +367,10 @@ fn duplicate_paths_collapse_only_in_the_structured_form() {
             truncated: false,
         }
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::tool_extract as tool_extract;
 }

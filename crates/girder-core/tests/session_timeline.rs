@@ -10,8 +10,8 @@
 //! against it as written even before the crate root wires it in. It resolves `girder_core::…` through
 //! the alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/session_timeline.rs"]
-mod session_timeline;
+#[path = "../src/session/timeline.rs"]
+pub mod session_timeline;
 
 use girder_core::{
     ChatMessage, ChatRole, ContextForm, MessageId, MessageSource, SessionEvent, ToolCallId,
@@ -615,4 +615,10 @@ fn metadata_events_do_not_disturb_the_timeline() {
     assert_eq!(segments[0].summary, "just run it");
     assert_eq!(segments[0].steps, 1);
     let _ = segment(&segments, 1);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_timeline as timeline;
 }

@@ -28,7 +28,7 @@
 //!
 //! # Why the invalidation test mutates the log through a real `SessionStore`
 //!
-//! `search_persist::load_for` decides a record is still true by comparing the recorded size with a
+//! `session::search_persist::load_for` decides a record is still true by comparing the recorded size with a
 //! `stat` of `{id}.jsonl.zst`. Appending garbage bytes would exercise the same branch, but it would
 //! leave a log that cannot be rebuilt from — and the interesting half of the contract is that the
 //! stale entry is not merely dropped, it is *rebuilt* from the log on the next query. So the test

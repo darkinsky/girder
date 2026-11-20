@@ -38,8 +38,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/terminal_rpc_extra.rs"]
-mod terminal_rpc_extra;
+#[path = "../src/terminal/rpc_extra.rs"]
+pub mod terminal_rpc_extra;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -540,4 +540,10 @@ async fn both_queries_declare_a_read_to_a_policy() {
         ],
         "{seen:?}"
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod terminal {
+    pub use super::terminal_rpc_extra as rpc_extra;
 }

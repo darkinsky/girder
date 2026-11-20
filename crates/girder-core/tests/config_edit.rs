@@ -33,7 +33,7 @@ use girder_core::{MemorySettingsStore, SchemaError, SchemaRegistry, SettingSpec,
 
 /// The literal a redacted value is reported as.
 ///
-/// Pinned as a literal rather than read from `config_edit::REDACTED`, which is not part of the
+/// Pinned as a literal rather than read from `settings::config_edit::REDACTED`, which is not part of the
 /// crate's re-exports: the wire value a client compares against is what these tests must catch
 /// changing.
 const REDACTED: &str = "***";

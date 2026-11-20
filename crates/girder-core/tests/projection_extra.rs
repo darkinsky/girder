@@ -8,8 +8,8 @@
 // The module is included by path rather than through the crate's re-exports, because the crate root
 // has not been wired to it yet. It resolves `girder_core::…` through the alias the library declares
 // for itself, which is why the same source builds here.
-#[path = "../src/projection_extra.rs"]
-mod projection_extra;
+#[path = "../src/session/projection_extra.rs"]
+pub mod projection_extra;
 
 use std::sync::Arc;
 
@@ -456,4 +456,10 @@ fn the_adapter_keeps_the_projection_reachable() {
     assert_eq!(versioned.key(), "turnBoundary");
     assert_eq!(VersionedProjection::state_version(&versioned), 7);
     assert_eq!(versioned.projection().key(), "turnBoundary");
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::projection_extra as projection_extra;
 }

@@ -19,8 +19,8 @@
     reason = "a test asserting a tree shape indexes it; an out-of-range index is a failed test, not a panic to design around"
 )]
 
-#[path = "../src/trace_span.rs"]
-mod trace_span;
+#[path = "../src/telemetry/trace_span.rs"]
+pub mod trace_span;
 
 use trace_span::{Span, Tracer};
 
@@ -423,4 +423,10 @@ fn a_full_turn_renders_readably() {
         "turn 240ms\n  step 115ms n=1\n    llm 100ms\n  step 109ms n=2\n    tool:bash 100ms\n    tool:read 20ms\n",
     );
     assert_eq!(tracer.roots()[0].total_duration_ms(), Some(240));
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod telemetry {
+    pub use super::trace_span as trace_span;
 }

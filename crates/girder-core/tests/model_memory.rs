@@ -18,8 +18,8 @@
 //! against it as written even before the crate root wires it in. It names the crate through
 //! `::girder_core`, which the library alias lets resolve from either side.
 
-#[path = "../src/model_memory.rs"]
-mod model_memory;
+#[path = "../src/llm/model_memory.rs"]
+pub mod model_memory;
 
 use girder_core::{ModelSelection, SessionEvent, TurnEndReason};
 use model_memory::{Memory, Selection};
@@ -405,4 +405,10 @@ fn current_and_model_at_agree_only_at_the_end() {
     assert_eq!(memory.current(), Some("b"));
     assert_eq!(memory.model_at(3), memory.current());
     assert_ne!(memory.model_at(2), memory.current());
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod llm {
+    pub use super::model_memory as model_memory;
 }

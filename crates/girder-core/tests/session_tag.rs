@@ -11,8 +11,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against it as written even before the crate root wires it in.
 
-#[path = "../src/session_tag.rs"]
-mod session_tag;
+#[path = "../src/session/tag.rs"]
+pub mod session_tag;
 
 use session_tag::{MAX_CONFIDENCE, MAX_NAME_CHARS, Source, Tag, TagError, TagSet, normalize};
 
@@ -403,4 +403,10 @@ fn all_returns_deeply_ordered_tags_not_map_keys() {
     let tag: &Tag = set.all()[0];
     assert_eq!(tag.name, "second-name");
     assert_eq!(tag.source, Source::Manual);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_tag as tag;
 }

@@ -8,8 +8,8 @@
 //! compile against it as written even before the crate root wires it in. It resolves `girder_core::…`
 //! through the alias the library declares for itself, which is why the same source builds here.
 
-#[path = "../src/session_title.rs"]
-mod session_title;
+#[path = "../src/session/title.rs"]
+pub mod session_title;
 
 use girder_core::SessionEvent;
 
@@ -165,6 +165,41 @@ fn a_zero_limit_yields_no_title() {
     assert_eq!(derive(&events, Source::FirstPrompt, 0), None);
 }
 
+#[tokio::test]
+async fn an_opening_title_is_recorded_once() {
+    use girder_core::Session as _;
+
+    let session = girder_core::MemorySession::new();
+    session
+        .append(girder_core::SessionEvent::user_text(
+            "m",
+            "why does the release job fail",
+        ))
+        .await
+        .expect("the prompt is stored");
+
+    session_title::record_opening_title(&session)
+        .await
+        .expect("the title is stored");
+    session_title::record_opening_title(&session)
+        .await
+        .expect("a second pass leaves the title");
+
+    let events = session.replay().await.expect("the log is readable");
+    let titles = events
+        .iter()
+        .filter(|event| matches!(event, girder_core::SessionEvent::SessionTitle { .. }))
+        .count();
+    assert_eq!(titles, 1);
+    match &events[1] {
+        girder_core::SessionEvent::SessionTitle { title, source, .. } => {
+            assert_eq!(title, "why does the release job fail");
+            assert_eq!(source, "fallback");
+        }
+        other => panic!("expected the title event, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_limit_of_one_leaves_only_the_ellipsis() {
     // The ellipsis is budgeted, so a one-character limit cannot produce two characters.
@@ -174,4 +209,10 @@ fn a_limit_of_one_leaves_only_the_ellipsis() {
         derive(&events, Source::FirstPrompt, 1).as_deref(),
         Some("…")
     );
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod session {
+    pub use super::session_title as title;
 }

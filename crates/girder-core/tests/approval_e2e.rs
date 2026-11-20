@@ -4,7 +4,7 @@
 //!
 //! `approval_rules` has unit tests that show `Rules::decide` returns the right `Decision`, and
 //! `approval` has unit tests that show an `Approver` records what it was asked. Both pass no matter
-//! what `agent_loop::dispatch` does with the answer. A rule layer that is never consulted is
+//! what `core::agent_loop::dispatch` does with the answer. A rule layer that is never consulted is
 //! indistinguishable, from the unit tests, from one that is consulted and ignored -- and the earlier
 //! audit that motivated this file found `with_approval_rules`/`with_approver` had zero production
 //! callers, which is exactly the condition under which those unit tests keep passing while the

@@ -24,8 +24,8 @@
     reason = "a test asserts by panicking; a failed expectation is the result it is reporting"
 )]
 
-#[path = "../src/turn_closure.rs"]
-mod turn_closure;
+#[path = "../src/core/turn_closure.rs"]
+pub mod turn_closure;
 
 use girder_core::{SessionEvent, TurnEndReason};
 
@@ -336,4 +336,10 @@ fn the_derived_answers_agree_across_every_fixture() {
         let closure = evaluate(events);
         assert_derived_answers_agree(events, &closure);
     }
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod core {
+    pub use super::turn_closure as turn_closure;
 }

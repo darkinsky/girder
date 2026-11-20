@@ -548,6 +548,41 @@ async fn a_read_only_session_may_not_run_a_shell_command() {
 }
 
 #[tokio::test]
+async fn a_confined_mode_refuses_when_no_runner_exists() {
+    if has_program("bwrap") || has_program("landlock-run") || has_program("sandbox-exec") {
+        return;
+    }
+    let cancel = CancellationToken::new();
+    let dir = scratch("confine-refuse");
+    let options = ExecOptions::default()
+        .with_cwd(dir.clone())
+        .with_confine(girder_core::SandboxMode::WorkspaceWrite);
+    let error = run_bash("echo should-not-run", &options, &cancel)
+        .await
+        .expect_err("a confined mode with no runner must not spawn");
+    let ExecError::SandboxUnavailable { message } = error else {
+        panic!("expected SANDBOX_UNAVAILABLE, got {error}");
+    };
+    assert!(message.contains("SANDBOX_UNAVAILABLE") || message.contains("refusing to run"), "{message}");
+    assert!(
+        !message.contains("should-not-run"),
+        "the command text is not a result: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn danger_full_access_still_runs_unconfined() {
+    let cancel = CancellationToken::new();
+    let options = ExecOptions::default().with_confine(girder_core::SandboxMode::Full);
+    let output = run_bash("echo unconfined", &options, &cancel)
+        .await
+        .expect("danger-full-access runs without a runner");
+    assert!(output.success());
+    assert!(output.to_model_text().contains("unconfined"));
+}
+
+#[tokio::test]
 async fn a_writable_session_may_run_a_shell_command() {
     // A policy rooted somewhere this command does not touch, so the refusal comes from the permission layer rather
     // than the path check: the assertion is about the permission layer.

@@ -8,8 +8,8 @@
 //! The module is included by path rather than through the crate's re-exports, so these tests compile
 //! against the budget as written even before the crate root wires it in.
 
-#[path = "../src/context_budget.rs"]
-mod context_budget;
+#[path = "../src/context/budget.rs"]
+pub mod context_budget;
 
 use context_budget::{Budget, Decision, Usage, check};
 
@@ -188,4 +188,10 @@ fn the_constructor_keeps_every_field_verbatim() {
     assert_eq!(budget.reserve_output, 2);
     assert_eq!(budget.margin, 3);
     assert_eq!(budget.input_allowance(), 0);
+}
+
+
+// Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
+mod context {
+    pub use super::context_budget as budget;
 }
