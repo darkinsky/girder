@@ -51,6 +51,19 @@ pub struct SkillMeta {
     /// `path.parent()`, while the reverse does not hold for a flat skill, whose resources are shared
     /// with its sibling skills.
     pub path: PathBuf,
+    /// Whether the model may load this skill on its own initiative.
+    ///
+    /// Upstream `skill.invocation.modelInvocable`, defaulting to `true`: a skill that says nothing
+    /// about invocation is loadable both ways. `false` means a human decides when it applies -- the
+    /// skill is listed to a person but withheld from the model, which is what stops an
+    /// expensive-or-irreversible procedure from being chosen by a model that saw a matching word.
+    pub model_invocable: bool,
+    /// Whether a human-facing command may see and load this skill.
+    ///
+    /// Upstream `skill.invocation.userInvocable`, also defaulting to `true`. `false` marks a skill
+    /// that exists for the model only: it still appears in the model's catalog and is still loaded by
+    /// name, but a person's skill picker does not offer it.
+    pub user_invocable: bool,
 }
 
 /// Scans each root for skills, in the order the roots are given.
@@ -115,10 +128,13 @@ pub fn discover(roots: &[PathBuf]) -> Vec<SkillMeta> {
             if !claimed.insert(name.clone()) {
                 continue;
             }
+            let (model_invocable, user_invocable) = parse_invocation(&text);
             skills.push(SkillMeta {
                 name,
                 description,
                 path: file,
+                model_invocable,
+                user_invocable,
             });
         }
     }
@@ -414,4 +430,124 @@ fn escape_prose(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Reads a skill's `invocation` block out of its front matter.
+///
+/// Returns `(model_invocable, user_invocable)`, both defaulting to `true`. The default is upstream's
+/// and it is the safe one for a *catalog*: a skill that declares nothing is offered both ways, which
+/// is what every skill file written before this field existed expects. Defaulting to `false` would
+/// silently hide every such skill from the model.
+///
+/// The accepted spelling is a nested block, either inline or on following lines:
+///
+/// ```text
+/// invocation: { modelInvocable: false }
+/// invocation:
+///   modelInvocable: false
+///   userInvocable: true
+/// ```
+///
+/// Only those two keys are read; anything else in the block is ignored, because the front matter is
+/// a document a person writes by hand and a typo in an unrelated key should not make a skill vanish.
+///
+/// A missing or unparseable `invocation` is the default rather than `None`: the caller is building a
+/// catalog entry, and "declares nothing" and "declares this badly" both mean the same thing to a
+/// model deciding whether it may load it.
+#[must_use]
+pub fn parse_invocation(text: &str) -> (bool, bool) {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let Some(block) = front_matter_block(text) else {
+        return (true, true);
+    };
+    // Flatten the block so both spellings read the same: the inline form `invocation: { a: b }`
+    // becomes two lines, and the nested form is already lines.
+    let flattened = block
+        .iter()
+        .map(|line| line.replace(['{', '}'], ""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Some(start) = flattened.find("invocation:") else {
+        return (true, true);
+    };
+    let tail = &flattened[start + "invocation:".len()..];
+    // Stop at the next top-level key so an `invocation` block cannot capture a later sibling.
+    let scope = tail.split_once('\n').map_or_else(
+        || tail.to_owned(),
+        |(first, rest)| {
+            let mut scope = String::from(first);
+            for line in rest.lines() {
+                let indented = line.starts_with(' ') || line.starts_with('\t');
+                if !indented && !line.trim().is_empty() {
+                    break;
+                }
+                scope.push('\n');
+                scope.push_str(line);
+            }
+            scope
+        },
+    );
+    let read = |key: &str| -> bool {
+        scope
+            .split([',', '\n'])
+            .filter_map(|entry| entry.split_once(':'))
+            .find(|(name, _)| name.trim() == key)
+            .is_none_or(|(_, value)| value.trim() != "false")
+    };
+    (read("modelInvocable"), read("userInvocable"))
+}
+
+/// The front matter's lines, when the file has a terminated block.
+fn front_matter_block(text: &str) -> Option<Vec<&str>> {
+    let mut lines = text.lines();
+    if !lines.next().is_some_and(is_fence) {
+        return None;
+    }
+    let mut body = Vec::new();
+    for line in lines {
+        if is_fence(line) {
+            return Some(body);
+        }
+        body.push(line);
+    }
+    None
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::*;
+
+    #[test]
+    fn a_skill_declaring_nothing_is_invocable_both_ways() {
+        // The default every skill file written before this field existed relies on.
+        let text = "---\nname: demo\ndescription: does something\n---\nbody\n";
+        assert_eq!(parse_invocation(text), (true, true));
+    }
+
+    #[test]
+    fn an_inline_block_is_read() {
+        let text = "---\nname: demo\ninvocation: { modelInvocable: false }\n---\n";
+        assert_eq!(parse_invocation(text), (false, true));
+    }
+
+    #[test]
+    fn a_nested_block_is_read() {
+        let text =
+            "---\nname: demo\ninvocation:\n  modelInvocable: false\n  userInvocable: true\n---\n";
+        assert_eq!(parse_invocation(text), (false, true));
+    }
+
+    #[test]
+    fn a_later_sibling_key_does_not_leak_into_the_block() {
+        // Without a scope limit, `invocation:` would capture `modelInvocable: false` written under
+        // some other top-level key.
+        let text =
+            "---\ninvocation:\n  userInvocable: false\nother:\n  modelInvocable: false\n---\n";
+        assert_eq!(parse_invocation(text), (true, false));
+    }
+
+    #[test]
+    fn no_front_matter_is_the_default() {
+        assert_eq!(parse_invocation("just body text\n"), (true, true));
+    }
 }

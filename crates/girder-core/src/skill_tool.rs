@@ -75,7 +75,14 @@ async fn run(args: &serde_json::Value, registry: &Registry) -> ToolResult {
 /// Renders the merged catalog, one line per skill.
 async fn catalog(registry: &Registry) -> ToolResult {
     let entries = match registry.catalog().await {
-        Ok(entries) => entries,
+        Ok(entries) => entries
+            .into_iter()
+            // **Only skills the model may load on its own initiative.** A skill marked
+            // `modelInvocable: false` is one a person decides when to apply -- an expensive or
+            // irreversible procedure -- and offering it in the model's catalog is what lets a matching
+            // word in the conversation pick it. It stays loadable by name; it is not advertised.
+            .filter(|entry| entry.model_invocable)
+            .collect::<Vec<_>>(),
         Err(error) => return ToolResult::error(format!("cannot list the skills: {error}")),
     };
     if entries.is_empty() {

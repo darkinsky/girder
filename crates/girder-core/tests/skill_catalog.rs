@@ -58,6 +58,8 @@ fn meta(name: &str, description: &str) -> SkillMeta {
         name: name.to_owned(),
         description: description.to_owned(),
         path: PathBuf::from(format!("/skills/{name}/SKILL.md")),
+        model_invocable: true,
+        user_invocable: true,
     }
 }
 

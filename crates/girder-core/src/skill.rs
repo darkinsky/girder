@@ -39,6 +39,39 @@ pub struct Summary {
     /// Higher wins. A project layer above a builtin layer is what makes a project's `review` shadow the
     /// built-in one.
     pub layer: u32,
+    /// Whether the model may load this skill on its own initiative.
+    ///
+    /// `false` keeps it in a person's picker and out of the model's catalog. A skill file that says
+    /// nothing is `true`, which is what every file written before this field existed expects.
+    pub model_invocable: bool,
+    /// Whether a human-facing command may see and load this skill.
+    ///
+    /// `false` marks a model-only skill: still in the model's catalog, absent from a person's.
+    pub user_invocable: bool,
+}
+
+impl Summary {
+    /// A summary whose invocation policy is the upstream default: loadable both ways.
+    ///
+    /// The default is not laziness -- it is what a skill file that declares nothing means, and every
+    /// file written before the field existed declares nothing. Defaulting to `false` would hide every
+    /// such skill from the model.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        provider: impl Into<String>,
+        layer: u32,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            provider: provider.into(),
+            layer,
+            model_invocable: true,
+            user_invocable: true,
+        }
+    }
 }
 
 /// A skill's full content.

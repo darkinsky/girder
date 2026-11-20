@@ -667,12 +667,17 @@ fn discovered_skills(workspace: &std::path::Path) -> girder_core::SkillRegistry 
             continue;
         };
         // The body is what the model reads once it loads the skill; the frontmatter is the catalogue entry.
-        let summary = girder_core::SkillSummary {
-            name: meta.name.clone(),
-            description: meta.description.clone(),
-            provider: "workspace".to_owned(),
-            layer: 100,
-        };
+        // The file's own `invocation` policy travels into the summary: a skill that says
+        // `modelInvocable: false` is listed to a person and withheld from the model, and a summary
+        // built without it would offer the model a procedure a person meant to gate.
+        let mut summary = girder_core::SkillSummary::new(
+            meta.name.clone(),
+            meta.description.clone(),
+            "workspace",
+            100,
+        );
+        summary.model_invocable = meta.model_invocable;
+        summary.user_invocable = meta.user_invocable;
         if let Some(definition) = girder_core::SkillDefinition::new(summary, text) {
             provider.add(definition);
         }

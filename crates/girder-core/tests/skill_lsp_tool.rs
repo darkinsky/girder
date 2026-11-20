@@ -51,12 +51,7 @@ fn text_of(result: &ToolResult) -> String {
 }
 
 fn summary(name: &str, provider: &str, layer: u32) -> SkillSummary {
-    SkillSummary {
-        name: name.to_owned(),
-        description: format!("{name} from {provider}"),
-        provider: provider.to_owned(),
-        layer,
-    }
+    SkillSummary::new(name, format!("{name} from {provider}"), provider, layer)
 }
 
 fn skill(name: &str, provider: &str, layer: u32) -> SkillDefinition {

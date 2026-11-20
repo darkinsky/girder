@@ -1059,7 +1059,8 @@ pub use skill::{
     SkillError, Static as StaticSkills, Summary as SkillSummary,
 };
 pub use skill_catalog::{
-    SkillMeta, discover as discover_skills, parse_frontmatter, render_list as render_skill_list,
+    SkillMeta, discover as discover_skills, parse_frontmatter, parse_invocation,
+    render_list as render_skill_list,
 };
 pub use skill_tool::skill_tool;
 pub use spill::{

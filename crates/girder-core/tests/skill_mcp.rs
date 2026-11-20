@@ -13,12 +13,7 @@ use girder_core::{
 // ---- skills -----------------------------------------------------------------------------------
 
 fn summary(name: &str, provider: &str, layer: u32) -> SkillSummary {
-    SkillSummary {
-        name: name.to_owned(),
-        description: format!("{name} from {provider}"),
-        provider: provider.to_owned(),
-        layer,
-    }
+    SkillSummary::new(name, format!("{name} from {provider}"), provider, layer)
 }
 
 fn skill(name: &str, provider: &str, layer: u32) -> SkillDefinition {
@@ -158,15 +153,7 @@ fn a_skill_needs_a_name_a_description_and_a_body() {
     let empty_body = SkillDefinition::new(summary("x", "p", 0), "  ");
     assert!(empty_body.is_none(), "a skill with no body teaches nothing");
 
-    let blank_name = SkillDefinition::new(
-        SkillSummary {
-            name: String::new(),
-            description: "d".to_owned(),
-            provider: "p".to_owned(),
-            layer: 0,
-        },
-        "body",
-    );
+    let blank_name = SkillDefinition::new(SkillSummary::new(String::new(), "d", "p", 0), "body");
     assert!(blank_name.is_none());
 }
 
