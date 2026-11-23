@@ -97,13 +97,6 @@ const ID_ATTEMPTS: u64 = 1024;
 /// registry, and a counter that reset per call would mint the same id twice within it.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Upstream methods this build cannot serve, declared so a client can tell a gap from a typo.
-///
-/// `rename` is the remaining gap because this registration path has no durable label store for
-/// terminals that outlive the in-memory registry. `environment` and `shells` are registered by the
-/// companion module.
-const UNIMPLEMENTED: &[&str] = &["rename"];
-
 /// The arguments of `terminal.create`.
 ///
 /// Every field is optional and `serde`-parsed: a client that serialises all of them sends `null` for
@@ -264,8 +257,6 @@ pub fn register_terminal_methods(
         "watch",
         crate::guard::access::Declaration::read("terminal"),
     );
-
-    registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
 }
 
 fn watch_snapshot(terminals: &TerminalRegistry, session_id: &str) -> serde_json::Value {
@@ -448,7 +439,13 @@ fn list(terminals: &TerminalRegistry, args: &Value) -> Value {
         .filter(|session| {
             session_id.is_none_or(|owner| session.owner_session_id().as_deref() == Some(owner))
         })
-        .map(|session| info(&session))
+        .map(|session| {
+            let mut item = info(&session);
+            if let Some(title) = session.title() {
+                item["title"] = json!(title);
+            }
+            item
+        })
         .collect();
     json!({ "terminals": items })
 }

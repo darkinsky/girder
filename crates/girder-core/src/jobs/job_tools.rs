@@ -54,7 +54,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
-use crate::jobs::{JobError, JobId, JobRegistry, spawn_job};
+use crate::jobs::{JobError, JobId, JobRegistry, spawn_job_owned};
 use crate::shell::SandboxMode;
 use crate::shell::subprocess::SpawnOptions;
 
@@ -243,12 +243,13 @@ fn start(args: &Value, registry: &Arc<JobRegistry>, ctx: &ToolRunContext) -> Too
     };
 
     let options = spawn_options(&command, ctx.workspace.as_deref());
-    match spawn_job(
+    match spawn_job_owned(
         Arc::clone(registry),
         &id,
         KIND,
         label_for(&command),
         options,
+        Some(ctx.execution.agent_id.as_str()),
     ) {
         // The handle is dropped: `spawn_job` owns the task, and dropping a `JoinHandle` detaches
         // rather than aborts, which is exactly the lifetime a background job should have.

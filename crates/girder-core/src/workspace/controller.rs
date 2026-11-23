@@ -800,6 +800,8 @@ pub fn register_workspace_follow(
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
             loop {
+                let notified = workspaces.notified();
+                tokio::pin!(notified);
                 feed.refresh(workspaces.as_ref(), preferences.as_ref());
                 let page = feed.page(cursor, usize::MAX, access.as_ref());
                 for frame in page.frames {
@@ -815,6 +817,8 @@ pub fn register_workspace_follow(
                             return;
                         }
                     }
+                    () = &mut notified => {}
+                    // Preferences live outside the registry, so a quiet poll still notices them.
                     () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
                 }
             }

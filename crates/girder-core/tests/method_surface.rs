@@ -81,10 +81,11 @@ impl Drop for Scratch {
 /// list, and it is the strongest one available without running the CLI.
 fn serve_shaped_registry(scratch: &std::path::Path) -> girder_core::RemoteRegistry {
     let catalog: Arc<dyn SessionCatalog> = Arc::new(girder_core::DirectoryCatalog::new(scratch));
+    let bus = Arc::new(girder_core::EventBus::new());
     let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
         provider: Arc::new(Silent),
         tools: Arc::new(ToolRegistry::new()),
-        bus: Arc::new(girder_core::EventBus::new()),
+        bus: Arc::clone(&bus),
         model: "test".to_owned(),
         max_turns: 1,
         token_budget: girder_core::Ceiling::Unlimited,
@@ -112,7 +113,11 @@ fn serve_shaped_registry(scratch: &std::path::Path) -> girder_core::RemoteRegist
         Arc::new(girder_core::MemoryCredentialSource::new());
     girder_core::register_credential_methods(&mut registry, &credentials);
     girder_core::register_remote_access_follow(&mut registry);
-    girder_core::api::session_status_rpc::register_session_status_methods(&mut registry);
+    girder_core::api::session_status_rpc::register_session_status_methods(
+        &mut registry,
+        &catalog,
+        &bus,
+    );
     girder_core::interaction::action_cards_rpc::register_action_card_methods(&mut registry);
     girder_core::extensions::plugin_recommendations_rpc::register_plugin_recommendation_methods(
         &mut registry,
@@ -244,6 +249,7 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         registry,
         &girder_core::credentials::permission_presets_rpc::default_catalogue(),
         girder_core::credentials::permission_presets_rpc::DEFAULT_PRESET,
+        &feedback_catalog,
     );
 }
 

@@ -340,6 +340,18 @@ pub trait CredentialSource: Send + Sync {
     fn revision(&self) -> u64 {
         0
     }
+
+    /// How many times the DeepSeek account credential has been removed.
+    ///
+    /// `account.watchExpiry` reads this after it opens. Earlier removals are not replayed.
+    fn expiry_seq(&self) -> u64 {
+        0
+    }
+
+    /// Wakes `account.watchExpiry` after [`Self::expiry_seq`] advances.
+    fn expiry_wake(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 /// A source that keeps values in this process's memory.
@@ -348,7 +360,7 @@ pub trait CredentialSource: Send + Sync {
 /// and so a host can accept writes before it has durable storage; it is not persistence and it is
 /// not a secret store. A real deployment passes its own [`CredentialSource`] — the module's own
 /// registration installs [`UnavailableCredentialSource`] for exactly this reason.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemoryCredentialSource {
     /// The stored values, plus the source name each one came from.
     ///
@@ -357,6 +369,21 @@ pub struct MemoryCredentialSource {
     /// provenance — which is the one fact a "which layer is winning" bug needs.
     values: RwLock<BTreeMap<String, (String, String)>>,
     revision: AtomicU64,
+    /// Removals of the DeepSeek account credential. Other references do not advance it.
+    expiry_seq: AtomicU64,
+    /// Waiters registered by `account.watchExpiry`.
+    expiry: Arc<tokio::sync::Notify>,
+}
+
+impl Default for MemoryCredentialSource {
+    fn default() -> Self {
+        Self {
+            values: RwLock::new(BTreeMap::new()),
+            revision: AtomicU64::new(0),
+            expiry_seq: AtomicU64::new(0),
+            expiry: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
 }
 
 impl MemoryCredentialSource {
@@ -413,6 +440,10 @@ impl CredentialSource for MemoryCredentialSource {
         let removed = self.write().remove(reference).is_some();
         if removed {
             self.revision.fetch_add(1, Ordering::Relaxed);
+            if reference == DEEPSEEK_ACCOUNT_REFERENCE {
+                self.expiry_seq.fetch_add(1, Ordering::Release);
+                self.expiry.notify_waiters();
+            }
         }
         Ok(removed)
     }
@@ -420,7 +451,20 @@ impl CredentialSource for MemoryCredentialSource {
     fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed)
     }
+
+    fn expiry_seq(&self) -> u64 {
+        self.expiry_seq.load(Ordering::Acquire)
+    }
+
+    fn expiry_wake(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.expiry))
+    }
 }
+
+/// The credential reference that stores the DeepSeek account grant.
+///
+/// Removing this reference is the local signal `account.watchExpiry` forwards as `session-expired`.
+pub const DEEPSEEK_ACCOUNT_REFERENCE: &str = "deepseek-account";
 
 /// The source a deployment gets when it configures none.
 ///

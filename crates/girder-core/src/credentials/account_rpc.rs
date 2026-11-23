@@ -40,7 +40,7 @@ pub const NAMESPACE: &str = "account";
 ///
 /// Upstream's `KEY`. One name because a deployment stores one account: a client with two would need
 /// two roots, not two references.
-pub const CREDENTIAL_KEY: &str = "deepseek-account";
+pub const CREDENTIAL_KEY: &str = super::account::DEEPSEEK_ACCOUNT_REFERENCE;
 
 /// The origin the usage links point at.
 ///
@@ -195,22 +195,12 @@ pub fn register_account_methods(
         );
     }
 
-    // Expiry has no replay: the upstream stream only emits a notification when the account service
-    // observes an expiry. Keep the stream open so a client can subscribe before that event. The
-    // platform expiry source remains a separate integration seam.
-    registry.register_stream(NAMESPACE, "watchExpiry", |open| {
-        Box::pin(async move {
-            loop {
-                tokio::select! {
-                    () = open.cancel.cancelled() => return,
-                    incoming = open.uplink.recv() => {
-                        if !matches!(incoming, Ok(Some(_))) {
-                            return;
-                        }
-                    }
-                }
-            }
-        })
+    // Expiry has no replay: the stream emits `session-expired` only for a removal that happens
+    // after it opens. Removing the account credential is that signal in this build.
+    let expiry = Arc::clone(credentials);
+    registry.register_stream(NAMESPACE, "watchExpiry", move |open| {
+        let store = Arc::clone(&expiry);
+        Box::pin(async move { watch_expiry(open, store).await })
     });
     registry.declare(
         NAMESPACE,
@@ -225,6 +215,42 @@ pub fn register_account_methods(
         "hasRunningAccountTasks",
         move |_call: RemoteCall| Box::pin(async move { Ok(json!({ "running": false })) }),
     );
+}
+
+async fn watch_expiry(open: crate::api::remote::StreamOpen, store: Arc<dyn CredentialSource>) {
+    let mut seen = store.expiry_seq();
+    loop {
+        let wake = store.expiry_wake();
+        if let Some(wake) = wake {
+            let notified = wake.notified();
+            tokio::pin!(notified);
+            let current = store.expiry_seq();
+            while seen < current {
+                seen = seen.saturating_add(1);
+                if !open.push(Value::String("session-expired".to_owned())) {
+                    return;
+                }
+            }
+            tokio::select! {
+                () = open.cancel.cancelled() => return,
+                incoming = open.uplink.recv() => {
+                    if !matches!(incoming, Ok(Some(_))) {
+                        return;
+                    }
+                }
+                () = &mut notified => {}
+            }
+        } else {
+            tokio::select! {
+                () = open.cancel.cancelled() => return,
+                incoming = open.uplink.recv() => {
+                    if !matches!(incoming, Ok(Some(_))) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -336,6 +362,50 @@ mod tests {
             .expect("stream")
             .expect("ok");
         assert_eq!(second["state"]["status"], "credential-stored");
+        cancel.cancel();
+        let _ = running.await;
+    }
+
+    #[tokio::test]
+    async fn watch_expiry_emits_when_the_account_credential_is_removed() {
+        use crate::api::extra::UplinkInbox;
+        use crate::api::remote::{RemoteCall, StreamOpen};
+
+        use std::sync::Arc;
+
+        let store = Arc::new(MemoryCredentialSource::new());
+        store.set(CREDENTIAL_KEY, "token").expect("set");
+        let source: Arc<dyn CredentialSource> = store.clone();
+        let mut registry = RemoteRegistry::new();
+        register_account_methods(&mut registry, &source, false);
+        let call = RemoteCall {
+            args: serde_json::json!({}),
+            peer: "browser".to_owned(),
+        };
+        let handler = registry
+            .stream_method(NAMESPACE, "watchExpiry", &call)
+            .expect("watchExpiry is a stream");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (open, mut frames) = StreamOpen::pair(
+            call,
+            Arc::new(UplinkInbox::new(1024, "account/watchExpiry")),
+            cancel.clone(),
+        );
+        let running = tokio::spawn(async move {
+            handler(open).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        store.set("OTHER_SECRET", "x").expect("set");
+        store.unset("OTHER_SECRET").expect("other");
+        store.unset(CREDENTIAL_KEY).expect("removed");
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+            .await
+            .expect("expiry")
+            .expect("stream")
+            .expect("ok");
+        assert_eq!(frame, "session-expired");
+
         cancel.cancel();
         let _ = running.await;
     }

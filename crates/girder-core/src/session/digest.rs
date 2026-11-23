@@ -287,6 +287,7 @@ pub fn digest(events: &[SessionEvent]) -> Digest {
             | SessionEvent::PermissionPreset { .. }
             | SessionEvent::PlanMode { .. }
             | SessionEvent::SandboxMode { .. }
+            | SessionEvent::ApprovalPolicy { .. }
             | SessionEvent::RequestContext { .. } | SessionEvent::RequestHeader { .. }
             | SessionEvent::SessionTitle { .. }
             | SessionEvent::LlmRetry { .. }

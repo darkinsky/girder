@@ -54,8 +54,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use session_state_rpc::{
-    LiveTurns, METHOD, NAMESPACE, SessionStateValue, register_session_state_method,
-    register_session_state_method_with,
+    LiveTurns, METHOD, NAMESPACE, PendingInputs, SessionStateValue, register_session_state_method,
+    register_session_state_method_observing, register_session_state_method_with,
 };
 
 /// What a client reads out of the response.
@@ -268,6 +268,53 @@ async fn observe_event_stream_reports_ready_then_new_events() {
     assert_eq!(event["event"]["surfaceOp"], "append");
     girder_core::session::client::assert_session_wire_event(&event["event"])
         .expect("wire envelope");
+
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn observe_event_ready_does_not_require_the_session() {
+    let dir = scratch("observe-event-missing");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method(&mut registry, &catalog, &projections());
+
+    let request = call(json!({
+        "address": {"kind": "session", "sessionId": "later"},
+    }));
+    let handler = registry
+        .stream_method("session", "observeEvent", &request)
+        .expect("observeEvent is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/observeEvent",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let ready = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("ready")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(ready["type"], "ready");
+
+    seed(&dir, "later", 1);
+    let event = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("event after create")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(event["type"], "event");
+    assert_eq!(event["event"]["seq"], 1);
+    assert_eq!(event["event"]["type"], "user/message");
 
     cancel.cancel();
     let _ = running.await;
@@ -863,7 +910,7 @@ async fn observe_state_reports_the_passive_fields() {
         .expect("state")
         .expect("stream")
         .expect("frame");
-    assert_eq!(state["cursor"], 1);
+    assert_eq!(state["cursor"], 0);
     assert_eq!(state["active"], true);
     assert_eq!(state["running"], true);
     assert_eq!(state["queue"], json!([]));
@@ -902,8 +949,12 @@ async fn control_follows_the_baseline_with_a_projection_diff() {
         .expect("frame");
     assert_eq!(baseline["type"], "baseline");
 
-    store(&dir, "s1")
+    let session = store(&dir, "s1");
+    session
         .append(&SessionEvent::TurnStart { turn: 4 })
+        .expect("appended");
+    session
+        .append(&SessionEvent::TurnStart { turn: 9 })
         .expect("appended");
     let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
         .await
@@ -920,10 +971,152 @@ async fn control_follows_the_baseline_with_a_projection_diff() {
             .any(|change| change["key"] == "turnBoundary" && change["val"]["lastTurn"] == 4),
         "{frame}"
     );
+    let next = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("second projection")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(next["seq"], 3);
+    assert!(
+        next["changes"].as_array().is_some_and(|changes| {
+            changes
+                .iter()
+                .any(|change| change["key"] == "turnBoundary" && change["val"]["lastTurn"] == 9)
+        }),
+        "{next}"
+    );
 
     cancel.cancel();
     let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn wait_returns_idle_with_the_newest_assistant_message() {
+    let dir = scratch("wait-idle");
+    let session = store(&dir, "s");
+    session.touch().expect("created");
+    session
+        .append(&SessionEvent::user_text("u1", "hello"))
+        .expect("user");
+    session
+        .append(&SessionEvent::assistant_text("a1", "first", "deepseek"))
+        .expect("first");
+    session
+        .append(&SessionEvent::assistant_text("a2", "second", "deepseek"))
+        .expect("second");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let turns: Arc<dyn LiveTurns> = Arc::new(NoTurns);
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_with(&mut registry, &catalog, &projections(), &turns);
+
+    let value = registry
+        .dispatch(
+            NAMESPACE,
+            "wait",
+            call(json!({
+                "sessionId": "s",
+                "timeoutMs": 1_000,
+                "maxMessages": 1,
+            })),
+        )
+        .await
+        .expect("idle");
+    assert_eq!(value["reason"], "idle");
+    assert_eq!(value["state"]["cursor"], 2);
+    assert_eq!(value["state"]["running"], false);
+    assert_eq!(value["state"]["queue"], Value::Null);
+    assert_eq!(value["output"]["truncated"], true);
+    let records = value["output"]["records"].as_array().expect("records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["event"]["seq"], 2);
+    assert_eq!(records[0]["event"]["type"], "assistant/message");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn wait_times_out_while_a_turn_is_running() {
+    let dir = scratch("wait-running");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let turns: Arc<dyn LiveTurns> = Arc::new(Only(Arc::from("s")));
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_with(&mut registry, &catalog, &projections(), &turns);
+
+    let started = std::time::Instant::now();
+    let value = registry
+        .dispatch(
+            NAMESPACE,
+            "wait",
+            call(json!({ "sessionId": "s", "timeoutMs": 120 })),
+        )
+        .await
+        .expect("timeout");
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "wait returned early"
+    );
+    assert_eq!(value["reason"], "timeout");
+    assert_eq!(value["state"]["running"], true);
+    assert_eq!(value["output"]["records"], json!([]));
+
+    let refused = registry
+        .dispatch(
+            NAMESPACE,
+            "wait",
+            call(json!({ "sessionId": "s", "afterSeq": -2, "timeoutMs": 50 })),
+        )
+        .await
+        .expect_err("afterSeq");
+    assert!(refused.to_string().contains("afterSeq"), "{refused}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn wait_stops_when_a_question_is_still_open() {
+    let dir = scratch("wait-question");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let turns: Arc<dyn LiveTurns> = Arc::new(Only(Arc::from("s")));
+    let pending: Arc<dyn PendingInputs> = Arc::new(|session_id: &str| {
+        if session_id == "s" {
+            vec!["question".to_owned()]
+        } else {
+            Vec::new()
+        }
+    });
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_observing(
+        &mut registry,
+        &catalog,
+        &projections(),
+        &turns,
+        &pending,
+    );
+
+    let value = registry
+        .dispatch(
+            NAMESPACE,
+            "wait",
+            call(json!({ "sessionId": "s", "timeoutMs": 5_000 })),
+        )
+        .await
+        .expect("input required");
+    assert_eq!(value["reason"], "input-required");
+    assert_eq!(value["state"]["running"], true);
+    assert_eq!(value["state"]["pendingInput"], json!(["question"]));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct NoTurns;
+
+impl LiveTurns for NoTurns {
+    fn is_running(&self, _session_id: &str) -> bool {
+        false
+    }
 }
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.

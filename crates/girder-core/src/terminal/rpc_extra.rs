@@ -1,12 +1,8 @@
 //! The rest of the `terminal.*` Remote surface: `environment` and `shells`.
 //!
-//! [`girder_core::register_terminal_rpc_methods`] serves five names — `list`, `create`, `send`,
-//! `read`, and `close` — over one [`girder_core::TerminalRegistry`]. Upstream's terminal controller
-//! declares nine `@Remote` methods: `environment`, `shells`, `list`, `create`, `watch`, `retain`,
-//! `attach`, `rename`, and `close`. Two of the names this build serves are not upstream names at
-//! all: `send` and `read` are its non-streaming substitute for the streaming `attach`. So the
-//! *upstream* names still missing here are six, and this module serves the two that are answerable
-//! from facts the process already holds:
+//! [`girder_core::register_terminal_rpc_methods`] serves the live terminal methods over one
+//! [`girder_core::TerminalRegistry`]. This module supplies deployment-wide facts that can be
+//! answered without opening a terminal:
 //!
 //! - `environment` answers the defaults a client needs before it opens a pane: the directory a shell
 //!   will start in, the dimensions `terminal.create` falls back to, the largest dimensions it
@@ -14,33 +10,7 @@
 //! - `shells` answers which programs on this host can actually be run as a shell, so a picker offers
 //!   a path that `terminal.create` will accept instead of a name the deployment guesses.
 //!
-//! # What is still missing, and why
-//!
-//! | upstream method | why it is not here |
-//! |---|---|
-//! | `attach` | duplex stream: output frames out, input commands in |
-//! | `retain` | stream: holds one terminal open for one window |
-//! | `watch` | stream: pushes the whole roster after every change |
-//! | `rename` | the title has nowhere observable to go (see below) |
-//!
-//! The first three need a *stream mode*, and [`girder_core::RemoteRegistry`] has none: `register`
-//! takes a handler that resolves one value and returns, so there is no way to push frames or to
-//! accept input frames on one connection. Serving `attach` as a request/response call would not be a
-//! simplification, it would be a different wire contract under the same name — the client opens a
-//! stream and waits for frames that can never arrive. That is a protocol change (a registered stream
-//! method kind on [`girder_core::RemoteRegistry`], plus a transport that keeps the call open), and
-//! it is declared as a gap rather than faked. `terminal.send` and `terminal.read` remain the
-//! polling substitute for `attach`, which is the same reasoning stated in `terminal_rpc`'s docs.
-//!
-//! `rename` is a different kind of gap, and the reason is worth stating precisely because it looks
-//! implementable. It takes an id and a title, and the only place a title could ever be *seen* is
-//! `terminal.list`, whose projection is written in the module that owns the registry. This module
-//! may not replace `list` (re-registering it would silently drop the fields it already reports), and
-//! [`girder_core::TerminalSession`] holds no title. A title recorded in a side table here would
-//! therefore be visible to no method at all: `rename` would answer success while every client kept
-//! displaying the id. The missing piece is a `title` on the session (or on the listing), which
-//! belongs to `terminal.rs` and to the module that projects it — not to a module that only adds
-//! method names. Until then the name stays a declared gap.
+//! The remaining gaps belong to optional host capabilities outside these terminal facts.
 //!
 //! # Why arguments are ignored
 //!

@@ -1833,18 +1833,19 @@ pub fn register_job_methods(
     let jobs = std::sync::Arc::clone(jobs);
     registry.register("job", "list", {
         let jobs = std::sync::Arc::clone(&jobs);
-        move |_call: RemoteCall| {
+        move |call: RemoteCall| {
             let jobs = std::sync::Arc::clone(&jobs);
-            Box::pin(async move { Ok(job_list_value(&jobs)) })
+            Box::pin(async move { Ok(job_list_value(&jobs, session_of(&call.args))) })
         }
     });
     let stream_jobs = std::sync::Arc::clone(&jobs);
     registry.register_stream("job", "list", move |open| {
         let jobs = std::sync::Arc::clone(&stream_jobs);
+        let session_id = session_of(&open.call.args).map(str::to_owned);
         Box::pin(async move {
             let mut previous = serde_json::Value::Null;
             loop {
-                let rows = job_list_value(&jobs);
+                let rows = job_list_value(&jobs, session_id.as_deref());
                 if rows != previous {
                     if !open.push(serde_json::json!({
                         "type": "rows",
@@ -1903,11 +1904,24 @@ pub fn register_job_methods(
     });
 }
 
-fn job_list_value(jobs: &std::sync::Arc<crate::jobs::JobRegistry>) -> serde_json::Value {
-    // The whole set, not a delta: a reconnecting client's first frame is already correct.
+fn session_of(args: &serde_json::Value) -> Option<&str> {
+    args.get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+}
+
+fn job_list_value(
+    jobs: &std::sync::Arc<crate::jobs::JobRegistry>,
+    session_id: Option<&str>,
+) -> serde_json::Value {
+    // The whole visible set, not a delta: a reconnecting client's first frame is already correct.
+    // Unowned jobs are visible to every session. An owned job is visible only to its owner.
     let mut views = Vec::new();
     for id in jobs.ids() {
         if let Ok(job) = jobs.get(&id) {
+            if !job.visible_to(session_id) {
+                continue;
+            }
             let view = crate::api::job::project(&job);
             views.push(serde_json::json!({
                 "id": view.id,

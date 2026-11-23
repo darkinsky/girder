@@ -629,7 +629,7 @@ async fn serve(
     let workspaces = Arc::new(girder_core::api::config::WorkspaceRegistry::new());
     // Browsing a workspace: the same filesystem the tools use, so a client sees what a model sees.
     let fs: Arc<dyn girder_core::FileSystem> = Arc::new(girder_core::LocalFileSystem);
-    register_workspace_file_surface(
+    let questions = register_workspace_file_surface(
         &mut remote,
         &fs,
         &workspaces,
@@ -637,6 +637,7 @@ async fn serve(
         &mcp_servers,
         &mcp_live,
         &children,
+        &bus,
     );
 
     // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
@@ -651,7 +652,7 @@ async fn serve(
     // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
     // That is the honest state -- the method is reachable and says why it cannot act, which is better than a
     // NOT_IMPLEMENTED that a client would read as "this build is old".
-    register_lifecycle_surface(&mut remote, &runtime, &projections);
+    register_lifecycle_surface(&mut remote, &runtime, &projections, &questions);
 
     let queues = Arc::new(girder_core::AgentQueueMap::new());
     girder_core::register_session_queue_methods(
@@ -896,6 +897,7 @@ fn register_lifecycle_surface(
     remote: &mut girder_core::RemoteRegistry,
     runtime: &std::sync::Arc<girder_core::AgentRuntime>,
     projections: &std::sync::Arc<girder_core::ProjectionRegistry>,
+    questions: &Arc<girder_core::QuestionQueue>,
 ) {
     // Resuming confirms a session can be reopened and reports where its log ends, so a client knows from which sequence
     // to continue rather than re-reading the whole conversation to find out.
@@ -907,11 +909,24 @@ fn register_lifecycle_surface(
     let live_runtime = std::sync::Arc::clone(runtime);
     let turns: std::sync::Arc<dyn girder_core::LiveTurns> =
         std::sync::Arc::new(move |session_id: &str| live_runtime.is_running(session_id));
-    girder_core::register_session_state_method_with(
+    let open_questions = Arc::clone(questions);
+    let pending: std::sync::Arc<dyn girder_core::PendingInputs> =
+        std::sync::Arc::new(move |session_id: &str| {
+            let waiting = open_questions.pending().into_iter().any(|record| {
+                record.state.is_open() && record.session_id.as_deref() == Some(session_id)
+            });
+            if waiting {
+                vec!["question".to_owned()]
+            } else {
+                Vec::new()
+            }
+        });
+    girder_core::register_session_state_method_observing(
         remote,
         &session_catalog(),
         projections,
         &turns,
+        &pending,
     );
     // Scheduled tasks are stored in memory: a restart forgets them, and the module says so rather than implying a
     // durability it does not have. Nothing triggers them yet -- the trigger needs a runtime loop, which is a separate
@@ -941,13 +956,14 @@ fn register_workspace_file_surface(
     mcp_servers: &Arc<Vec<girder_core::mcp::config::ServerConfig>>,
     mcp_live: &Arc<girder_core::McpRegistry>,
     children: &Arc<girder_core::subagent::rpc::RunningChildren>,
-) {
+    bus: &Arc<EventBus>,
+) -> Arc<girder_core::QuestionQueue> {
     // Settings share this function rather than `serve` because they are the other half of what a client configures --
     // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
     register_settings_surface(remote);
     register_goal_surface(remote);
     register_workflow_surface(remote);
-    register_question_surface(remote);
+    let questions = register_question_surface(remote);
     // Task-graph validation, so a client can refuse a cyclic plan before submitting it: every
     // individual edit in such a graph is valid, and the plan then never starts.
     girder_core::register_team_graph_method(remote);
@@ -1075,7 +1091,11 @@ fn register_workspace_file_surface(
     // `permissionPresets.catalog`: the same built-in set the approval layer enforces, so a client
     // reading this and a rule refusing a call cannot disagree about which presets exist.
     girder_core::register_remote_access_follow(remote);
-    girder_core::api::session_status_rpc::register_session_status_methods(remote);
+    girder_core::api::session_status_rpc::register_session_status_methods(
+        remote,
+        &session_catalog(),
+        &bus,
+    );
     girder_core::interaction::action_cards_rpc::register_action_card_methods(remote);
     girder_core::extensions::plugin_recommendations_rpc::register_plugin_recommendation_methods(
         remote,
@@ -1085,6 +1105,7 @@ fn register_workspace_file_surface(
         remote,
         &girder_core::credentials::permission_presets_rpc::default_catalogue(),
         girder_core::credentials::permission_presets_rpc::DEFAULT_PRESET,
+        &session_catalog(),
     );
     // `pluginMarket.*`: the market index this build already parses, reachable from a client.
     let market = Arc::new(girder_core::boot::plugin_market_rpc::MarketCatalog::new());
@@ -1114,6 +1135,7 @@ fn register_workspace_file_surface(
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
     girder_core::register_workspace_file_extras(remote, fs, workspaces);
+    questions
 }
 
 /// Registers the settings methods.
@@ -2090,13 +2112,16 @@ fn register_workflow_surface(remote: &mut girder_core::RemoteRegistry) {
 /// upstream discovers pending questions through a session projection this build does not have -- without it a client could
 /// answer a question it had no way to find. `attachWait` yields one remaining-time frame and stays open until that
 /// question settles.
-fn register_question_surface(remote: &mut girder_core::RemoteRegistry) {
+fn register_question_surface(
+    remote: &mut girder_core::RemoteRegistry,
+) -> Arc<girder_core::QuestionQueue> {
     // Memory, not a file: a question is waited on by a live turn, so a question that outlived the process would be one
     // nobody is waiting for any more.
     let store: Arc<dyn girder_core::QuestionStore> =
         Arc::new(girder_core::MemoryQuestionStore::new());
     let questions = Arc::new(girder_core::QuestionQueue::new(store));
-    girder_core::register_question_methods(remote, questions);
+    girder_core::register_question_methods(remote, Arc::clone(&questions));
+    questions
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {

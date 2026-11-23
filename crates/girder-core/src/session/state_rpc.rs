@@ -229,6 +229,34 @@ impl LiveTurns for NoLiveTurns {
     }
 }
 
+/// Pending Remote input for one session, named the way `session.wait` classifies it.
+///
+/// The kinds are `approval`, `question`, and `other`. A session with none returns an empty list.
+/// The default registration has no source, so every session answers empty.
+pub trait PendingInputs: Send + Sync {
+    /// Kinds currently waiting on `session_id`, without duplicates.
+    fn kinds(&self, session_id: &str) -> Vec<String>;
+}
+
+impl<F> PendingInputs for F
+where
+    F: Fn(&str) -> Vec<String> + Send + Sync + 'static,
+{
+    fn kinds(&self, session_id: &str) -> Vec<String> {
+        self(session_id)
+    }
+}
+
+/// The source used when a host has not connected questions or approvals.
+#[derive(Debug, Default)]
+pub struct NoPendingInputs;
+
+impl PendingInputs for NoPendingInputs {
+    fn kinds(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 /// Registers `session.state` with no live-turn source.
 ///
 /// The signature a host with no session-to-agent table can satisfy. One field is therefore limited,
@@ -246,7 +274,8 @@ pub fn register_session_state_method(
     // Bound to a trait object first: `&Arc::new(NoLiveTurns)` does not coerce behind a shared
     // reference, and the named binding is also what the doc above points a host at.
     let turns: Arc<dyn LiveTurns> = Arc::new(NoLiveTurns);
-    register_session_state_method_with(registry, catalog, projections, &turns);
+    let pending: Arc<dyn PendingInputs> = Arc::new(NoPendingInputs);
+    register_session_state_method_observing(registry, catalog, projections, &turns, &pending);
 }
 
 /// Registers `session.state`, asking `turns` whether a turn is in flight.
@@ -260,6 +289,22 @@ pub fn register_session_state_method_with(
     projections: &Arc<ProjectionRegistry>,
     turns: &Arc<dyn LiveTurns>,
 ) {
+    let pending: Arc<dyn PendingInputs> = Arc::new(NoPendingInputs);
+    register_session_state_method_observing(registry, catalog, projections, turns, &pending);
+}
+
+/// Registers the session state methods and reads pending input from `pending`.
+///
+/// [`register_session_state_method_with`] is this function with an empty pending source. A host
+/// that holds open questions passes the queue here, so `session.wait` can stop with
+/// `input-required` while a question is still open.
+pub fn register_session_state_method_observing(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    projections: &Arc<ProjectionRegistry>,
+    turns: &Arc<dyn LiveTurns>,
+    pending: &Arc<dyn PendingInputs>,
+) {
     // One owned clone per registration, because each closure takes ownership of what it captures.
     // Named by endpoint rather than by index: five handlers read these and a `_2` suffix would not
     // say which one it belonged to.
@@ -267,8 +312,8 @@ pub fn register_session_state_method_with(
     let state_projections = Arc::clone(projections);
     let state_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
     let wait_catalog = Arc::clone(catalog);
-    let wait_projections = Arc::clone(projections);
     let wait_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
+    let wait_pending = Arc::clone(pending);
     let event_catalog = Arc::clone(catalog);
     let projection_registry = Arc::clone(projections);
     let projection_catalog = Arc::clone(catalog);
@@ -287,11 +332,17 @@ pub fn register_session_state_method_with(
         Box::pin(async move { state(&call.args, &catalog, &projections, &turns, None).await })
     });
 
-    // `session.wait`: one reading of the state, then the stopping decision. Upstream's loop
-    // observes until the decision is terminal; the decision itself is `crate::session::wait::wait_action`,
-    // and one call of this endpoint is one observation. A client that wants to keep waiting calls
-    // again -- which is what a stream carrier does on its side, and it keeps this transport free of
-    // a long-lived request.
+    // `session.wait` observes until the session is idle, needs input, or the deadline lands.
+    // The stopping rule is `crate::session::wait::wait_action`. The answer is the passive state
+    // plus the assistant messages inside the requested window.
+    registry.declare(NAMESPACE, "wait", Declaration::read(RESOURCE_KIND));
+    registry.register(NAMESPACE, "wait", move |call: RemoteCall| {
+        let catalog = Arc::clone(&wait_catalog);
+        let turns = Arc::clone(&wait_turns);
+        let pending = Arc::clone(&wait_pending);
+        Box::pin(async move { session_wait(&call.args, &catalog, &turns, &pending).await })
+    });
+
     // The three `observe*` endpoints keep unary compatibility handlers and also register live
     // stream openers below, so both transport generations can reach the same state source.
     registry.register(NAMESPACE, "observeEvent", move |call: RemoteCall| {
@@ -333,44 +384,12 @@ pub fn register_session_state_method_with(
     });
     let state_stream_catalog = Arc::clone(catalog);
     let state_stream_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
+    let state_stream_pending = Arc::clone(pending);
     registry.register_stream(NAMESPACE, "observeState", move |open| {
         let catalog = Arc::clone(&state_stream_catalog);
         let turns = Arc::clone(&state_stream_turns);
-        Box::pin(async move { observe_state_stream(open, catalog, turns).await })
-    });
-
-    registry.register(NAMESPACE, "wait", move |call: RemoteCall| {
-        let catalog = Arc::clone(&wait_catalog);
-        let projections = Arc::clone(&wait_projections);
-        let turns = Arc::clone(&wait_turns);
-        Box::pin(async move {
-            let state = state(&call.args, &catalog, &projections, &turns, None).await?;
-            let value = serde_json::from_value::<SessionStateValue>(state).map_err(|error| {
-                RemoteError::InvalidArguments {
-                    namespace: NAMESPACE.to_owned(),
-                    method: "wait".to_owned(),
-                    message: format!("the state reader returned an unexpected shape: {error}"),
-                }
-            })?;
-            // The three facts, read straight from the state this handler just built. Going through
-            // `facts_of` would re-deserialize the value, and under `#[path]` test compilation
-            // `SessionStateValue` resolves to the test crate's copy while the value is the
-            // library's -- so the facts are read from the struct in hand.
-            let facts = girder_core::session::wait::WaitFacts {
-                pending_input: value.interrupted,
-                running: value.running,
-                active: value.events > 0,
-            };
-            let action = girder_core::session::wait::wait_action(facts);
-            // Rendered here rather than through `wait_value`, which takes the library's
-            // `SessionStateValue`: under `#[path]` compilation that is a different type from the one
-            // in hand. The shape is the same object `wait_value` builds.
-            Ok(serde_json::json!({
-                "reason": action.as_str(),
-                "state": value,
-                "done": action.is_terminal(),
-            }))
-        })
+        let pending = Arc::clone(&state_stream_pending);
+        Box::pin(async move { observe_state_stream(open, catalog, turns, pending).await })
     });
 
     // `session.control`: one baseline, then one projection frame per session whose keys changed.
@@ -411,46 +430,39 @@ pub fn register_session_state_method_with(
         let catalog = Arc::clone(&control_stream_catalog);
         let projections = Arc::clone(&control_stream_projections);
         Box::pin(async move {
-            let mut previous: Option<serde_json::Map<String, Value>> = None;
+            // One cursor per session: the number of events already folded into this generation.
+            // The opening baseline covers that prefix. Each later event is its own frame.
+            let mut cursors: BTreeMap<String, usize> = BTreeMap::new();
+            let mut opened = false;
             loop {
-                let snapshot = control_snapshot(&catalog, &projections).await;
-                let current = snapshot.as_object().cloned().unwrap_or_default();
-                if previous.is_none() {
+                let listed = catalog.list().await;
+                if !opened {
+                    let mut blocks = serde_json::Map::new();
+                    for record in listed.into_iter().take(CONTROL_SESSION_LIMIT) {
+                        let Some(full) = catalog.read(&record.id).await else {
+                            continue;
+                        };
+                        let projected = projections.project(&full.events);
+                        blocks.insert(
+                            full.id.clone(),
+                            serde_json::json!({
+                                "asOfSeq": projected.as_of,
+                                "values": projected.values,
+                            }),
+                        );
+                        cursors.insert(full.id, full.events.len());
+                    }
                     if !open.push(serde_json::json!({
                         "type": "baseline",
-                        "value": { "projections": snapshot },
+                        "value": { "projections": Value::Object(blocks) },
                     })) {
                         return;
                     }
-                    previous = Some(current);
-                } else if previous.as_ref() != Some(&current) {
-                    let before = previous.clone().unwrap_or_default();
-                    if let Some(blocks) = snapshot.as_object() {
-                        for (session_id, block) in blocks {
-                            let before_values = before
-                                .get(session_id)
-                                .and_then(|row| row.get("values"))
-                                .and_then(Value::as_object);
-                            let Some(after_values) = block.get("values").and_then(Value::as_object)
-                            else {
-                                continue;
-                            };
-                            let changes = changed_object_keys(before_values, after_values);
-                            if changes.is_empty() {
-                                continue;
-                            }
-                            let seq = block.get("asOfSeq").cloned().unwrap_or(Value::from(0));
-                            if !open.push(serde_json::json!({
-                                "type": "projection",
-                                "sessionId": session_id,
-                                "seq": seq,
-                                "changes": changes,
-                            })) {
-                                return;
-                            }
-                        }
-                    }
-                    previous = Some(current);
+                    opened = true;
+                } else if !push_control_diffs(&open, &catalog, &projections, &listed, &mut cursors)
+                    .await
+                {
+                    return;
                 }
                 tokio::select! {
                     () = open.cancel.cancelled() => return,
@@ -466,26 +478,43 @@ pub fn register_session_state_method_with(
     });
 }
 
-async fn control_snapshot(
+/// Push one projection frame per new event that changed a visible key.
+///
+/// Returns false when the stream closed while a frame was being written.
+async fn push_control_diffs(
+    open: &girder_core::StreamOpen,
     catalog: &Arc<dyn SessionCatalog>,
     projections: &Arc<ProjectionRegistry>,
-) -> serde_json::Value {
-    let listed = catalog.list().await;
-    let mut blocks = serde_json::Map::new();
-    for record in listed.into_iter().take(CONTROL_SESSION_LIMIT) {
+    listed: &[girder_core::SessionRecord],
+    cursors: &mut BTreeMap<String, usize>,
+) -> bool {
+    for record in listed.iter().take(CONTROL_SESSION_LIMIT) {
         let Some(full) = catalog.read(&record.id).await else {
             continue;
         };
-        let projected = projections.project(&full.events);
-        blocks.insert(
-            full.id,
-            serde_json::json!({
-                "asOfSeq": projected.as_of,
-                "values": projected.values,
-            }),
-        );
+        let start = cursors.get(&full.id).copied().unwrap_or(0);
+        if start < full.events.len() {
+            for index in start..full.events.len() {
+                let seq = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+                let before = projections.project(&full.events[..index]);
+                let after = projections.project(&full.events[..=index]);
+                let changes = changed_projection_keys(&before.values, &after.values);
+                if changes.is_empty() {
+                    continue;
+                }
+                if !open.push(serde_json::json!({
+                    "type": "projection",
+                    "sessionId": full.id,
+                    "seq": seq,
+                    "changes": changes,
+                })) {
+                    return false;
+                }
+            }
+        }
+        cursors.insert(full.id, full.events.len());
     }
-    serde_json::Value::Object(blocks)
+    true
 }
 
 async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn SessionCatalog>) {
@@ -497,21 +526,21 @@ async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn Se
             return;
         }
     };
+    // Readiness does not prove the session exists. A page can subscribe before
+    // create finishes; events that land afterwards are the ones this stream reports.
     let mut cursor = match catalog.read(&session_id).await {
         Some(record) => u64::try_from(record.events.len()).unwrap_or(u64::MAX),
-        None => {
-            let _ = open.fail(RemoteError::Failed(format!(
-                "no session `{session_id}` is known to this deployment"
-            )));
-            return;
-        }
+        None => 0,
     };
     if !open.push(serde_json::json!({ "type": "ready" })) {
         return;
     }
     loop {
         let Some(record) = catalog.read(&session_id).await else {
-            return;
+            if !wait_for_session(&open).await {
+                return;
+            }
+            continue;
         };
         let start = usize::try_from(cursor).unwrap_or(usize::MAX);
         if start < record.events.len() {
@@ -529,14 +558,8 @@ async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn Se
             cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
             continue;
         }
-        tokio::select! {
-            () = open.cancel.cancelled() => return,
-            incoming = open.uplink.recv() => {
-                if !matches!(incoming, Ok(Some(_))) {
-                    return;
-                }
-            }
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        if !wait_for_session(&open).await {
+            return;
         }
     }
 }
@@ -554,21 +577,21 @@ async fn observe_projections_stream(
             return;
         }
     };
+    // The opening `ready` is only "the subscription is live". A missing session
+    // stays open until it appears, the same way `observeEvent` does.
     let mut cursor = match catalog.read(&session_id).await {
         Some(record) => u64::try_from(record.events.len()).unwrap_or(u64::MAX),
-        None => {
-            let _ = open.fail(RemoteError::Failed(format!(
-                "no session `{session_id}` is known to this deployment"
-            )));
-            return;
-        }
+        None => 0,
     };
     if !open.push(serde_json::json!({ "type": "ready" })) {
         return;
     }
     loop {
         let Some(record) = catalog.read(&session_id).await else {
-            return;
+            if !wait_for_session(&open).await {
+                return;
+            }
+            continue;
         };
         let start = usize::try_from(cursor).unwrap_or(usize::MAX);
         if start < record.events.len() {
@@ -591,15 +614,20 @@ async fn observe_projections_stream(
             cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
             continue;
         }
-        tokio::select! {
-            () = open.cancel.cancelled() => return,
-            incoming = open.uplink.recv() => {
-                if !matches!(incoming, Ok(Some(_))) {
-                    return;
-                }
-            }
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        if !wait_for_session(&open).await {
+            return;
         }
+    }
+}
+
+/// Park until the catalog may have changed, or until the caller closes the stream.
+///
+/// Returns false when the stream should stop.
+async fn wait_for_session(open: &girder_core::StreamOpen) -> bool {
+    tokio::select! {
+        () = open.cancel.cancelled() => false,
+        incoming = open.uplink.recv() => matches!(incoming, Ok(Some(_))),
+        () = tokio::time::sleep(std::time::Duration::from_millis(50)) => true,
     }
 }
 
@@ -607,6 +635,7 @@ async fn observe_state_stream(
     open: girder_core::StreamOpen,
     catalog: Arc<dyn SessionCatalog>,
     turns: Arc<dyn LiveTurns>,
+    pending: Arc<dyn PendingInputs>,
 ) {
     let method = "observeState";
     let session_id = match girder_core::api::api_final::session_id_of(&open.call.args, method) {
@@ -616,7 +645,7 @@ async fn observe_state_stream(
             return;
         }
     };
-    let mut last = match passive_state(&session_id, &catalog, &turns).await {
+    let mut last = match passive_state(&session_id, &catalog, &turns, &pending).await {
         Ok(value) => value,
         Err(error) => {
             let _ = open.fail(error);
@@ -635,7 +664,7 @@ async fn observe_state_stream(
                 }
             }
             () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                let current = match passive_state(&session_id, &catalog, &turns).await {
+                let current = match passive_state(&session_id, &catalog, &turns, &pending).await {
                     Ok(value) => value,
                     Err(_) => return,
                 };
@@ -650,30 +679,259 @@ async fn observe_state_stream(
     }
 }
 
+/// Default `session.wait` deadline when the caller omits `timeoutMs`.
+const DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
+
+/// Largest delay a timer in this protocol accepts. Matches upstream `MAX_TIMER_DELAY_MS`.
+const MAX_TIMER_DELAY_MS: u64 = 2_147_483_647;
+
+/// Largest integer JSON can round-trip. `afterSeq` and `maxMessages` must stay inside it.
+const MAX_SAFE_INTEGER: i64 = (1_i64 << 53) - 1;
+
+/// How many assistant records `session.wait` returns when `maxMessages` is omitted.
+const DEFAULT_MAX_MESSAGES: usize = 50;
+
+/// `session.wait`: sample until the session is idle, needs input, or the deadline lands.
+///
+/// A running turn keeps the call open and is re-read every 50ms. This process has no separate
+/// attached-agent table, so a sample that is not running is already idle. The returned `state` is
+/// the passive snapshot, and `output.records` are assistant messages after `afterSeq` through that
+/// snapshot's cursor, newest first.
+async fn session_wait(
+    args: &Value,
+    catalog: &Arc<dyn SessionCatalog>,
+    turns: &Arc<dyn LiveTurns>,
+    pending: &Arc<dyn PendingInputs>,
+) -> Result<Value, RemoteError> {
+    let bounds = wait_bounds(args)?;
+    let started = std::time::Instant::now();
+    loop {
+        let state = passive_state(&bounds.session_id, catalog, turns, pending).await?;
+        if started.elapsed() >= bounds.timeout {
+            return finish_wait("timeout", &state, catalog, &bounds).await;
+        }
+        let pending = state
+            .get("pendingInput")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty());
+        let running = state
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let active = state
+            .get("active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let action =
+            girder_core::session::wait::wait_action(girder_core::session::wait::WaitFacts {
+                pending_input: pending,
+                running,
+                active,
+            });
+        match action {
+            girder_core::session::wait::WaitAction::InputRequired => {
+                return finish_wait("input-required", &state, catalog, &bounds).await;
+            }
+            girder_core::session::wait::WaitAction::Idle
+            | girder_core::session::wait::WaitAction::CheckIdle => {
+                return finish_wait("idle", &state, catalog, &bounds).await;
+            }
+            girder_core::session::wait::WaitAction::Continue => {
+                let remaining = bounds.timeout.saturating_sub(started.elapsed());
+                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50))).await;
+            }
+        }
+    }
+}
+
+struct WaitBounds {
+    session_id: String,
+    timeout: std::time::Duration,
+    after_seq: i64,
+    max_messages: usize,
+}
+
+fn wait_bounds(args: &Value) -> Result<WaitBounds, RemoteError> {
+    let session_id = args
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    if session_id.is_empty() {
+        return Err(invalid_wait("`sessionId` is required".to_owned()));
+    }
+    let after_seq = match args.get("afterSeq") {
+        None => -1,
+        Some(value) => after_seq_of(value)?,
+    };
+    let max_messages = match args.get("maxMessages") {
+        None => DEFAULT_MAX_MESSAGES,
+        Some(value) => positive_count(value, "maxMessages")?,
+    };
+    let timeout = match args.get("timeoutMs") {
+        None => std::time::Duration::from_millis(DEFAULT_WAIT_TIMEOUT_MS),
+        Some(value) => wait_timeout(value)?,
+    };
+    Ok(WaitBounds {
+        session_id,
+        timeout,
+        after_seq,
+        max_messages,
+    })
+}
+
+fn after_seq_of(value: &Value) -> Result<i64, RemoteError> {
+    let Some(seq) = value.as_i64() else {
+        return Err(invalid_wait(
+            "afterSeq must be an integer greater than or equal to -1".to_owned(),
+        ));
+    };
+    if seq < -1 || seq > MAX_SAFE_INTEGER {
+        return Err(invalid_wait(
+            "afterSeq must be an integer greater than or equal to -1".to_owned(),
+        ));
+    }
+    Ok(seq)
+}
+
+fn positive_count(value: &Value, name: &str) -> Result<usize, RemoteError> {
+    let Some(count) = value.as_u64() else {
+        return Err(invalid_wait(format!(
+            "{name} must be a positive safe integer"
+        )));
+    };
+    if count == 0 || count > u64::try_from(MAX_SAFE_INTEGER).unwrap_or(u64::MAX) {
+        return Err(invalid_wait(format!(
+            "{name} must be a positive safe integer"
+        )));
+    }
+    usize::try_from(count)
+        .map_err(|_| invalid_wait(format!("{name} must be a positive safe integer")))
+}
+
+fn wait_timeout(value: &Value) -> Result<std::time::Duration, RemoteError> {
+    let Some(ms) = value.as_u64() else {
+        return Err(invalid_wait(
+            "timeoutMs must be a positive supported timer delay".to_owned(),
+        ));
+    };
+    if ms == 0 || ms > MAX_TIMER_DELAY_MS {
+        return Err(invalid_wait(
+            "timeoutMs must be a positive supported timer delay".to_owned(),
+        ));
+    }
+    Ok(std::time::Duration::from_millis(ms))
+}
+
+fn invalid_wait(message: String) -> RemoteError {
+    RemoteError::InvalidArguments {
+        namespace: NAMESPACE.to_owned(),
+        method: "wait".to_owned(),
+        message,
+    }
+}
+
+async fn finish_wait(
+    reason: &str,
+    state: &Value,
+    catalog: &Arc<dyn SessionCatalog>,
+    bounds: &WaitBounds,
+) -> Result<Value, RemoteError> {
+    let through = state.get("cursor").and_then(Value::as_i64).unwrap_or(-1);
+    let Some(record) = catalog.read(&bounds.session_id).await else {
+        return Err(RemoteError::Failed(format!(
+            "no session `{}` is known to this deployment",
+            bounds.session_id
+        )));
+    };
+    let output = assistant_output(
+        &record.events,
+        bounds.after_seq,
+        through,
+        bounds.max_messages,
+    )?;
+    Ok(serde_json::json!({
+        "reason": reason,
+        "state": state,
+        "output": output,
+    }))
+}
+
+/// Assistant appends after `after_seq` through `through_seq`, newest first.
+///
+/// Sequence numbers here are 0-based, matching upstream `session.state`. `after_seq` is exclusive,
+/// so `-1` includes the whole log.
+fn assistant_output(
+    events: &[SessionEvent],
+    after_seq: i64,
+    through_seq: i64,
+    max_messages: usize,
+) -> Result<Value, RemoteError> {
+    let covered = i64::try_from(events.len())
+        .ok()
+        .and_then(|length| length.checked_sub(1))
+        .unwrap_or(-1);
+    if through_seq > covered {
+        return Err(RemoteError::Failed(
+            "gateway/internal: Session history no longer covers the wait cursor".to_owned(),
+        ));
+    }
+    let mut records = Vec::new();
+    let mut truncated = false;
+    let mut seq = through_seq;
+    while seq > after_seq {
+        if seq >= 0
+            && let Some(event) = events.get(usize::try_from(seq).unwrap_or(usize::MAX))
+            && matches!(event, SessionEvent::AssistantMessage { .. })
+        {
+            if records.len() == max_messages {
+                truncated = true;
+                break;
+            }
+            if let Some(record) = girder_core::api::remote::session_wire_record(
+                event,
+                u64::try_from(seq).unwrap_or(0),
+            ) {
+                records.push(record);
+            }
+        }
+        seq -= 1;
+    }
+    Ok(serde_json::json!({
+        "records": records,
+        "truncated": truncated,
+    }))
+}
+
 /// The passive state a client reads from `session.observeState`.
 ///
-/// `cursor` is the same 1-based last seq `session.follow` reports, and an empty log is `0`.
+/// `cursor` is the inclusive 0-based last event sequence, and an empty log is `-1`.
 /// `active` is true only while a turn is running: this process has no separate "agent attached"
 /// table. `queue` is an empty list while a turn is running and null otherwise. `pendingInput`
-/// stays empty because pending Remote events are not tracked on this path.
+/// lists the kinds [`PendingInputs`] reports for this session.
 async fn passive_state(
     session_id: &str,
     catalog: &Arc<dyn SessionCatalog>,
     turns: &Arc<dyn LiveTurns>,
+    pending: &Arc<dyn PendingInputs>,
 ) -> Result<Value, RemoteError> {
     let Some(record) = catalog.read(session_id).await else {
         return Err(RemoteError::Failed(format!(
             "no session `{session_id}` is known to this deployment"
         )));
     };
-    let cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
+    let cursor = i64::try_from(record.events.len())
+        .ok()
+        .and_then(|length| length.checked_sub(1))
+        .unwrap_or(-1);
     let running = turns.is_running(session_id);
     Ok(serde_json::json!({
         "cursor": cursor,
         "active": running,
         "running": running,
         "queue": if running { Value::Array(Vec::new()) } else { Value::Null },
-        "pendingInput": [],
+        "pendingInput": pending.kinds(session_id),
     }))
 }
 
@@ -686,24 +944,6 @@ fn changed_projection_keys(
         .iter()
         .filter_map(|(key, val)| {
             if before.get(key) == Some(val) {
-                None
-            } else {
-                Some(serde_json::json!({ "key": key, "val": val }))
-            }
-        })
-        .collect()
-}
-
-/// Keys whose JSON object value changed. A missing `before` treats every key as new.
-fn changed_object_keys(
-    before: Option<&serde_json::Map<String, Value>>,
-    after: &serde_json::Map<String, Value>,
-) -> Vec<Value> {
-    after
-        .iter()
-        .filter_map(|(key, val)| {
-            let unchanged = before.is_some_and(|map| map.get(key) == Some(val));
-            if unchanged {
                 None
             } else {
                 Some(serde_json::json!({ "key": key, "val": val }))

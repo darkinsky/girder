@@ -32,7 +32,8 @@ use girder_core::{
 };
 use girder_core::{
     TERMINAL_DEFAULT_READ_WAIT_MS as DEFAULT_READ_WAIT_MS, TERMINAL_MAX_WAIT_MS as MAX_WAIT_MS,
-    register_terminal_retain_method, register_terminal_rpc_methods as register_terminal_methods,
+    register_terminal_rename_method, register_terminal_retain_method,
+    register_terminal_rpc_methods as register_terminal_methods,
 };
 use serde_json::{Value, json};
 
@@ -197,6 +198,7 @@ impl Harness {
         let mut registry = RemoteRegistry::new();
         let dynamic: Arc<dyn TerminalLauncher> = Arc::clone(&launcher) as Arc<dyn TerminalLauncher>;
         register_terminal_methods(&mut registry, &terminals, &dynamic);
+        register_terminal_rename_method(&mut registry, &terminals);
         Self {
             registry,
             terminals,
@@ -602,8 +604,8 @@ fn the_streaming_methods_are_declared_as_gaps() {
         "retain answers now, through the store that keeps its output: {declared:?}"
     );
     assert!(
-        declared.contains(&"terminal.rename".to_owned()),
-        "{declared:?}"
+        !declared.contains(&"terminal.rename".to_owned()),
+        "rename answers now: {declared:?}"
     );
     for name in ["list", "create", "send", "read", "close"] {
         assert!(
@@ -611,8 +613,27 @@ fn the_streaming_methods_are_declared_as_gaps() {
             "`terminal.{name}` should be registered"
         );
     }
+    assert!(harness.registry.get("terminal", "rename").is_some());
     assert!(harness.registry.is_streaming("terminal", "watch"));
     assert!(harness.registry.is_streaming("terminal", "attach"));
+}
+
+#[tokio::test]
+async fn rename_updates_the_terminal_listing() {
+    let harness = Harness::serving(Arc::new(FakeShell::new(None)));
+    harness
+        .call("create", json!({ "id": "t1" }))
+        .await
+        .expect("created");
+
+    let renamed = harness
+        .call("rename", json!({ "id": "t1", "title": " Build shell " }))
+        .await
+        .expect("renamed");
+    assert_eq!(renamed, json!({ "id": "t1", "title": "Build shell" }));
+
+    let listed = harness.call("list", json!({})).await.expect("listed");
+    assert_eq!(listed["terminals"][0]["title"], "Build shell");
 }
 
 #[tokio::test]

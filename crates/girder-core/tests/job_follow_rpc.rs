@@ -322,3 +322,53 @@ async fn the_job_list_stream_replaces_rows_after_a_status_change() {
     cancel.cancel();
     let _ = running.await;
 }
+
+#[tokio::test]
+async fn the_job_list_stream_keeps_unowned_jobs_and_the_callers_own() {
+    let jobs = scratch();
+    jobs.register(&JobId::new("free").expect("valid"), "test", "free")
+        .expect("registered");
+    jobs.register_owned(
+        &JobId::new("mine").expect("valid"),
+        "test",
+        "mine",
+        Some("s1"),
+    )
+    .expect("registered");
+    jobs.register_owned(
+        &JobId::new("theirs").expect("valid"),
+        "test",
+        "theirs",
+        Some("s2"),
+    )
+    .expect("registered");
+    let mut registry = RemoteRegistry::new();
+    girder_core::register_job_methods(&mut registry, &jobs);
+    let request = call(json!({"sessionId": "s1"}));
+    let handler = registry
+        .stream_method("job", "list", &request)
+        .expect("list is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(1024, "job/list")),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("rows")
+        .expect("stream")
+        .expect("frame");
+    let ids = frame["jobs"]
+        .as_array()
+        .expect("jobs")
+        .iter()
+        .filter_map(|job| job["id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["free", "mine"]);
+    cancel.cancel();
+    let _ = running.await;
+}

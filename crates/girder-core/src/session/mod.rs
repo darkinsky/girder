@@ -334,6 +334,13 @@ pub enum SessionEvent {
         source: Option<String>,
     },
 
+    /// The approval policy in force.
+    #[serde(rename = "approval/policy")]
+    ApprovalPolicy {
+        /// The policy name.
+        policy: String,
+    },
+
     /// The context window the request was planned against.
     ///
     /// Recorded because compaction decisions depend on it: a log without the window cannot explain
@@ -513,6 +520,7 @@ impl SessionEvent {
             Self::PermissionPreset { .. } => "permission/preset",
             Self::PlanMode { .. } => "plan/mode",
             Self::SandboxMode { .. } => "sandbox/mode",
+            Self::ApprovalPolicy { .. } => "approval/policy",
             Self::RequestContext { .. } => "request/context",
             Self::RequestHeader { .. } => "request/header",
             Self::SessionTitle { .. } => "session/title",
@@ -546,6 +554,7 @@ impl SessionEvent {
             | Self::PermissionPreset { .. }
             | Self::PlanMode { .. }
             | Self::SandboxMode { .. }
+            | Self::ApprovalPolicy { .. }
             | Self::RequestContext { .. }
             | Self::RequestHeader { .. }
             | Self::SessionTitle { .. }

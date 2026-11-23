@@ -327,6 +327,8 @@ pub struct Job {
     pub code: Option<i32>,
     /// When it settled, in milliseconds since the epoch.
     pub settled_at: Option<u64>,
+    /// The session that started it. Absent for an unowned job, which every session can see.
+    pub owner: Option<String>,
 }
 
 impl Job {
@@ -349,6 +351,18 @@ impl Job {
         self.status = status;
         self.code = code;
         self.settled_at = Some(now);
+    }
+
+    /// Whether `session_id` may see this job.
+    ///
+    /// An unowned job is visible to every caller. An owned job is visible only to its owner, and a
+    /// caller that names no session sees none of those.
+    #[must_use]
+    pub fn visible_to(&self, session_id: Option<&str>) -> bool {
+        match self.owner.as_deref() {
+            None => true,
+            Some(owner) => session_id == Some(owner),
+        }
     }
 }
 
@@ -391,6 +405,23 @@ impl JobRegistry {
         kind: impl Into<String>,
         label: impl Into<String>,
     ) -> Result<Job, JobError> {
+        self.register_owned(id, kind, label, None)
+    }
+
+    /// Registers a running job owned by `owner`.
+    ///
+    /// `None` is an unowned job. The visibility rule is [`Job::visible_to`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JobError::AlreadySettled`] when the id is taken.
+    pub fn register_owned(
+        &self,
+        id: &JobId,
+        kind: impl Into<String>,
+        label: impl Into<String>,
+        owner: Option<&str>,
+    ) -> Result<Job, JobError> {
         let mut jobs = self.lock();
         if let Some(existing) = jobs.get(id.as_str()) {
             return Err(JobError::AlreadySettled {
@@ -406,6 +437,7 @@ impl JobRegistry {
             output: OutputRing::new(self.ring_bytes),
             code: None,
             settled_at: None,
+            owner: owner.filter(|value| !value.is_empty()).map(str::to_owned),
         };
         jobs.insert(id.to_string(), job.clone());
         Ok(job)
@@ -655,8 +687,25 @@ pub fn spawn_job(
     label: impl Into<String>,
     options: crate::shell::subprocess::SpawnOptions,
 ) -> Result<tokio::task::JoinHandle<()>, JobError> {
+    spawn_job_owned(registry, id, kind, label, options, None)
+}
+
+/// Spawns a command as a background job owned by `owner`.
+///
+/// # Errors
+///
+/// Returns [`JobError::AlreadySettled`] when the id is taken, and [`JobError::NotFound`] if the
+/// registration vanished, which cannot happen while the caller holds the registry.
+pub fn spawn_job_owned(
+    registry: Arc<JobRegistry>,
+    id: &JobId,
+    kind: impl Into<String>,
+    label: impl Into<String>,
+    options: crate::shell::subprocess::SpawnOptions,
+    owner: Option<&str>,
+) -> Result<tokio::task::JoinHandle<()>, JobError> {
     let id_for_task = id.clone();
-    registry.register(id, kind, label)?;
+    registry.register_owned(id, kind, label, owner)?;
     // Swept here because this is the only moment the map can have grown: a registry nobody starts jobs on cannot
     // accumulate settled ones. A background timer would be a second thing to shut down and would fire on a registry
     // that has nothing to do.

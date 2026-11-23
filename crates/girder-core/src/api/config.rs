@@ -303,9 +303,19 @@ impl Workspace {
 ///
 /// A `Mutex` rather than a lock-free structure: every operation here is a small map edit or a list
 /// reorder, and the interesting invariant — the manual order — spans the whole list.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WorkspaceRegistry {
     workspaces: std::sync::Mutex<Vec<Workspace>>,
+    changed: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl Default for WorkspaceRegistry {
+    fn default() -> Self {
+        Self {
+            workspaces: std::sync::Mutex::new(Vec::new()),
+            changed: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
 }
 
 impl WorkspaceRegistry {
@@ -348,7 +358,19 @@ impl WorkspaceRegistry {
             updated_at: now,
         };
         workspaces.push(workspace.clone());
+        drop(workspaces);
+        self.poke();
         Ok(workspace)
+    }
+
+    /// Wakes `workspace.follow` after the registry changes.
+    #[must_use]
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
+
+    fn poke(&self) {
+        self.changed.notify_waiters();
     }
 
     /// Every registration, in manual order.
@@ -377,7 +399,10 @@ impl WorkspaceRegistry {
         workspace.title.clear();
         workspace.title.push_str(title);
         workspace.updated_at = now;
-        Some(workspace.clone())
+        let updated = workspace.clone();
+        drop(workspaces);
+        self.poke();
+        Some(updated)
     }
 
     /// Deletes a registration.
@@ -387,7 +412,12 @@ impl WorkspaceRegistry {
         let mut workspaces = self.lock();
         let before = workspaces.len();
         workspaces.retain(|workspace| workspace.id != id);
-        workspaces.len() != before
+        let removed = workspaces.len() != before;
+        drop(workspaces);
+        if removed {
+            self.poke();
+        }
+        removed
     }
 
     /// Moves a workspace earlier in the manual order.
@@ -410,7 +440,10 @@ impl WorkspaceRegistry {
         let mut workspace = workspace;
         workspace.updated_at = now;
         workspaces.insert(to, workspace);
-        Some(workspaces.clone())
+        let ordered = workspaces.clone();
+        drop(workspaces);
+        self.poke();
+        Some(ordered)
     }
 
     /// Attaches a session to a workspace.
@@ -428,7 +461,10 @@ impl WorkspaceRegistry {
             found.session_ids.push(session.to_owned());
         }
         found.updated_at = now;
-        Some(found.clone())
+        let updated = found.clone();
+        drop(workspaces);
+        self.poke();
+        Some(updated)
     }
 
     /// Archives a session inside its workspace.
@@ -444,7 +480,10 @@ impl WorkspaceRegistry {
         }
         found.session_ids.retain(|id| id != session);
         found.updated_at = now;
-        Some(found.clone())
+        let updated = found.clone();
+        drop(workspaces);
+        self.poke();
+        Some(updated)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Workspace>> {

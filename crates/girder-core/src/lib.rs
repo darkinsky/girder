@@ -138,7 +138,9 @@ pub use api::remote_access::{
     Refused as AccessRefused, Resolved, ResolvedResource, ResourceIds, all_allowed, declaration,
     kinds_of, reader, resolve_event_resources,
 };
-pub use api::remote_follow::register_remote_access_follow;
+pub use api::remote_follow::{
+    RemoteAccessSnapshot, register_remote_access_follow, register_remote_access_follow_with,
+};
 pub use api::remote_service::{
     Endpoint, Handler as RemoteHandler, RemoteService, endpoint_names, register_remote_service,
 };
@@ -718,7 +720,8 @@ pub use session::session_static::{
     Page as StaticPage, escape as escape_html, render as render_static_export,
 };
 pub use session::state_rpc::{
-    LiveTurns, NoLiveTurns, register_session_state_method, register_session_state_method_with,
+    LiveTurns, NoLiveTurns, NoPendingInputs, PendingInputs, register_session_state_method,
+    register_session_state_method_observing, register_session_state_method_with,
 };
 pub use session::stats::Stats as SessionStats;
 pub use session::stream::{EndReason as StreamEndReason, Frame as SessionFrame, SessionStream};
