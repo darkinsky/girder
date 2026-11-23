@@ -205,7 +205,7 @@ fn the_directories_are_distinct_and_under_the_root() {
     let paths = HomePaths::under("/var/lib/girder").expect("absolute");
 
     let directories = paths.directories();
-    assert_eq!(directories.len(), 6);
+    assert_eq!(directories.len(), 7);
     assert!(
         directories
             .iter()

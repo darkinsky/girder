@@ -3,10 +3,9 @@
 //! The plan's criteria: the Web GUI can list sessions, send a message, and see a streamed reply;
 //! state is consistent after a reconnect.
 //!
-//! The GUI itself is **not** exercised — this crate does not implement the `Remote` method
-//! namespaces a real client calls (see `docs/phase6-scope.md`). What is proven here is the protocol
-//! layer a GUI would sit on: the mux endpoint accepts a socket, sends `ready`, round-trips
-//! waterfalls and results, and a reconnect starts a clean generation.
+//! The GUI itself is **not** exercised. What is proven here is the protocol layer a GUI sits on:
+//! the mux endpoint accepts a socket, sends `ready`, round-trips waterfalls and results, and a
+//! reconnect starts a clean generation.
 
 use std::sync::Arc;
 
@@ -31,7 +30,12 @@ async fn start_server() -> (String, CancellationToken) {
     tokio::spawn(async move {
         let _ = girder_rpc::serve_on(listener, bus, Vec::new(), token).await;
     });
-    (format!("ws://{addr}{REMOTE_STREAM_MUX_PATH}"), cancel)
+    // The legacy frame suite exercises the compatibility protocol explicitly. The production
+    // mux path defaults to the upstream `open`/`item`/`end` stream protocol.
+    (
+        format!("ws://{addr}{REMOTE_STREAM_MUX_PATH}?legacy=1"),
+        cancel,
+    )
 }
 
 /// Reads the next frame of `expected` type, skipping others.
@@ -363,7 +367,7 @@ async fn a_registered_event_reaches_the_client_with_its_arguments() {
 
     // Build a handle the way `serve` does, so the forwarder and the socket share one channel.
     let bus = Arc::new(EventBus::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownlinkFrame>();
+    let (tx, mut rx) = girder_rpc::bounded_transport::Outbound::new(64);
     let handle = girder_rpc::ClientHandle::test_handle(client_id, tx);
 
     // Forward `test/ping` to this handle.
@@ -404,7 +408,7 @@ async fn an_unwatched_event_is_not_forwarded() {
     };
 
     let bus = Arc::new(EventBus::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownlinkFrame>();
+    let (tx, mut rx) = girder_rpc::bounded_transport::Outbound::new(64);
     let handle = girder_rpc::ClientHandle::test_handle(client_id, tx);
     // Watching a different event.
     let forwarder = girder_rpc::forward_events(handle, &bus, vec!["other/event"]);
@@ -434,7 +438,7 @@ async fn an_empty_watch_list_forwards_nothing() {
     };
 
     let bus = Arc::new(EventBus::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownlinkFrame>();
+    let (tx, mut rx) = girder_rpc::bounded_transport::Outbound::new(64);
     let handle = girder_rpc::ClientHandle::test_handle(client_id, tx);
     let forwarder = girder_rpc::forward_events(handle, &bus, Vec::new());
 

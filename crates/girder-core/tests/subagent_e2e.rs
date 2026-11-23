@@ -42,11 +42,11 @@ use std::sync::{Arc, Barrier, Mutex, PoisonError};
 use std::time::Duration;
 
 use girder_core::{
-    AgentId, BoxFut, Cancellers, ChunkStream, ContentBlock, Depth, EventBus, FinishReason,
-    Interrupter, LlmError, LlmProvider, LlmRequest, LoopContext, MemorySession, Session,
-    StreamChunk, SubagentPool, SubagentRegistry, SubagentStatus, ToolCallId, ToolDefinition,
-    ToolExecution, ToolRegistry, ToolRegistryView, ToolResult, ToolRunContext,
-    subagent_interrupt_tool, subagent_tool, traced_subagent_tool,
+    AgentId, BoxFut, ChunkStream, ContentBlock, Depth, EventBus, FinishReason, Interrupter,
+    LlmError, LlmProvider, LlmRequest, LoopContext, MemorySession, Session, StreamChunk,
+    SubagentPool, SubagentRegistry, SubagentStatus, ToolCallId, ToolDefinition, ToolExecution,
+    ToolRegistry, ToolRegistryView, ToolResult, ToolRunContext, subagent_interrupt_tool,
+    subagent_tool, traced_subagent_tool,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -661,22 +661,19 @@ async fn interrupting_a_running_child_is_recorded_and_the_result_says_it_was_int
         Arc::clone(&registry),
     ));
 
-    // A fresh registry mints `sa-0` for its first spawn, so the token can be armed before the
-    // spawn exists. The token handed out here is the one the child must run under.
-    let cancellers = Arc::new(Cancellers::new());
-    let armed = cancellers.arm("sa-0");
-    let child_token = armed.token();
+    // The registry owns the cancellation table used by the spawn tool. Using that same table for
+    // the interrupt tool tests the production wiring rather than an unrelated cancellation token.
+    let cancellers = registry.cancellers();
     let interrupter: Arc<dyn Interrupter> = Arc::clone(&cancellers) as Arc<dyn Interrupter>;
     let interrupt_tool = subagent_interrupt_tool(Arc::clone(&registry), interrupter);
 
     let spawn = {
         let tool = Arc::clone(&tool);
-        let cancel = child_token.clone();
         tokio::spawn(async move {
             call_with(
                 &tool,
                 serde_json::json!({ "prompt": "a long task" }),
-                run_context(cancel),
+                run_context(CancellationToken::new()),
             )
             .await
         })
@@ -687,6 +684,9 @@ async fn interrupting_a_running_child_is_recorded_and_the_result_says_it_was_int
         "the child to be running and parked in its model call",
     )
     .await;
+    let child_token = cancellers
+        .token("sa-0")
+        .expect("the running child has a cancellation token");
     assert!(
         !child_token.is_cancelled(),
         "nothing has interrupted it yet"

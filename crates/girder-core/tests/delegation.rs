@@ -6,8 +6,8 @@
 //! - **subagent depth limiting** — the property that makes delegation safe rather than a token sink.
 //! - **the sandbox enforcement level** — reported honestly rather than assumed.
 //!
-//! The kernel-level sandbox is **not** implemented and **not** tested; see `docs/phase7-scope.md`
-//! for the measurement that ruled it out on this machine (`CONFIG_SECURITY_LANDLOCK` unset).
+//! The kernel-level sandbox is **not** implemented and **not** tested. This machine's kernel was
+//! built without `CONFIG_SECURITY_LANDLOCK`, so a Landlock backend could not be verified here.
 
 use std::sync::Arc;
 

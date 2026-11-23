@@ -4,8 +4,8 @@
 //! Upstream `vendor/schemastery` is 962 lines and it is two things at once. One half validates data
 //! — types, nesting, ranges, defaults, the volatile-field rule. The other half describes a form: the
 //! `hidden`/`collapse`/`disabled`/`role`/`comment` builders, the badge list, `toString` emitting a
-//! compact literal for a settings UI. `docs/migration-v2.md` lists "配置 schema 校验" as the M0 gap,
-//! and only the first half is that gap: this crate has no settings form to describe.
+//! compact literal for a settings UI. This crate ports the validation half; it has no settings
+//! form to describe.
 //!
 //! # What is ported
 //!

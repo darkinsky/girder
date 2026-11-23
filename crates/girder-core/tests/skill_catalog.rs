@@ -20,6 +20,13 @@ use std::path::{Path, PathBuf};
 #[path = "../src/skill/catalog.rs"]
 mod catalog;
 
+// The source is included directly so this test can exercise the catalog before the module is
+// reached through the library root. Mirror the library's public skill namespace for the loader
+// functions that refer to `crate::skill`.
+mod skill {
+    pub use girder_core::skill::{Definition, Registry, Static, Summary};
+}
+
 use catalog::{SkillMeta, discover, parse_frontmatter, render_list};
 
 // ---- fixtures ---------------------------------------------------------------------------------

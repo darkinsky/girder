@@ -24,8 +24,8 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::mcp::{CallResult, McpError, Registry};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::mcp::{CallResult, McpError, Registry};
 
 /// How many MCP tools one call to the bridge registers.
 ///
@@ -45,6 +45,170 @@ pub fn register_mcp_tools(tools: &crate::core::tools::ToolRegistry, mcp: &Arc<Re
         registered += 1;
     }
     registered
+}
+
+/// Registers `list_mcp_resources`, `list_mcp_resource_templates`, and `read_mcp_resource`.
+///
+/// The three tools are always present. A server name is an argument, so they can be registered
+/// before any server has started and still refuse a name this deployment does not have.
+pub fn register_mcp_resource_tools(tools: &crate::core::tools::ToolRegistry, mcp: &Arc<Registry>) {
+    tools.register(resource_tool(
+        mcp,
+        "list_mcp_resources",
+        "List resources available from an MCP server.",
+        true,
+        "resources/list",
+    ));
+    tools.register(resource_tool(
+        mcp,
+        "list_mcp_resource_templates",
+        "List parameterized resource URI templates from an MCP server.",
+        true,
+        "resources/templates/list",
+    ));
+    tools.register(read_resource_tool(mcp));
+}
+
+fn resource_tool(
+    mcp: &Arc<Registry>,
+    name: &'static str,
+    description: &'static str,
+    cursor: bool,
+    method: &'static str,
+) -> ToolDefinition {
+    let registry = Arc::clone(mcp);
+    let mut properties = serde_json::json!({
+        "server": { "type": "string", "description": "Configured MCP server name." }
+    });
+    if cursor {
+        properties["cursor"] = serde_json::json!({
+            "type": "string",
+            "description": "Continuation cursor returned by this server."
+        });
+    }
+    ToolDefinition::new(
+        name,
+        description,
+        serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "required": ["server"]
+        }),
+        Arc::new(move |args: serde_json::Value, _ctx: ToolRunContext| {
+            let registry = Arc::clone(&registry);
+            Box::pin(async move {
+                let Some(server) = required_string(&args, "server") else {
+                    return Ok(ToolResult::error("`server` is required"));
+                };
+                let mut params = serde_json::json!({});
+                if let Some(cursor) = args.get("cursor").and_then(serde_json::Value::as_str) {
+                    if !cursor.is_empty() {
+                        params["cursor"] = serde_json::json!(cursor);
+                    }
+                }
+                match registry.request(&server, method, params).await {
+                    Ok(value) => Ok(ToolResult::text(render_resource(&server, &value))),
+                    Err(error) => Ok(ToolResult::error(error.to_string())),
+                }
+            })
+        }),
+    )
+}
+
+fn read_resource_tool(mcp: &Arc<Registry>) -> ToolDefinition {
+    let registry = Arc::clone(mcp);
+    ToolDefinition::new(
+        "read_mcp_resource",
+        "Read an MCP resource by URI from the named server. Use a listed URI or an expanded resource template.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "server": { "type": "string", "description": "Configured MCP server name." },
+                "uri": { "type": "string", "description": "Resource URI to read." }
+            },
+            "required": ["server", "uri"]
+        }),
+        Arc::new(move |args: serde_json::Value, _ctx: ToolRunContext| {
+            let registry = Arc::clone(&registry);
+            Box::pin(async move {
+                let Some(server) = required_string(&args, "server") else {
+                    return Ok(ToolResult::error("`server` is required"));
+                };
+                let Some(uri) = required_string(&args, "uri") else {
+                    return Ok(ToolResult::error("`uri` is required"));
+                };
+                match registry
+                    .request(&server, "resources/read", serde_json::json!({ "uri": uri }))
+                    .await
+                {
+                    Ok(value) => Ok(ToolResult::text(render_resource(&server, &value))),
+                    Err(error) => Ok(ToolResult::error(error.to_string())),
+                }
+            })
+        }),
+    )
+}
+
+fn required_string(args: &serde_json::Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
+/// Renders a resource result, replacing binary blobs with their length.
+#[must_use]
+pub fn render_resource(server: &str, value: &serde_json::Value) -> String {
+    let rendered = redact_blobs(value);
+    format!(
+        "MCP server: {server}\n{}",
+        serde_json::to_string(&rendered).unwrap_or_else(|_| rendered.to_string())
+    )
+}
+
+fn redact_blobs(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut next = serde_json::Map::new();
+            for (key, item) in map {
+                if key == "blob" {
+                    if let Some(blob) = item.as_str() {
+                        next.insert(
+                            key.clone(),
+                            serde_json::Value::String(format!(
+                                "[binary resource: {} base64 characters; available to programmatic callers]",
+                                blob.len()
+                            )),
+                        );
+                        continue;
+                    }
+                }
+                next.insert(key.clone(), redact_blobs(item));
+            }
+            serde_json::Value::Object(next)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_blobs).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::render_resource;
+
+    #[test]
+    fn a_blob_is_replaced_by_its_length() {
+        let value = serde_json::json!({
+            "contents": [{ "uri": "file://a", "blob": "abcd" }]
+        });
+        let text = render_resource("files", &value);
+        assert!(text.starts_with("MCP server: files\n"), "{text}");
+        assert!(text.contains("4 base64 characters"), "{text}");
+        assert!(!text.contains("abcd"), "{text}");
+    }
 }
 
 /// Builds one tool definition that forwards to its MCP server.

@@ -586,6 +586,69 @@ pub fn project_offloaded_images(
     })
 }
 
+/// Replaces the oldest `count` images in user and tool messages with the offload placeholder.
+///
+/// Assistant images are left alone: they are model output, not input the route is being asked to
+/// accept again. Returns the attachment ids that were replaced, in the order they occurred.
+#[must_use]
+pub fn offload_oldest_images(messages: &mut [Message], count: usize) -> Vec<String> {
+    let mut ids = Vec::new();
+    if count == 0 {
+        return ids;
+    }
+    for message in messages.iter_mut() {
+        if ids.len() >= count {
+            break;
+        }
+        if message.role == girder_core::Role::Assistant {
+            continue;
+        }
+        let mut content = Vec::with_capacity(message.content.len());
+        for block in std::mem::take(&mut message.content) {
+            if ids.len() < count {
+                if let ContentBlock::Image { attachment } = &block {
+                    ids.push(attachment.clone());
+                    content.push(ContentBlock::Text {
+                        text: offload_placeholder(attachment),
+                    });
+                    continue;
+                }
+            }
+            content.push(block);
+        }
+        message.content = content;
+    }
+    ids
+}
+
+/// Replaces images whose attachment id was recorded by an earlier offload.
+///
+/// The history is returned unchanged when `ids` is empty or none of its ids are still images.
+#[must_use]
+pub fn hide_offloaded_images(
+    messages: &[Message],
+    ids: &std::collections::HashSet<String>,
+) -> Vec<Message> {
+    if ids.is_empty() {
+        return messages.to_vec();
+    }
+    project_messages(messages, |content| {
+        replace_blocks(content, |block| match block {
+            ContentBlock::Image { attachment } if ids.contains(attachment) => {
+                Some(offload_placeholder(attachment))
+            }
+            _ => None,
+        })
+    })
+}
+
+fn offload_placeholder(attachment: &str) -> String {
+    offloaded_image_text(
+        &ImageAttachmentRef::new(attachment, "image/png", 0, 0, 0),
+        None,
+    )
+}
+
 /// Whether a route accounts an image's `raw` file bytes or its inline `base64` length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Representation {
@@ -957,3 +1020,34 @@ pub fn position_id(index: usize) -> Option<MessageId> {
 /// exist — not in a fifth gap module.
 pub const TOOL_UPDATE_GAP: &str = "projectToolUpdates needs Role::Developer, tool-addition/tool-removal \
      blocks, ToolSchema::defer_loading, and a folded ToolHistory; none exist in girder-core yet";
+
+#[cfg(test)]
+mod offload_tests {
+    use std::collections::HashSet;
+
+    use super::{hide_offloaded_images, offload_oldest_images};
+    use crate::llm::{ContentBlock, Message, Role};
+
+    fn image(id: &str) -> ContentBlock {
+        ContentBlock::Image {
+            attachment: id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_oldest_user_image_is_replaced_and_a_later_one_stays() {
+        let mut messages = vec![
+            Message::new(Role::User, vec![image("old"), image("new")]),
+            Message::new(Role::Assistant, vec![image("answer")]),
+        ];
+        let removed = offload_oldest_images(&mut messages, 1);
+        assert_eq!(removed, vec!["old".to_owned()]);
+        assert!(matches!(messages[0].content[0], ContentBlock::Text { .. }));
+        assert!(matches!(messages[0].content[1], ContentBlock::Image { .. }));
+        assert!(matches!(messages[1].content[0], ContentBlock::Image { .. }));
+
+        let hidden = hide_offloaded_images(&messages, &HashSet::from([removed[0].clone()]));
+        assert!(matches!(hidden[0].content[0], ContentBlock::Text { .. }));
+        assert!(matches!(hidden[0].content[1], ContentBlock::Image { .. }));
+    }
+}

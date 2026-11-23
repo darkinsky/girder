@@ -38,6 +38,11 @@
 #[path = "../src/session/content_projection.rs"]
 pub mod content_projection_gap;
 
+// The source is included directly, so mirror the library namespace used by its focused tests.
+mod llm {
+    pub use girder_core::llm::{ContentBlock, Message, Role};
+}
+
 use content_projection_gap::{
     FileAttachmentRef, ImageAttachmentAccess, ImageAttachmentRef, ImageBlock, ImageRequestBudget,
     Representation, TOOL_UPDATE_GAP, base64_length, content_has_file, content_has_image, digest,
@@ -757,7 +762,6 @@ fn a_request_position_can_be_named_without_inventing_an_identity() {
     let id = position_id(3).expect("a short digit string is a valid id");
     assert_eq!(id.as_str(), "m3");
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod session {

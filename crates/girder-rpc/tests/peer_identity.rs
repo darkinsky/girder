@@ -78,7 +78,7 @@ impl Drop for Server {
 
 impl Server {
     fn mux(&self) -> String {
-        format!("ws://{}/api/remote.mux", self.address)
+        format!("ws://{}/api/remote.mux?legacy=1", self.address)
     }
 
     /// How many times a method on this server actually ran.

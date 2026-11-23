@@ -160,13 +160,26 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
     let feedback_catalog: Arc<dyn SessionCatalog> = Arc::new(girder_core::DirectoryCatalog::new(
         std::path::Path::new("/nonexistent-for-routing"),
     ));
-    girder_core::feedback::message_feedback::register_message_feedback_methods(registry, &feedback_catalog);
-    girder_core::feedback::message_feedback::register_session_feedback_methods(registry, &feedback_catalog);
-    girder_core::session::reference::register_session_reference_methods(registry, &feedback_catalog);
+    girder_core::feedback::message_feedback::register_message_feedback_methods(
+        registry,
+        &feedback_catalog,
+    );
+    girder_core::feedback::message_feedback::register_session_feedback_methods(
+        registry,
+        &feedback_catalog,
+    );
+    girder_core::session::reference::register_session_reference_methods(
+        registry,
+        &feedback_catalog,
+    );
     girder_core::team::agent_teams::register_agent_team_methods(registry, &feedback_catalog);
     let account_credentials: Arc<dyn girder_core::CredentialSource> =
         Arc::new(girder_core::MemoryCredentialSource::new());
-    girder_core::credentials::account_rpc::register_account_methods(registry, &account_credentials, false);
+    girder_core::credentials::account_rpc::register_account_methods(
+        registry,
+        &account_credentials,
+        false,
+    );
     girder_core::document::office_kit::register_office_kit_methods(registry);
     let plugin_entries = Arc::new({
         let mut entries = girder_core::boot::plugin_entries::Registry::new();
@@ -177,7 +190,11 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         });
         entries
     });
-    girder_core::mcp::manager_rpc::register_mcp_manager_methods(registry, &Arc::new(Vec::new()));
+    girder_core::mcp::manager_rpc::register_mcp_manager_methods(
+        registry,
+        &Arc::new(Vec::new()),
+        None,
+    );
     girder_core::api::tools::register_file_reference_methods(registry, |_agent| {
         Some(std::path::PathBuf::from("/tmp"))
     });
@@ -197,8 +214,14 @@ fn register_runtime_surfaces(registry: &mut girder_core::RemoteRegistry) {
         registry,
         &Arc::new(girder_core::subagent::rpc::RunningChildren::new()),
     );
-    girder_core::boot::plugin_manager_rpc::register_plugin_manager_methods(registry, &plugin_entries);
-    girder_core::boot::plugin_manager_rpc::register_plugin_inventory_methods(registry, &plugin_entries);
+    girder_core::boot::plugin_manager_rpc::register_plugin_manager_methods(
+        registry,
+        &plugin_entries,
+    );
+    girder_core::boot::plugin_manager_rpc::register_plugin_inventory_methods(
+        registry,
+        &plugin_entries,
+    );
     girder_core::preset::agent_presets::register_agent_preset_methods(
         registry,
         &girder_core::preset::agent_presets::default_registry(),

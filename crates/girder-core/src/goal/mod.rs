@@ -33,7 +33,6 @@
 //!
 //! A completed goal is terminal: reopening it would make "complete" mean "probably complete".
 
-
 pub mod rpc;
 pub mod tool;
 
@@ -247,6 +246,17 @@ pub enum GoalError {
         /// The goal.
         id: String,
     },
+}
+
+impl Activation {
+    /// The word a `/goal` listing prints.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Armed => "armed",
+            Self::Disarmed => "disarmed",
+        }
+    }
 }
 
 impl std::fmt::Display for Phase {

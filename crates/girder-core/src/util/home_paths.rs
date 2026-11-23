@@ -88,6 +88,12 @@ impl Paths {
         self.root.join("spills")
     }
 
+    /// Where content-addressed attachments live.
+    #[must_use]
+    pub fn attachments(&self) -> PathBuf {
+        self.root.join("attachments").join("v1")
+    }
+
     /// Where credentials live.
     ///
     /// Separate from the rest so its permissions can be tighter: a directory that also holds logs cannot be `0700`
@@ -113,6 +119,7 @@ impl Paths {
             self.sessions(),
             self.titles(),
             self.spills(),
+            self.attachments(),
             self.credentials(),
             self.locks(),
         ]

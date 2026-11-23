@@ -8,13 +8,20 @@
 /// A hand-written request rather than an HTTP client crate: the assertion is the same either way,
 /// and this crate should not gain a dependency to read forty bytes.
 async fn get(base: &str, path: &str) -> String {
+    get_with_cookie(base, path, None).await
+}
+
+/// Sends one HTTP GET with an optional browser cookie.
+async fn get_with_cookie(base: &str, path: &str, cookie: Option<&str>) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let address = base.trim_start_matches("http://");
     let mut stream = tokio::net::TcpStream::connect(address)
         .await
         .expect("connect");
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    let cookie = cookie.map_or_else(String::new, |cookie| format!("Cookie: {cookie}\r\n"));
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {address}\r\n{cookie}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await.expect("write");
     let mut response = String::new();
     stream.read_to_string(&mut response).await.expect("read");
@@ -38,6 +45,37 @@ async fn serve() -> (String, tokio_util::sync::CancellationToken) {
             listener,
             std::sync::Arc::new(girder_core::EventBus::new()),
             Vec::new(),
+            stop,
+        )
+        .await;
+    });
+
+    (format!("http://{address}"), cancel)
+}
+
+/// Starts the same server with a real dist fallback.
+async fn serve_dist(
+    index: std::path::PathBuf,
+    auth: Option<std::sync::Arc<girder_rpc::BrowserAuth>>,
+) -> (String, tokio_util::sync::CancellationToken) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = listener.local_addr().expect("address");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let stop = cancel.clone();
+    let config = girder_core::host::webserver::StaticConfig::from_index(index)
+        .expect("absolute dist index");
+
+    tokio::spawn(async move {
+        let _ = girder_rpc::serve_with_options(
+            listener,
+            std::sync::Arc::new(girder_core::EventBus::new()),
+            Vec::new(),
+            None,
+            None,
+            Some(config),
+            auth,
             stop,
         )
         .await;
@@ -177,6 +215,77 @@ async fn the_page_and_the_api_share_one_origin() {
         !api.starts_with("HTTP/1.1 200"),
         "GET on a POST endpoint must not succeed:\n{api}"
     );
+}
+
+#[tokio::test]
+async fn a_configured_dist_replaces_the_probe_and_keeps_api_paths_reserved() {
+    let root = std::env::temp_dir().join(format!(
+        "girder-rpc-static-{}",
+        std::process::id()
+    ));
+    let _ = tokio::fs::remove_dir_all(&root).await;
+    tokio::fs::create_dir_all(&root).await.expect("create dist");
+    let index = root.join("index.html");
+    tokio::fs::write(
+        &index,
+        "<!doctype html><html><head></head><body>web-ui</body></html>",
+    )
+    .await
+    .expect("write index");
+    tokio::fs::write(root.join("app.js"), "console.log('ui')")
+        .await
+        .expect("write asset");
+
+    let (base, cancel) = serve_dist(index, None).await;
+    let page = get(&base, "/").await;
+    let asset = get(&base, "/app.js").await;
+    cancel.cancel();
+    let _ = tokio::fs::remove_dir_all(&root).await;
+
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert!(page.contains("web-ui"), "{page}");
+    assert!(page.contains("<base href=\"./\">"), "{page}");
+    assert!(page.contains("DSH_BOOT_READY"), "{page}");
+    assert!(asset.starts_with("HTTP/1.1 200"), "{asset}");
+    assert!(asset.contains("content-type: text/javascript"), "{asset}");
+    assert!(asset.contains("cache-control: no-cache"), "{asset}");
+}
+
+#[tokio::test]
+async fn browser_auth_exchanges_the_launch_url_before_serving_index() {
+    let root = std::env::temp_dir().join(format!(
+        "girder-rpc-auth-{}",
+        std::process::id()
+    ));
+    let _ = tokio::fs::remove_dir_all(&root).await;
+    tokio::fs::create_dir_all(&root).await.expect("create dist");
+    let index = root.join("index.html");
+    tokio::fs::write(&index, "<html><head></head><body>private-ui</body></html>")
+        .await
+        .expect("write index");
+    let auth = std::sync::Arc::new(girder_rpc::BrowserAuth::new(
+        "launch-token",
+        [9; 32],
+        std::time::Duration::from_secs(60),
+    ));
+
+    let (base, cancel) = serve_dist(index, Some(auth)).await;
+    let unauthorized = get(&base, "/").await;
+    let exchange = get(&base, "/?token=launch-token").await;
+    let cookie = exchange
+        .lines()
+        .find_map(|line| line.strip_prefix("set-cookie: "))
+        .and_then(|line| line.split(';').next())
+        .expect("exchange sets a cookie")
+        .to_owned();
+    let authorized = get_with_cookie(&base, "/", Some(&cookie)).await;
+    cancel.cancel();
+    let _ = tokio::fs::remove_dir_all(&root).await;
+
+    assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
+    assert!(exchange.starts_with("HTTP/1.1 303"), "{exchange}");
+    assert!(authorized.starts_with("HTTP/1.1 200"), "{authorized}");
+    assert!(authorized.contains("private-ui"), "{authorized}");
 }
 
 // ---- session management -----------------------------------------------------------------------

@@ -8,8 +8,8 @@
 //!
 //! That difference is why this module exists rather than a method on the attachment store: one is a
 //! lifetime question about stored bytes, the other is a wire-format question about bytes leaving the
-//! process. Today every `ContentBlock::Image` reaches a provider as a text placeholder, which is a
-//! placeholder precisely because nothing produced this wire shape yet.
+//! process. A `sha256:` id the attachment store can read is inlined by the live provider. An id
+//! with no stored object stays a text handle, because the wire has no bytes to carry.
 //!
 //! # Why the type comes from the bytes
 //!

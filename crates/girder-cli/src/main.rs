@@ -18,7 +18,7 @@ use anyhow::{Context as _, Result};
 use clap::Parser as _;
 use futures::StreamExt as _;
 use girder_core::{
-    AgentId, EventBus, LoopContext, LoopStep, SessionStore, StreamChunk,
+    AgentId, EventBus, LoopContext, LoopStep, MemorySession, SessionStore, StreamChunk,
     ToolDefinition, ToolRegistry, ToolRegistryView, ToolResult,
 };
 use tokio_util::sync::CancellationToken;
@@ -106,6 +106,11 @@ enum Command {
         /// Event name to forward to connected clients. Repeatable; none by default.
         #[arg(long = "watch")]
         watch: Vec<String>,
+
+        /// Absolute path to the built Web UI index.html. When set, the same listener serves the
+        /// dist directory and keeps the RPC routes under `/api`.
+        #[arg(long)]
+        dist_index: Option<std::path::PathBuf>,
     },
 
     /// Print the RPC JSON Schema that the client side is checked against.
@@ -129,6 +134,7 @@ enum Mode {
     Serve {
         bind: String,
         watch: Vec<String>,
+        dist_index: Option<std::path::PathBuf>,
     },
     Schema,
     /// Explain one installation spec.
@@ -149,7 +155,18 @@ async fn main() -> Result<()> {
     validate_subagent_models(&cli.subagent_models)?;
 
     let mode = match (cli.command.take(), cli.prompt.clone()) {
-        (Some(Command::Serve { bind, watch }), _) => Mode::Serve { bind, watch },
+        (
+            Some(Command::Serve {
+                bind,
+                watch,
+                dist_index,
+            }),
+            _,
+        ) => Mode::Serve {
+            bind,
+            watch,
+            dist_index,
+        },
         (Some(Command::Schema), _) => Mode::Schema,
         (Some(Command::Plugin { spec }), _) => Mode::Plugin(spec),
         (None, Some(prompt)) => Mode::Prompt(prompt),
@@ -206,8 +223,12 @@ async fn main() -> Result<()> {
             explain_spec(&spec)?;
             return Ok(());
         }
-        Mode::Serve { bind, watch } => {
-            serve(cli, bind, watch).await?;
+        Mode::Serve {
+            bind,
+            watch,
+            dist_index,
+        } => {
+            serve(cli, bind, watch, dist_index).await?;
             return Ok(());
         }
         // Handled above: the report prints and returns before any mode runs.
@@ -426,7 +447,12 @@ fn resolve_bind(bind: &str) -> Result<String> {
     Ok(format!("{host}:{port}"))
 }
 
-async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
+async fn serve(
+    cli: Cli,
+    bind: String,
+    watch: Vec<String>,
+    dist_index: Option<std::path::PathBuf>,
+) -> Result<()> {
     // Checked before binding: a deployment that cannot work should say so once instead of serving one error per
     // client. Only a fatal finding refuses to start, because a missing provider is the offline path and a missing
     // desktop is normal on a server.
@@ -442,6 +468,17 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let endpoint = resolve_bind(&bind)?;
     let listener = tokio::net::TcpListener::bind(&endpoint).await?;
     let address = listener.local_addr()?;
+    let static_frontend = dist_index
+        .map(girder_core::host::webserver::StaticConfig::from_index)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("`--dist-index`: {error}"))?;
+    let browser_auth = static_frontend
+        .as_ref()
+        .map(|_| {
+            Arc::new(girder_rpc::BrowserAuth::random(std::time::Duration::from_secs(
+                7 * 24 * 60 * 60,
+            )))
+        });
 
     // Resolved before the banner so the banner reports what is actually forwarded: printing "no events
     // forwarded" and then forwarding one would make the line lie.
@@ -452,6 +489,10 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     };
 
     print_banner(address, &selected);
+    if let Some(auth) = browser_auth.as_ref() {
+        let url = auth.authenticated_url(&format!("http://{address}/"))?;
+        println!("girder web url: {url}");
+    }
     tokio::spawn(async {
         if let Err(error) = girder_core::llm::listing_fetch::refresh_from_env().await {
             eprintln!("[models] {error}");
@@ -466,7 +507,23 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     tools.register(list_tool());
     // The same file, search, todo, and web tools a one-shot prompt registers. The server used to
     // stop at `list` and `bash`, so a client turn could not read or edit a file.
-    let (directory, plans) = register_tools(&tools, &workspace, &cli.sandbox)?;
+    let (directory, plans, teams) = register_tools(&tools, &workspace, &cli.sandbox)?;
+    // One registry for the process. `drive` publishes the turn that is calling, and the RPC methods
+    // below share `children` so a prompt can reach a child that has not finished.
+    let parents = std::sync::Arc::new(girder_core::LiveParents::new());
+    let children = std::sync::Arc::new(girder_core::subagent::rpc::RunningChildren::new());
+    let subagents = girder_core::SubagentRegistry::shared();
+    girder_core::register_live_subagent_tools(
+        &tools,
+        std::sync::Arc::clone(&subagents),
+        std::sync::Arc::clone(&parents),
+        std::sync::Arc::clone(&children),
+        cli.max_depth,
+    );
+    tools.register(girder_core::subagent_interrupt_tool(
+        std::sync::Arc::clone(&subagents),
+        subagents.cancellers(),
+    ));
 
     // One goal state shared with the loop: a tool that kept its own copy would let the model complete a goal the
     // loop still believed was open. Defined before the runtime because the runtime takes the same `Arc`: built
@@ -520,8 +577,16 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     );
     girder_core::AgentRuntime::set_refine_titles(&mut runtime, true);
     girder_core::AgentRuntime::set_plan_sessions(&mut runtime, plans);
+    girder_core::AgentRuntime::set_team_sessions(&mut runtime, teams);
+    girder_core::AgentRuntime::set_live_parents(&mut runtime, parents);
+    girder_core::AgentRuntime::set_max_depth(&mut runtime, cli.max_depth);
 
     let mut remote = girder_core::registry_with_routes(&catalog, &runtime, &routes);
+    // Upload and read share one directory. The registry is built with an in-memory shelf that
+    // disappears when the process stops; replacing both methods points them at the same files.
+    let attachments = Arc::new(girder_core::AttachmentFileStore::open(attachments_root())?);
+    girder_core::register_attachment_upload_method(&mut remote, &attachments);
+    girder_core::register_attachment_method(&mut remote, &attachments);
 
     // The projection bridge: a client reads folded session state without replaying the log itself.
     // Without this the browser would need its own copy of every projection's fold logic, and the two
@@ -572,6 +637,7 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
         &routes,
         &mcp_servers,
         &mcp_live,
+        &children,
     );
 
     // Searching across session logs. The root is the same one the catalog reads, so a search cannot report a session
@@ -623,11 +689,30 @@ async fn serve(cli: Cli, bind: String, watch: Vec<String>) -> Result<()> {
     let cancel = CancellationToken::new();
     match directory {
         Some(directory) => {
-            girder_rpc::serve_with_peers(listener, bus, selected, Some(remote), directory, cancel)
-                .await?;
+            girder_rpc::serve_with_options(
+                listener,
+                bus,
+                selected,
+                Some(remote),
+                Some(directory),
+                static_frontend,
+                browser_auth,
+                cancel,
+            )
+            .await?;
         }
         None => {
-            girder_rpc::serve_with(listener, bus, selected, Some(remote), cancel).await?;
+            girder_rpc::serve_with_options(
+                listener,
+                bus,
+                selected,
+                Some(remote),
+                None,
+                static_frontend,
+                browser_auth,
+                cancel,
+            )
+            .await?;
         }
     }
     Ok(())
@@ -660,6 +745,10 @@ fn resolve_watched(watch: &[String]) -> Vec<&'static str> {
 ///
 /// One function rather than two expressions: the catalog and the search tool must agree, and two spellings of the same
 /// default is how a search starts reading a directory nothing writes to.
+fn attachments_root() -> std::path::PathBuf {
+    girder_core::attachment::file::environment_root()
+}
+
 fn sessions_root() -> std::path::PathBuf {
     // An explicit override wins, because a deployment that sets it means it. Otherwise the layout decides, so the
     // sessions directory cannot drift from the rest of the harness's data by being spelled out here.
@@ -690,40 +779,20 @@ fn sessions_root() -> std::path::PathBuf {
 ///
 /// The capability tools are registered separately below, because they need a goal state and a workspace that only
 /// the server has.
-/// Builds the skill registry from the skills a workspace actually contains.
+/// Builds the skill registry from the shelves upstream scans.
 ///
-/// The two roots are the first upstream reads: `.dsh/skills` and `.agents/skills`. Discovery is best-effort -- a missing
-/// directory means no skills from it, not a failure to start -- and a definition that cannot be read is skipped so one
-/// bad file does not hide the rest.
+/// Project `.dsh/skills` and `.agents/skills` come first, then `GIRDER_SKILL_DIRS`, then
+/// `$GIRDER_HOME/skills` (or `~/.girder/skills`), `~/.agents/skills`, and `GIRDER_BUNDLED_SKILL_DIR`.
+/// A missing directory contributes nothing. The same name in two shelves keeps the earlier shelf.
 fn discovered_skills(workspace: &std::path::Path) -> girder_core::SkillRegistry {
-    let roots = vec![
-        workspace.join(".dsh/skills"),
-        workspace.join(".agents/skills"),
-    ];
-    let mut provider = girder_core::StaticSkills::new("workspace", 100);
-    for meta in girder_core::discover_skills(&roots) {
-        let Ok(text) = std::fs::read_to_string(&meta.path) else {
-            continue;
-        };
-        // The body is what the model reads once it loads the skill; the frontmatter is the catalogue entry.
-        // The file's own `invocation` policy travels into the summary: a skill that says
-        // `modelInvocable: false` is listed to a person and withheld from the model, and a summary
-        // built without it would offer the model a procedure a person meant to gate.
-        let mut summary = girder_core::SkillSummary::new(
-            meta.name.clone(),
-            meta.description.clone(),
-            "workspace",
-            100,
-        );
-        summary.model_invocable = meta.model_invocable;
-        summary.user_invocable = meta.user_invocable;
-        if let Some(definition) = girder_core::SkillDefinition::new(summary, text) {
-            provider.add(definition);
-        }
-    }
-    let registry = girder_core::SkillRegistry::new();
-    let _ = registry.register(std::sync::Arc::new(provider));
-    registry
+    let homes = girder_core::SkillHomes::resolve(
+        std::env::var("GIRDER_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+        std::env::var("GIRDER_AGENTS_HOME").ok().as_deref(),
+        std::env::var("GIRDER_BUNDLED_SKILL_DIR").ok().as_deref(),
+        std::env::var("GIRDER_SKILL_DIRS").ok().as_deref(),
+    );
+    girder_core::load_skill_registry(&girder_core::skill_roots(workspace, &homes))
 }
 
 fn register_tools(
@@ -733,6 +802,7 @@ fn register_tools(
 ) -> Result<(
     Option<Arc<tokio::sync::Mutex<girder_core::shell::working_dir::WorkingDirectory>>>,
     Arc<girder_core::core::plan_mode::PlanSessions>,
+    Arc<girder_core::team::tools::TeamSessions>,
 )> {
     tools.register(girder_core::bash_tool(path_policy(sandbox, workspace)?));
     tools.register(girder_core::read_tool(workspace.to_path_buf()));
@@ -772,14 +842,18 @@ fn register_tools(
     }
     let directory = session_directory(workspace);
     if let Some(state) = directory.clone() {
-        tools.register(girder_core::shell::working_dir::working_directory_tool(state));
+        tools.register(girder_core::shell::working_dir::working_directory_tool(
+            state,
+        ));
     }
     let plans = Arc::new(girder_core::core::plan_mode::PlanSessions::new());
     tools.register(girder_core::core::plan_mode::exit_plan_mode_tool(
         Arc::clone(&plans),
         Arc::new(girder_core::StdinApprover::new()),
     ));
-    Ok((directory, plans))
+    let teams = Arc::new(girder_core::team::tools::TeamSessions::new());
+    girder_core::team::tools::register_team_tools(tools, &teams);
+    Ok((directory, plans, teams))
 }
 
 /// The directory a session starts in, shared by the tool and the loop.
@@ -863,6 +937,7 @@ fn register_workspace_file_surface(
     routes: &Arc<girder_core::RouteRegistry>,
     mcp_servers: &Arc<Vec<girder_core::mcp::config::ServerConfig>>,
     mcp_live: &Arc<girder_core::McpRegistry>,
+    children: &Arc<girder_core::subagent::rpc::RunningChildren>,
 ) {
     // Settings share this function rather than `serve` because they are the other half of what a client configures --
     // and because `serve` has been at the length limit three times now, which is the lint saying the same thing.
@@ -892,10 +967,7 @@ fn register_workspace_file_surface(
     // `subagents.{prompt, interruptByUser}`: delivering input to a running child. The substrate is
     // the two inbox queues the agent loop already reads, so this is not a resident-session
     // subsystem -- it is the way to put a message into a session from outside.
-    girder_core::subagent::rpc::register_subagent_methods(
-        remote,
-        &Arc::new(girder_core::subagent::rpc::RunningChildren::new()),
-    );
+    girder_core::subagent::rpc::register_subagent_methods(remote, children);
     // `skills.list`: the ranked catalog over the six roots upstream scans, with the project's own
     // skill shadowing a bundled one of the same name. `skill_catalog` renders a prompt and does not
     // rank; serving a client that will *invoke* a name needs the ranking.
@@ -983,8 +1055,14 @@ fn register_workspace_file_surface(
     // `messageFeedback.*`: feedback is a log event, so `list` replays and `put`/`delete` need a
     // store this deployment's catalog does not hold -- they answer `store_unavailable` rather than
     // claiming a write.
-    girder_core::feedback::message_feedback::register_message_feedback_methods(remote, &session_catalog());
-    girder_core::feedback::message_feedback::register_session_feedback_methods(remote, &session_catalog());
+    girder_core::feedback::message_feedback::register_message_feedback_methods(
+        remote,
+        &session_catalog(),
+    );
+    girder_core::feedback::message_feedback::register_session_feedback_methods(
+        remote,
+        &session_catalog(),
+    );
     // `web.listProviders`: the search and fetch endpoints this deployment registered. Empty when it
     // has none, which is the honest answer rather than an absent method.
     girder_core::web::rpc::register_web_methods(
@@ -1282,6 +1360,7 @@ async fn mount_mcp(
         }
     }
     let registered = girder_core::register_mcp_tools(tools, &registry);
+    girder_core::register_mcp_resource_tools(tools, &registry);
     if registered > 0 {
         eprintln!("[mcp] registered {registered} tool(s)");
     }
@@ -2186,17 +2265,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
 
     let session: Arc<dyn girder_core::Session> = match &cli.session {
         Some(path) => Arc::new(SessionStore::new(path)),
-        None => {
-            let path = sessions_root().join(format!(
-                "prompt-{}.jsonl.zst",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|elapsed| elapsed.as_millis())
-                    .unwrap_or(0)
-            ));
-            eprintln!("[session] {}", path.display());
-            Arc::new(SessionStore::new(path))
-        }
+        None => Arc::new(MemorySession::new()),
     };
 
     // The same tool set the server offers, from one function: a prompt run through the CLI used to have three tools
@@ -2207,7 +2276,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
     // `&ToolRegistry`, and converting first would leave the traced `subagent` tool unregistered while the plain one it
     // replaces is absent too.
     let tools = Arc::new(ToolRegistry::new());
-    let (directory, plans) = register_tools(&tools, &workspace, &cli.sandbox)?;
+    let (directory, plans, teams) = register_tools(&tools, &workspace, &cli.sandbox)?;
     // The capability tools need a goal state; a prompt run gets its own, which is the same lifetime as the run.
     let goals = Arc::new(std::sync::Mutex::new(girder_core::GoalState::new()));
     register_capability_tools(&tools, &workspace, &goals);
@@ -2257,6 +2326,7 @@ async fn run_prompt(cli: Cli, prompt: String) -> Result<()> {
         )));
     context.refine_titles = true;
     context.plan_sessions = Some(plans);
+    context.team_sessions = Some(teams);
     // Validated once, at startup. The routes are parsed into the typed form the module owns rather
     // than kept as strings: `assert_allowed_routes` is what refuses a duplicate or an empty half, and
     // running it here is what turns a mistyped route into a startup failure instead of a tool error

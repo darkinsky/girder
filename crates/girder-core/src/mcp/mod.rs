@@ -22,7 +22,6 @@
 //! "do you have this tool". [`Status`] distinguishes them, because the first is a configuration problem and the
 //! second is not.
 
-
 pub mod client;
 pub mod config;
 pub mod manager_rpc;
@@ -226,6 +225,23 @@ pub trait Transport: Send + Sync {
             Err(McpError::ToolFailed {
                 name: uri,
                 message: "this server offers no resources".to_owned(),
+            })
+        })
+    }
+
+    /// Sends one JSON-RPC method and returns its `result` object.
+    ///
+    /// Defaulted to a refusal: a transport that only calls tools does not have to speak every method.
+    fn request(
+        &self,
+        method: &str,
+        _params: serde_json::Value,
+    ) -> BoxFut<Result<serde_json::Value, McpError>> {
+        let method = method.to_owned();
+        Box::pin(async move {
+            Err(McpError::ToolFailed {
+                name: method,
+                message: "this transport does not accept this method".to_owned(),
             })
         })
     }
@@ -439,6 +455,34 @@ impl Registry {
             Arc::clone(&known.transport)
         };
         transport.read_resource(uri).await
+    }
+
+    /// Sends one method to a ready server and returns its result object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpError::UnknownServer`] when the name is not configured, and [`McpError::NotReady`]
+    /// when that server has not finished starting.
+    pub async fn request(
+        &self,
+        server: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let transport = {
+            let guard = self.lock();
+            let known = guard.get(server).ok_or_else(|| McpError::UnknownServer {
+                name: server.to_owned(),
+            })?;
+            if !known.status.is_ready() {
+                return Err(McpError::NotReady {
+                    name: server.to_owned(),
+                    status: known.status.as_str(),
+                });
+            }
+            Arc::clone(&known.transport)
+        };
+        transport.request(method, params).await
     }
 
     pub async fn call(

@@ -515,12 +515,10 @@ async fn sending_to_a_running_child_refuses_and_names_what_is_missing() {
 async fn sending_to_a_child_with_an_inbox_is_read_before_the_next_step() {
     let registry = SubagentRegistry::shared();
     let id = registry.record_start("busy", Depth::root());
-    let agent = Arc::new(girder_core::Agent::new(
-        girder_core::AgentSpec::root(
-            girder_core::SessionId::new(id.clone()).expect("registry ids are valid session ids"),
-            girder_core::AgentOptions::new("child", "model"),
-        ),
-    ));
+    let agent = Arc::new(girder_core::Agent::new(girder_core::AgentSpec::root(
+        girder_core::SessionId::new(id.clone()).expect("registry ids are valid session ids"),
+        girder_core::AgentOptions::new("child", "model"),
+    )));
     registry.attach_agent(&id, Arc::clone(&agent));
 
     let tool = subagent_send_tool(registry);
@@ -662,10 +660,49 @@ fn the_traced_tool_keeps_the_name_and_arguments_of_the_untraced_one() {
     assert_eq!(traced.parameters, untraced.parameters);
 }
 
+#[tokio::test]
+async fn a_server_subagent_uses_the_published_turn() {
+    let parents = Arc::new(girder_core::LiveParents::new());
+    let children = Arc::new(girder_core::subagent::rpc::RunningChildren::new());
+    let tools = ToolRegistry::new();
+    let parent = context("from the child", Depth::root(), 2);
+    let _lease = parents.publish("agent", Arc::clone(&parent));
+    subagent_tools::register_live_subagent_tools(
+        &tools,
+        SubagentRegistry::shared(),
+        parents,
+        children,
+        2,
+    );
+    let tool = tools.get("subagent").expect("subagent is registered");
+    let result = call(&tool, serde_json::json!({ "prompt": "go" })).await;
+    assert!(!result.is_error, "{result:?}");
+    assert!(text_of(&result).contains("from the child"), "{result:?}");
+}
+
+#[tokio::test]
+async fn a_server_subagent_refuses_when_no_turn_is_published() {
+    let tools = ToolRegistry::new();
+    subagent_tools::register_live_subagent_tools(
+        &tools,
+        SubagentRegistry::shared(),
+        Arc::new(girder_core::LiveParents::new()),
+        Arc::new(girder_core::subagent::rpc::RunningChildren::new()),
+        2,
+    );
+    let tool = tools.get("subagent").expect("subagent is registered");
+    let result = call(&tool, serde_json::json!({ "prompt": "go" })).await;
+    assert!(result.is_error, "{result:?}");
+    assert!(
+        text_of(&result).contains("no turn is running"),
+        "{result:?}"
+    );
+}
+
 // ---- registration -------------------------------------------------------------------------------
 
 #[test]
-fn registration_mounts_all_four_tools() {
+fn registration_mounts_the_subagent_tools() {
     let tools = ToolRegistry::new();
     let ctx = context("unused", Depth::root(), 2);
 
@@ -677,13 +714,14 @@ fn registration_mounts_all_four_tools() {
         "subagent_list",
         "subagent_send",
         "subagent_wait",
+        "subagent_fork",
     ] {
         assert!(
             names.contains(&expected.to_owned()),
             "missing `{expected}`: {names:?}"
         );
     }
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 5);
 }
 
 #[test]
@@ -697,7 +735,6 @@ fn the_scratch_directory_is_isolated() {
     assert!(first.starts_with(std::env::temp_dir()), "{first:?}");
     assert!(first.exists(), "the directory is created: {first:?}");
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod subagent {

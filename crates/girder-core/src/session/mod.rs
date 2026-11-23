@@ -24,76 +24,75 @@
 //! a real session is resumed, compacted, and branched. The slice needs append and replay only; the
 //! rest belongs with phase 5+ once there is a reason to resume.
 
-
-pub mod checkpoint_store;
-pub mod content_projection;
-pub mod export_bundle;
-pub mod format_catalog;
-pub mod log_compact;
-pub mod log_integrity;
-pub mod message;
-pub mod migration_steps;
-pub mod projection;
-pub mod projection_extra;
-pub mod projection_cache;
-pub mod change_feed;
-pub mod projection_host;
-pub mod projection_setup;
-pub mod query_syntax;
-pub mod resume_point;
-pub mod retention;
-pub mod search_index;
-pub mod search_persist;
 pub mod archive;
 pub mod backend;
 pub mod branch;
+pub mod change_feed;
+pub mod checkpoint_store;
 pub mod client;
+pub mod content_projection;
 pub mod controller;
 pub mod digest;
 pub mod engine;
+pub mod export_bundle;
 pub mod export_rpc;
 pub mod extra;
 pub mod filter;
-pub mod session_final;
-pub mod telemetry;
+pub mod format_catalog;
 pub mod health;
 pub mod layout;
 pub mod lifecycle_rpc;
 pub mod link;
+pub mod log_compact;
+pub mod log_integrity;
+pub mod message;
 pub mod metrics;
 pub mod migration;
+pub mod migration_steps;
 pub mod observe;
 pub mod persistence;
 pub mod portable;
 pub mod preview;
 pub mod proj_extra;
+pub mod projection;
+pub mod projection_cache;
+pub mod projection_extra;
+pub mod projection_host;
+pub mod projection_setup;
 pub mod query;
 pub mod query_plan;
 pub mod query_rpc;
+pub mod query_syntax;
 pub mod queue_rpc;
 pub mod recovery;
 pub mod reference;
 pub mod replay;
+pub mod resume_point;
 pub mod resume_rpc;
+pub mod retention;
 pub mod rewind;
+pub mod search_index;
+pub mod search_persist;
 pub mod search_tool;
+pub mod session_final;
+pub mod session_static;
 pub mod snapshot;
 pub mod state_rpc;
-pub mod session_static;
 pub mod stats;
 pub mod stats_rollup;
 pub mod stream;
 pub mod tag;
+pub mod telemetry;
 pub mod timeline;
 pub mod title;
 pub mod title_dispatch;
 pub mod title_llm;
 pub mod top;
 pub mod transcript;
+pub mod transcript_import;
 pub mod wait;
 pub mod window;
 pub mod workspace;
-pub mod transcript_import;
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read};
@@ -102,9 +101,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::util::brand::ToolCallId;
-use crate::llm::{ContentBlock, FinishReason};
 use crate::core::scope::BoxFut;
+use crate::llm::{ContentBlock, FinishReason};
+use crate::util::brand::ToolCallId;
 
 /// Why a turn ended.
 ///
@@ -428,6 +427,21 @@ pub enum SessionEvent {
         enabled: bool,
     },
 
+    /// One committed revision of a shared team task.
+    ///
+    /// Upstream's `team/task`. The log is the board: a later read replays these revisions in order,
+    /// and a compare-and-set that lost the race is a stale revision rather than a second copy.
+    #[serde(rename = "team/task")]
+    TeamTask {
+        /// Persisted schema version. The board accepts only version 2.
+        version: u64,
+        /// The root session this task belongs to.
+        #[serde(rename = "teamId")]
+        team_id: String,
+        /// The whole snapshot, as the board stored it.
+        task: serde_json::Value,
+    },
+
     /// A remark about the session as a whole.
     ///
     /// Upstream's `feedback/record`, from `packages/feedback/command-feedback`. Distinct from
@@ -441,6 +455,30 @@ pub enum SessionEvent {
         /// A category, when the caller supplied one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         category: Option<String>,
+    },
+
+    /// A summary that replaces earlier model-visible history.
+    ///
+    /// The replaced rows stay in the log. [`model_messages`] omits every id in `shadowed`, including
+    /// the id of an older summary a later compaction replaced.
+    #[serde(rename = "compaction/summary")]
+    CompactionSummary {
+        /// Identity of this summary, so a later compaction can replace it.
+        id: String,
+        /// The text that stands in for the replaced history.
+        text: String,
+        /// Message ids and tool-call ids this summary replaces.
+        shadowed: Vec<String>,
+    },
+
+    /// Images omitted so a later request can fit the route's image budget.
+    ///
+    /// The original blocks stay in the log. A request replaces every listed attachment with the
+    /// offload placeholder before it is sent.
+    #[serde(rename = "image/offload")]
+    ImageOffload {
+        /// Attachment ids, oldest first.
+        attachments: Vec<String>,
     },
 
     /// A message's feedback was withdrawn.
@@ -482,7 +520,10 @@ impl SessionEvent {
             Self::MessageFeedbackPut { .. } => "feedback/message-put",
             Self::MessageFeedbackDelete { .. } => "feedback/message-delete",
             Self::SessionFeedbackRecord { .. } => "feedback/record",
+            Self::CompactionSummary { .. } => "compaction/summary",
+            Self::ImageOffload { .. } => "image/offload",
             Self::TeamMode { .. } => "team/mode",
+            Self::TeamTask { .. } => "team/task",
         }
     }
 
@@ -515,7 +556,10 @@ impl SessionEvent {
             | Self::MessageFeedbackPut { .. }
             | Self::MessageFeedbackDelete { .. }
             | Self::SessionFeedbackRecord { .. }
-            | Self::TeamMode { .. } => None,
+            | Self::CompactionSummary { .. }
+            | Self::ImageOffload { .. }
+            | Self::TeamMode { .. }
+            | Self::TeamTask { .. } => None,
         }
     }
 }
@@ -1017,6 +1061,168 @@ impl Session for MemorySession {
     }
 }
 
+/// One row the model would see, with the id a later compaction can name.
+pub struct VisibleTurn {
+    /// Message id, tool-call id, or compaction-summary id.
+    pub key: String,
+    /// The provider message.
+    pub message: crate::llm::Message,
+    /// The same row in the session's message type, for a summarizer.
+    pub chat: crate::session::message::Message,
+}
+
+/// The model-visible messages in a log.
+///
+/// User and assistant messages are copied as they were shown. A tool result answers the call id
+/// recorded beside it. `tool/call` events are skipped because the assistant message already carries
+/// the call. Turn markers and titles are bookkeeping and stay out of the request. A
+/// `compaction/summary` replaces the ids it names, and a `/compact`, `/goal`, or `/feedback` line
+/// stays in the log without being sent to the model.
+#[must_use]
+pub fn model_messages(events: &[SessionEvent]) -> Vec<crate::llm::Message> {
+    visible_turns(events)
+        .into_iter()
+        .map(|turn| turn.message)
+        .collect()
+}
+
+/// The model-visible rows, keeping the id of each one.
+#[must_use]
+pub fn visible_turns(events: &[SessionEvent]) -> Vec<VisibleTurn> {
+    let shadowed: std::collections::HashSet<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::CompactionSummary { shadowed, .. } => Some(shadowed.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let mut summaries = Vec::new();
+    let mut turns = Vec::new();
+    for event in events {
+        match event {
+            SessionEvent::UserMessage { message }
+            | SessionEvent::DeveloperMessage { message, .. } => {
+                if shadowed.contains(message.id.as_str()) || harness_command(message) {
+                    continue;
+                }
+                turns.push(VisibleTurn {
+                    key: message.id.as_str().to_owned(),
+                    message: crate::llm::Message::new(
+                        crate::llm::Role::User,
+                        message.content.clone(),
+                    ),
+                    chat: message.clone(),
+                });
+            }
+            SessionEvent::AssistantMessage { message } => {
+                if shadowed.contains(message.id.as_str()) {
+                    continue;
+                }
+                turns.push(VisibleTurn {
+                    key: message.id.as_str().to_owned(),
+                    message: crate::llm::Message::new(
+                        crate::llm::Role::Assistant,
+                        message.content.clone(),
+                    ),
+                    chat: message.clone(),
+                });
+            }
+            SessionEvent::ToolResult { id, content, .. } => {
+                if shadowed.contains(id.as_str()) {
+                    continue;
+                }
+                let content = crate::core::tool_result_pruning::prune_blocks(content);
+                let chat_id = crate::util::brand::MessageId::new(format!("tool-{}", id.as_str()))
+                    .unwrap_or_else(|_| {
+                        crate::util::brand::MessageId::new("tool-result")
+                            .expect("constant is valid")
+                    });
+                turns.push(VisibleTurn {
+                    key: id.as_str().to_owned(),
+                    message: crate::llm::Message::tool_result(id.clone(), content.clone()),
+                    chat: crate::session::message::Message::new(
+                        chat_id,
+                        crate::session::message::Role::Tool,
+                        crate::session::message::MessageSource::Tool {
+                            call_id: id.clone(),
+                        },
+                        content.clone(),
+                    ),
+                });
+            }
+            SessionEvent::CompactionSummary { id, text, .. } => {
+                if shadowed.contains(id.as_str()) {
+                    continue;
+                }
+                let chat_id = crate::util::brand::MessageId::new(id.clone()).unwrap_or_else(|_| {
+                    crate::util::brand::MessageId::new("compaction").expect("constant is valid")
+                });
+                let chat = crate::session::message::Message::user(chat_id, text.clone());
+                // The summary describes what came before the rows that survived, so it is shown
+                // first. Appending it after those rows would read as a remark about the ending.
+                summaries.push(VisibleTurn {
+                    key: id.clone(),
+                    message: crate::llm::Message::new(crate::llm::Role::User, chat.content.clone()),
+                    chat,
+                });
+            }
+            _ => {}
+        }
+    }
+    summaries.extend(turns);
+    summaries
+}
+
+/// Whether a user message is a harness command rather than something the model should read.
+fn harness_command(message: &crate::session::message::Message) -> bool {
+    if message.role != crate::session::message::Role::User {
+        return false;
+    }
+    let mut text = String::new();
+    for block in &message.content {
+        if let crate::llm::ContentBlock::Text { text: block_text } = block {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(block_text);
+        }
+    }
+    let trimmed = text.trim();
+    for name in ["compact", "goal", "feedback", "team"] {
+        let Some(rest) = trimmed.strip_prefix('/') else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix(name) else {
+            continue;
+        };
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Events that belong to turns which have already ended.
+///
+/// A fork runs during a turn, and the child must not see that turn's in-flight prompt or tool
+/// calls. The cut is the open `turn/start`. A log with no open turn is returned whole.
+#[must_use]
+pub fn completed_turns(events: &[SessionEvent]) -> &[SessionEvent] {
+    let last_start = events
+        .iter()
+        .rposition(|event| matches!(event, SessionEvent::TurnStart { .. }));
+    let last_end = events
+        .iter()
+        .rposition(|event| matches!(event, SessionEvent::TurnEnd { .. }));
+    match (last_start, last_end) {
+        (Some(start), Some(end)) if start > end => &events[..start],
+        (Some(start), None) => &events[..start],
+        _ => events,
+    }
+}
+
 /// The registry key for the session store.
 pub struct SessionKey;
 
@@ -1065,7 +1271,10 @@ pub fn read_session_file(path: impl AsRef<Path>) -> Result<Vec<SessionEvent>, Se
         if let Ok(catalog) = crate::session::format_catalog::FormatCatalog::released() {
             match catalog.classify(version) {
                 crate::session::format_catalog::VersionClass::Current => {}
-                crate::session::format_catalog::VersionClass::NewerThanBuild { stored, current } => {
+                crate::session::format_catalog::VersionClass::NewerThanBuild {
+                    stored,
+                    current,
+                } => {
                     return Err(SessionError::FormatTooNew { stored, current });
                 }
                 crate::session::format_catalog::VersionClass::MigrationRequired => {
@@ -1221,5 +1430,29 @@ mod flush_tests {
         store.sync().expect("sync");
         assert_eq!(store.read_all().expect("read").len(), 1);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::{SessionEvent, TurnEndReason, completed_turns, model_messages};
+    use crate::llm::Role;
+
+    #[test]
+    fn a_fork_keeps_finished_turns_and_drops_the_open_one() {
+        let events = vec![
+            SessionEvent::TurnStart { turn: 1 },
+            SessionEvent::user_text("m1", "earlier"),
+            SessionEvent::TurnEnd {
+                turn: 1,
+                reason: TurnEndReason::Completed,
+            },
+            SessionEvent::TurnStart { turn: 2 },
+            SessionEvent::user_text("m2", "still going"),
+        ];
+        let messages = model_messages(completed_turns(&events));
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+        assert!(format!("{:?}", messages[0].content).contains("earlier"));
     }
 }

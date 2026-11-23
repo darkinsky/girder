@@ -25,9 +25,11 @@
 //! exhaust memory. The batch is bounded by count and by total bytes, checked before any of it is
 //! stored so a refused batch leaves nothing behind.
 
-
+pub mod file;
 pub mod limits;
 pub mod rpc;
+
+pub use file::FileStore;
 
 use std::collections::BTreeSet;
 
@@ -149,6 +151,13 @@ pub enum AttachmentError {
     InvalidStorageId {
         /// The offending id.
         id: String,
+    },
+
+    /// The durable store could not be written or created.
+    #[error("the attachment store could not be written: {reason}")]
+    Store {
+        /// What the filesystem reported.
+        reason: String,
     },
 }
 
@@ -532,6 +541,48 @@ pub fn store_batch(
         refs.push(reference);
     }
     Ok(refs)
+}
+
+/// The read and write surface `session.attachment` and `session.uploadAttachment` share.
+///
+/// One trait so the two methods cannot be pointed at different stores: an upload that landed
+/// somewhere the read method does not look is an upload the client can never fetch back.
+pub trait ImageShelf: Send + Sync {
+    /// Stores one admitted image.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachmentError::InvalidStorageId`] when `id` cannot be stored, and
+    /// [`AttachmentError::Store`] when a durable backend cannot write.
+    fn insert(&self, id: &str, image: DecodedImage) -> Result<ImageRef, AttachmentError>;
+
+    /// Reads one image back.
+    fn fetch(&self, id: &str) -> Option<DecodedImage>;
+
+    /// How many images this store currently accounts for.
+    fn len(&self) -> usize;
+
+    /// How many images it will accept.
+    fn capacity(&self) -> usize;
+}
+
+impl ImageShelf for MemoryStore {
+    fn insert(&self, id: &str, image: DecodedImage) -> Result<ImageRef, AttachmentError> {
+        self.put(id, image)
+            .ok_or_else(|| AttachmentError::InvalidStorageId { id: id.to_owned() })
+    }
+
+    fn fetch(&self, id: &str) -> Option<DecodedImage> {
+        self.get(id)
+    }
+
+    fn len(&self) -> usize {
+        MemoryStore::len(self)
+    }
+
+    fn capacity(&self) -> usize {
+        MemoryStore::capacity(self)
+    }
 }
 
 /// The seam a durable store implements.

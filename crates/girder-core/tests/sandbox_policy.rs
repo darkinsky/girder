@@ -43,6 +43,12 @@ use sandbox_gap::{
     validate_runner_config, wider_modes, workspace_writable_roots, writable_roots,
 };
 
+// The policy source is included directly for focused tests, so provide the library namespace it
+// uses for the approval bridge.
+mod interaction {
+    pub use girder_core::interaction::approval;
+}
+
 // ---- helpers ------------------------------------------------------------------------------------
 
 /// Creates a fresh temp directory this test owns.
@@ -1555,7 +1561,6 @@ fn the_confine_error_codes_are_the_upstream_strings() {
         "SANDBOX_PREPARATION_FAILED"
     );
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod sandbox {

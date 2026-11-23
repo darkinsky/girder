@@ -701,7 +701,13 @@ fn tool_bash_executes_in_the_workspace() {
     let scratch = Scratch::new("tool-bash");
     scratch.write_work_file("only-in-this-workspace.txt", "x\n");
 
-    let output = scratch.run(&["--tool", "bash", "list the files"]);
+    let output = scratch.run(&[
+        "--sandbox",
+        "danger-full-access",
+        "--tool",
+        "bash",
+        "list the files",
+    ]);
 
     assert!(
         output.status.success(),

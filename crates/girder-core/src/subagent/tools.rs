@@ -317,8 +317,7 @@ impl SubagentRegistry {
 
     /// Remembers the inbox `id` reads from while it runs.
     pub fn attach_agent(&self, id: &str, agent: Arc<girder_core::Agent>) {
-        self.agents()
-            .insert(id.to_owned(), agent);
+        self.agents().insert(id.to_owned(), agent);
     }
 
     /// Forgets the inbox once the child has returned.
@@ -332,9 +331,7 @@ impl SubagentRegistry {
         self.agents().get(id).cloned()
     }
 
-    fn agents(
-        &self,
-    ) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<girder_core::Agent>>> {
+    fn agents(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<girder_core::Agent>>> {
         self.agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -599,24 +596,81 @@ pub fn traced_subagent_tool(
     max_depth: u32,
     registry: Arc<SubagentRegistry>,
 ) -> ToolDefinition {
-    ToolDefinition::new(
+    tracked_child_tool(
         "subagent",
         "Delegates a self-contained task to a child agent and returns its answer. \
          The spawn is tracked: `subagent_list` shows what this session started and `subagent_wait` \
          collects a result.",
+        "A complete, self-contained task description",
+        false,
+        ParentSource::Fixed(context),
+        max_depth,
+        registry,
+        None,
+    )
+}
+
+/// Builds `subagent_fork`: a child that continues this conversation's finished turns.
+///
+/// The child does not see the turn that is still running. Its prompt only has to say what is new.
+pub fn subagent_fork_tool(
+    context: Arc<LoopContext>,
+    max_depth: u32,
+    registry: Arc<SubagentRegistry>,
+) -> ToolDefinition {
+    tracked_child_tool(
+        "subagent_fork",
+        "Delegate a task to a subagent that inherits this conversation: a child agent seeded with \
+         all completed turns so far (it does not see the current in-flight turn). Use this when \
+         the subtask builds on this conversation's context — a follow-up analysis, a review, a \
+         continuation — without consuming this conversation's context for the work itself. You \
+         receive its result, not its intermediate steps.",
+        "The task for the subagent. It already sees this conversation's completed turns, so build \
+         on them freely and state only what is new.",
+        true,
+        ParentSource::Fixed(context),
+        max_depth,
+        registry,
+        None,
+    )
+}
+
+/// Where a tracked spawn reads the conversation it is delegating from.
+#[derive(Clone)]
+enum ParentSource {
+    /// The prompt path, which has one context for the whole run.
+    Fixed(Arc<LoopContext>),
+    /// The server, which publishes whichever turn is calling the tool.
+    Live(Arc<girder_core::core::agent_loop::LiveParents>),
+}
+
+fn tracked_child_tool(
+    name: &'static str,
+    description: &'static str,
+    prompt_description: &'static str,
+    inherit: bool,
+    parent: ParentSource,
+    max_depth: u32,
+    registry: Arc<SubagentRegistry>,
+    children: Option<Arc<girder_core::subagent::rpc::RunningChildren>>,
+) -> ToolDefinition {
+    ToolDefinition::new(
+        name,
+        description,
         serde_json::json!({
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "A complete, self-contained task description"
+                    "description": prompt_description
                 }
             },
             "required": ["prompt"]
         }),
         Arc::new(move |args: Value, ctx: ToolRunContext| {
-            let context = Arc::clone(&context);
+            let parent = parent.clone();
             let registry = Arc::clone(&registry);
+            let children = children.clone();
             Box::pin(async move {
                 let Some(prompt) = args
                     .get("prompt")
@@ -626,6 +680,21 @@ pub fn traced_subagent_tool(
                     return Ok(ToolResult::error(
                         "`prompt` is required and must not be empty",
                     ));
+                };
+                let context = match parent {
+                    ParentSource::Fixed(context) => context,
+                    ParentSource::Live(parents) => {
+                        let id = ctx.execution.agent_id.as_str();
+                        match parents.get(id) {
+                            Some(context) => context,
+                            None => {
+                                return Ok(ToolResult::error(format!(
+                                    "delegation refused: no turn is running for `{id}`, so there \
+                                     is no conversation to delegate from"
+                                )));
+                            }
+                        }
+                    }
                 };
 
                 // Checked before the registry is touched: a refused delegation must not leave an
@@ -672,18 +741,33 @@ pub fn traced_subagent_tool(
                     parent.cancelled().await;
                     bridge.cancel();
                 });
-                let agent = girder_core::SessionId::new(ticket.clone()).ok().map(|session_id| {
-                    std::sync::Arc::new(girder_core::Agent::new(
-                        girder_core::AgentSpec::root(
-                            session_id,
-                            girder_core::AgentOptions::new("child", context.model.clone()),
-                        )
-                        .with_depth(context.depth.child()),
-                    ))
-                });
+                let agent = girder_core::SessionId::new(ticket.clone())
+                    .ok()
+                    .map(|session_id| {
+                        std::sync::Arc::new(girder_core::Agent::new(
+                            girder_core::AgentSpec::root(
+                                session_id,
+                                girder_core::AgentOptions::new("child", context.model.clone()),
+                            )
+                            .with_depth(context.depth.child()),
+                        ))
+                    });
                 if let Some(agent) = &agent {
                     registry.attach_agent(&ticket, std::sync::Arc::clone(agent));
+                    if let Some(children) = &children {
+                        children.insert(ticket.clone(), std::sync::Arc::clone(agent));
+                    }
                 }
+                let prior = if inherit {
+                    match context.session.replay().await {
+                        Ok(events) => girder_core::session::model_messages(
+                            girder_core::session::completed_turns(&events),
+                        ),
+                        Err(_) => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
+                };
                 let outcome = delegate_with(
                     &context,
                     prompt.to_owned(),
@@ -691,10 +775,14 @@ pub fn traced_subagent_tool(
                     max_depth,
                     stop,
                     agent,
+                    prior,
                 )
                 .await;
                 watcher.abort();
                 registry.detach_agent(&ticket);
+                if let Some(children) = &children {
+                    children.remove(&ticket);
+                }
 
                 match outcome {
                     Ok(result) => {
@@ -841,8 +929,7 @@ pub fn subagent_send_tool(registry: Arc<SubagentRegistry>) -> ToolDefinition {
                             girder_core::MessageId::new("steer").expect("constant is valid")
                         });
                         agent.steer(girder_core::session::message::Message::user(
-                            message_id,
-                            text,
+                            message_id, text,
                         ));
                         return Ok(ToolResult::text(format!(
                             "delivered to `{id}`; the child reads it before its next step"
@@ -855,7 +942,7 @@ pub fn subagent_send_tool(registry: Arc<SubagentRegistry>) -> ToolDefinition {
     )
 }
 
-/// Registers all four subagent tools on `tools`.
+/// Registers the subagent tools on `tools`, including `subagent_fork`.
 ///
 /// The spawn tool is registered under the name `subagent`, so a caller uses this **or**
 /// [`crate::subagent::subagent_tool`] — not both. Registration order decides which one a model gets,
@@ -867,9 +954,58 @@ pub fn register_subagent_tools(
     max_depth: u32,
 ) {
     tools.register(traced_subagent_tool(
+        Arc::clone(&context),
+        max_depth,
+        Arc::clone(&registry),
+    ));
+    tools.register(subagent_fork_tool(
         context,
         max_depth,
         Arc::clone(&registry),
+    ));
+    tools.register(subagent_list_tool(Arc::clone(&registry)));
+    tools.register(subagent_wait_tool(Arc::clone(&registry)));
+    tools.register(subagent_send_tool(registry));
+}
+
+/// Registers the subagent tools for a server turn.
+///
+/// The tools look the caller up in `parents`, which [`crate::core::runtime::AgentRuntime`] fills
+/// while a turn is inside the loop. A child that is still working is also inserted into `children`,
+/// under the same id `subagent_list` reports, so `subagents.prompt` can reach it.
+pub fn register_live_subagent_tools(
+    tools: &ToolRegistry,
+    registry: Arc<SubagentRegistry>,
+    parents: Arc<girder_core::core::agent_loop::LiveParents>,
+    children: Arc<girder_core::subagent::rpc::RunningChildren>,
+    max_depth: u32,
+) {
+    tools.register(tracked_child_tool(
+        "subagent",
+        "Delegates a self-contained task to a child agent and returns its answer. \
+         The spawn is tracked: `subagent_list` shows what this session started and `subagent_wait` \
+         collects a result.",
+        "A complete, self-contained task description",
+        false,
+        ParentSource::Live(Arc::clone(&parents)),
+        max_depth,
+        Arc::clone(&registry),
+        Some(Arc::clone(&children)),
+    ));
+    tools.register(tracked_child_tool(
+        "subagent_fork",
+        "Delegate a task to a subagent that inherits this conversation: a child agent seeded with \
+         all completed turns so far (it does not see the current in-flight turn). Use this when \
+         the subtask builds on this conversation's context — a follow-up analysis, a review, a \
+         continuation — without consuming this conversation's context for the work itself. You \
+         receive its result, not its intermediate steps.",
+        "The task for the subagent. It already sees this conversation's completed turns, so build \
+         on them freely and state only what is new.",
+        true,
+        ParentSource::Live(parents),
+        max_depth,
+        Arc::clone(&registry),
+        Some(children),
     ));
     tools.register(subagent_list_tool(Arc::clone(&registry)));
     tools.register(subagent_wait_tool(Arc::clone(&registry)));

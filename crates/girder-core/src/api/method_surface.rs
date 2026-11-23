@@ -190,6 +190,11 @@ const DECLARED: &[Declared] = &[
         capability: Some("AgentRuntime (live turns)"),
     },
     Declared {
+        method: "session.control",
+        registration: "register_session_state_method_with",
+        capability: Some("SessionCatalog + ProjectionRegistry"),
+    },
+    Declared {
         // One observation per call; `girder_rpc::stream` polls it. Upstream holds one connection
         // open and pushes frames, which is the same series with the pacing on the other side.
         method: "session.observeEvent",
@@ -785,6 +790,11 @@ const DECLARED: &[Declared] = &[
         registration: "register_workspace_file_extras",
         capability: Some("FileSystem + WorkspaceRegistry"),
     },
+    Declared {
+        method: "workspaceFiles.watch",
+        registration: "register_workspace_file_methods",
+        capability: Some("FileSystem + WorkspaceRegistry"),
+    },
     // The three registry-backed workspace methods take a `WorkspaceRegistry`, but the declaration of
     // their *names* also comes from the `api_config` catalogue, which is why a listing with no
     // workspace table still reports them. `list` is registered twice -- once here and once, with
@@ -926,6 +936,11 @@ const DECLARED: &[Declared] = &[
     },
     Declared {
         method: "userQuestions.answer",
+        registration: "register_question_methods",
+        capability: Some("QuestionQueue"),
+    },
+    Declared {
+        method: "userQuestions.attachWait",
         registration: "register_question_methods",
         capability: Some("QuestionQueue"),
     },

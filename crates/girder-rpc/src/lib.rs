@@ -2,7 +2,7 @@
 //!
 //! Upstream's gateway is a WebSocket mux at `/api/remote.mux` carrying four downlink frame types and
 //! one uplink shape. This crate carries the same protocol without Typert's compile-time descriptor
-//! generation — see `docs/phase6-scope.md` for why that split was chosen and what it costs.
+//! generation. The wire is untyped JSON, so a descriptor generator is not required to speak it.
 //!
 //! # The protocol is untyped on the wire
 //!
@@ -24,14 +24,17 @@
 //! generated methods this crate does not implement.
 
 pub mod bounded_transport;
+pub mod browser_auth;
+mod mux;
 pub mod server;
 mod stream;
 mod web;
 
 pub use server::{
     ClientAnswer, ClientHandle, INVOKE_PATH, RpcServer, TransportError, forward_events, serve,
-    serve_on, serve_with, serve_with_peers,
+    serve_on, serve_with, serve_with_options, serve_with_peers,
 };
+pub use browser_auth::{BrowserAuth, IndexAuth};
 
 use std::collections::HashMap;
 use std::sync::Arc;

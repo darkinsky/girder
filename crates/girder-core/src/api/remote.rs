@@ -5,14 +5,11 @@
 //! the Rust equivalent without the code generation: a method is registered by name, and dispatch is
 //! a lookup.
 //!
-//! # What this closes and what it does not
+//! # What dispatch does
 //!
-//! `docs/phase6-scope.md` said the RPC layer was protocol connectivity, not a working GUI, because
-//! a real client calls methods that did not exist. This module makes them exist for the subset
-//! below. It does **not** make the upstream GUI work: the GUI calls all twenty `session.*` methods
-//! plus eleven `workspace.*`, and this crate implements the ones a browser needs to list sessions
-//! and send a prompt. The rest fail with a clear "not implemented" rather than a 404, so a
-//! half-working client says which call is missing instead of looking broken.
+//! A method is a name in a namespace. Dispatch looks it up, and the method parses its own JSON
+//! arguments. An unknown name is `UNKNOWN_METHOD`. A handler that cannot do the work returns a
+//! structured result, so a client can tell a refusal from a typo.
 //!
 //! # Why arguments stay JSON
 //!
@@ -215,7 +212,7 @@ pub struct SessionPromptValue {
 pub struct RemoteCall {
     /// Named arguments as sent by the client.
     pub args: Value,
-    /// The peer the call speaks for. Carried, never verified — see `docs/phase6-scope.md`.
+    /// The peer name as the caller sent it. This field is not checked against a credential.
     pub peer: String,
 }
 
@@ -734,7 +731,9 @@ impl SessionCatalog for DirectoryCatalog {
                 // with content, whatever its state.
                 let integrity = match std::fs::metadata(&path) {
                     Ok(meta) if meta.len() == 0 => crate::session::log_integrity::Integrity::Empty,
-                    Ok(meta) => crate::session::log_integrity::Integrity::Unread { bytes: meta.len() },
+                    Ok(meta) => {
+                        crate::session::log_integrity::Integrity::Unread { bytes: meta.len() }
+                    }
                     Err(_) => crate::session::log_integrity::Integrity::Empty,
                 };
                 records.push(SessionRecord {
@@ -787,7 +786,9 @@ impl SessionCatalog for DirectoryCatalog {
                 return None;
             };
             events.into_iter().rev().find_map(|event| match event {
-                crate::session::SessionEvent::SessionTitle { title, .. } if !title.trim().is_empty() => {
+                crate::session::SessionEvent::SessionTitle { title, .. }
+                    if !title.trim().is_empty() =>
+                {
                     Some(title)
                 }
                 _ => None,
@@ -1454,7 +1455,10 @@ pub fn registry_with_routes(
 /// Returns `accepted: true` even when no turn was running. Upstream's contract is an acknowledgement,
 /// and a client that cancelled a turn which had just finished should not see an error for winning
 /// the race.
-fn register_cancel(registry: &mut RemoteRegistry, runtime: &Arc<crate::core::runtime::AgentRuntime>) {
+fn register_cancel(
+    registry: &mut RemoteRegistry,
+    runtime: &Arc<crate::core::runtime::AgentRuntime>,
+) {
     let runtime = Arc::clone(runtime);
     registry.register("session", "cancel", move |call| {
         let runtime = Arc::clone(&runtime);
@@ -2144,9 +2148,9 @@ fn register_fork(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog
 ///
 /// The data is base64 in the response because JSON has no byte array. The encoding is canonical, so a
 /// client comparing two responses for the same image sees identical text.
-pub fn register_attachment_method(
+pub fn register_attachment_method<S: crate::attachment::ImageShelf + 'static>(
     registry: &mut RemoteRegistry,
-    store: &Arc<crate::attachment::MemoryStore>,
+    store: &Arc<S>,
 ) {
     let store = Arc::clone(store);
     registry.register("session", "attachment", move |call| {
@@ -2169,7 +2173,7 @@ pub fn register_attachment_method(
                     message: "`attachment.attachmentId` is required".to_owned(),
                 })?;
 
-            let Some(image) = store.get(id) else {
+            let Some(image) = store.fetch(id) else {
                 return Err(RemoteError::InvalidArguments {
                     namespace: "session".to_owned(),
                     method: "attachment".to_owned(),
@@ -2245,17 +2249,21 @@ pub fn register_command_methods(
             // The argument kind is derived from what the client sent rather than from the declaration: a client that
             // sent `text` to a command asking for a choice made a mistake the registry will name.
             let arguments = match call.args.get("arguments") {
-                None | Some(serde_json::Value::Null) => crate::interaction::commands::Arguments::None,
+                None | Some(serde_json::Value::Null) => {
+                    crate::interaction::commands::Arguments::None
+                }
                 Some(serde_json::Value::String(text)) => {
                     crate::interaction::commands::Arguments::Text(text.clone())
                 }
-                Some(serde_json::Value::Array(values)) => crate::interaction::commands::Arguments::Files(
-                    values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect(),
-                ),
+                Some(serde_json::Value::Array(values)) => {
+                    crate::interaction::commands::Arguments::Files(
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
+                    )
+                }
                 Some(other) => {
                     return Err(RemoteError::InvalidArguments {
                         namespace: "commands".to_owned(),

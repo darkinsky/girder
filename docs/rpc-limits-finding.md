@@ -1,40 +1,10 @@
-# 传输层缺少背压：一个已确认的缺口
+# 传输层背压：已接到 WebSocket
 
-## 测量结果
+`serve_full` 的下行队列是 `Outbound`（容量 256，`Reject`）。同步 `send` 保持不变。队列满时通知帧被丢弃并按帧类型计数；`ready` 和 `waterfall` 被拒绝时 `ClientHandle::send` 返回 `false`，调用方按连接失败处理，不再等待一个写不出去的应答。
 
-`crates/girder-rpc/src/server.rs:371` 用的是 `mpsc::unbounded_channel`：
+每个 WebSocket 有自己的 `Limiter`：读循环 `admit`，处理结束 `release`。超过配额的上行被丢弃并记一条 debug，连接保持打开。升级时 `max_message_size` 和 `max_frame_size` 都是 4 MiB，与 HTTP invoke 的 body 上限相同。
 
-```rust
-let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DownlinkFrame>();
-```
-
-**无界**。一个客户端不断发请求、又不读响应，出站队列会一直增长，直到进程内存耗尽。这不是理论问题：
-WebSocket 的对端可以合法地只写不读，而服务端没有任何办法知道它读了多少。
-
-全文件唯一的限制是 `DEFAULT_SUBSCRIPTION_LIMIT = 8`（`stream.rs:381`），限制的是**订阅数**，不是请求数，
-也不是队列长度。
-
-## 已有的缓解措施
-
-`rpc_limits.rs` 提供了 per-connection 的令牌桶和在途上限，但它**还没有接进传输层**。接进去需要：
-
-1. 每个连接一个 `Limiter`
-2. 在读循环里 `admit`，被拒时回 `429` 风格的错误帧而不是静默丢弃
-3. 请求完成时 `release`（`Permit` 故意不实现 `Drop`，因为它需要跨 `await` 存活）
-
-## 未做的部分及原因
-
-- **出站队列的有界化**：把 `unbounded_channel` 换成 `channel(capacity)` 会让 `send` 变成异步的，
-  而发送点在若干同步上下文里。这是一次真实的改动，不是一行替换，需要单独设计。
-- **`max_message_size`**：`upgrade`/`invoke` 没有设置传输层的帧上限。WebSocket 消息是整条送达后本代码
-  才看到的，所以应用层的尺寸检查拦的是 dispatch，不是分配。这个上限只能靠传输层设。
-
-## 结论
-
-`rpc_limits` 把**策略**实现了并测过了 20 个用例；把它接进 `server.rs` 是**独立的一步**，
-涉及出站队列的语义变化，不适合和策略实现混在一次改动里。
-
-这条记录存在的理由是：一个已知的、测量过的缺口，写下来比记在脑子里可靠。
+订阅数上限 `DEFAULT_SUBSCRIPTION_LIMIT` 仍然只限制订阅个数。上游那套带心跳和按 stream 背压的双向 mux 还不是这条连接在用的帧格式。
 
 ---
 

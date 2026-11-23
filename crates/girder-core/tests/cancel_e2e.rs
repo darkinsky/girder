@@ -409,9 +409,10 @@ async fn next_turn_end(observed: &mut tokio::sync::mpsc::Receiver<ObservedEvent>
 #[tokio::test]
 async fn a_cancelled_turn_leaves_one_open_turn_in_the_log() {
     // The property: a stop is a *recorded* event, not the absence of one. Cancelling mid-answer must
-    // leave the turn opened and unclosed -- three records in a shape a replay reads as "stopped
-    // inside turn 1" -- and the client must be told the turn ended. A cancel that wrote nothing at
-    // all would leave a reader unable to tell it from a crash before the prompt.
+    // leave the turn opened and unclosed -- the prompt/title records followed by the open turn
+    // shape a replay reads as "stopped inside turn 1" -- and the client must be told the turn ended.
+    // A cancel that wrote nothing at all would leave a reader unable to tell it from a crash before
+    // the prompt.
     let harness = Harness::new("marker");
     harness.create("s").await;
     let mut observed = harness.observe();
@@ -436,7 +437,7 @@ async fn a_cancelled_turn_leaves_one_open_turn_in_the_log() {
     let events = harness.events("s");
     assert_eq!(
         harness.types("s"),
-        vec!["user/message", "turn/start", "step/start"],
+        vec!["user/message", "session/title", "turn/start", "step/start"],
         "a cancelled turn stops between records: the turn and its step are opened and never closed, \
          and no assistant message is invented from a partial answer"
     );

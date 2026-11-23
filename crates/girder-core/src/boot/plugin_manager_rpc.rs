@@ -33,8 +33,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::boot::plugin_entries::Registry;
 use crate::api::remote::{RemoteCall, RemoteRegistry};
+use crate::boot::plugin_entries::Registry;
 
 /// The namespace these methods register under, as upstream spells it.
 pub const NAMESPACE: &str = "pluginManager";
@@ -174,7 +174,7 @@ pub fn register_plugin_inventory_methods(registry: &mut RemoteRegistry, entries:
 /// Registers a method name that upstream serves but this build's list missed.
 ///
 /// A seam for tests: the declaration table must match what is registered, and a name that appears in
-/// one but not the other is exactly the drift `docs/port-map.md` exists to catch.
+/// one but not the other is a drift between the declaration and the registration.
 ///
 /// # Errors
 ///

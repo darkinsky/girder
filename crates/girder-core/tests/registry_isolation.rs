@@ -1,8 +1,7 @@
 //! Service isolation: a child handle that resolves one service name against its own label.
 //!
-//! `Registry::isolate` exists and `docs/migration-v2.md` used to list it as missing. The gap was
-//! never the implementation -- it was that nothing exercised it, so nothing would have noticed if
-//! it had stopped isolating. These tests are that exercise.
+//! `Registry::isolate` publishes one service name into a child label. These tests are what would
+//! notice if two subtrees stopped being isolated from each other.
 //!
 //! The property under test is the one upstream's `isolate()` provides: two plugin subtrees can each
 //! publish a service under the same *name* without either seeing the other, which is what makes it

@@ -667,10 +667,9 @@ async fn the_invoke_route_is_absent_without_a_remote_registry() {
 
 /// `peer` is carried, never verified -- and that is recorded, not forgotten.
 ///
-/// `docs/phase6-scope.md` says it plainly: any client may claim to be any peer, and authentication is a deployment
-/// concern rather than something this layer does. The test exists so the limitation cannot change silently: if someone
-/// later adds peer checking, this fails and the document has to move with it. A security property that lives only in
-/// prose is one that drifts.
+/// Any client may claim to be any peer. Authentication is a deployment concern rather than something
+/// this layer does. The test exists so the limitation cannot change silently: if someone later adds
+/// peer checking, this fails.
 #[tokio::test]
 async fn a_claimed_peer_identity_is_not_verified() {
     let server = start(Some(Arc::new(test_registry()))).await;

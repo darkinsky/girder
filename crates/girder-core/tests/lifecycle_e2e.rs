@@ -319,6 +319,7 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
         harness.types("s1"),
         vec![
             "user/message",
+            "session/title",
             "turn/start",
             "step/start",
             "assistant/message",
@@ -345,10 +346,10 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
         .await
         .expect("state reads a known session");
 
-    assert_eq!(state["events"], 7, "seven durable events");
+    assert_eq!(state["events"], 8, "eight durable events");
     assert_eq!(
-        state["lastSeq"], 7,
-        "sequence numbers are one-based positions, so the last of seven events is 7 -- the number a \
+        state["lastSeq"], 8,
+        "sequence numbers are one-based positions, so the last of eight events is 8 -- the number a \
          client hands back to `follow`"
     );
     assert_eq!(state["interrupted"], false, "the turn closed");
@@ -363,9 +364,8 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
     assert_eq!(state["lastTurn"], 1);
     assert_eq!(state["openTurn"], Value::Null, "no turn is open");
     assert_eq!(
-        state["title"],
-        Value::Null,
-        "nobody renamed it, which is different from being titled \"\""
+        state["title"], prompt,
+        "the opening prompt supplies the default title until a user renames it"
     );
     assert_eq!(
         state["counts"]["turns"], 1,
@@ -417,10 +417,10 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
         .expect("a page reads a known session");
     assert_eq!(
         page["records"].as_array().expect("records").len(),
-        7,
+        8,
         "the whole log fits in one page"
     );
-    assert_eq!(page["cursor"], 7, "the cursor is the last record returned");
+    assert_eq!(page["cursor"], 8, "the cursor is the last record returned");
     assert_eq!(page["hasMore"], false, "nothing remains before this page");
     assert_eq!(
         page["records"][0]["type"], "event",
@@ -442,10 +442,10 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
         .expect("a window reads");
     assert_eq!(window["records"].as_array().expect("records").len(), 2);
     assert_eq!(
-        window["cursor"], 7,
+        window["cursor"], 8,
         "the window still ends at the log's end"
     );
-    assert_eq!(window["hasMore"], true, "five records precede the window");
+    assert_eq!(window["hasMore"], true, "six records precede the window");
 
     // -- session.export, markdown: what a person pastes into a ticket ---------------------------
     let markdown = export_markdown(&harness, "s1").await;
@@ -562,8 +562,8 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
     );
     assert_eq!(
         harness.events("s1").len(),
-        7,
-        "the source still holds its own seven events"
+        8,
+        "the source still holds its own eight events"
     );
 }
 
@@ -601,12 +601,12 @@ async fn a_cancelled_turn_is_reported_as_interrupted_and_nothing_needs_replaying
     // -- the log the cancellation left ---------------------------------------------------------
     assert_eq!(
         harness.types("c"),
-        vec!["user/message", "turn/start", "step/start"],
+        vec!["user/message", "session/title", "turn/start", "step/start"],
         "cancellation stops the loop between records, so the turn is opened and the step begun but \
          never closed -- this shape is the whole reason `interrupted` exists"
     );
     let events = harness.events("c");
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
     assert!(
         !events
             .iter()
@@ -622,10 +622,10 @@ async fn a_cancelled_turn_is_reported_as_interrupted_and_nothing_needs_replaying
         .expect("a cancelled session resumes");
     assert_eq!(resumed["sessionId"], "c");
     assert_eq!(resumed["resumed"], true);
-    assert_eq!(resumed["events"], 3, "three durable events");
+    assert_eq!(resumed["events"], 4, "four durable events");
     assert_eq!(
-        resumed["lastSeq"], 3,
-        "the cursor is the last event, so `afterSeq: 3` is the exact continuation -- nothing \
+        resumed["lastSeq"], 4,
+        "the cursor is the last event, so `afterSeq: 4` is the exact continuation -- nothing \
          repeated, nothing lost"
     );
     assert_eq!(
@@ -1202,7 +1202,7 @@ async fn a_tear_with_readable_frames_after_it_is_refused_rather_than_cut() {
 #[tokio::test]
 async fn a_session_with_messages_is_listed_as_not_blank() {
     // A client uses `blank` to decide whether to open a session by replaying it or to show an empty
-    // composer. Reporting `true` for a conversation with seven events makes it look unused.
+    // composer. Reporting `true` for a conversation with eight events makes it look unused.
     //
     // The existing test for this (`tests/remote.rs::list_marks_a_session_without_messages_as_blank`)
     // passes, because its `FixedCatalog` returns records WITH `events` populated -- a mock at exactly
@@ -1217,7 +1217,7 @@ async fn a_session_with_messages_is_listed_as_not_blank() {
         .read("talked")
         .await
         .expect("the session reads");
-    assert_eq!(read.events.len(), 7);
+    assert_eq!(read.events.len(), 8);
     assert!(
         !read.blank,
         "read() decides `blank` from the events it decoded"

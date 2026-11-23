@@ -3,8 +3,7 @@
 //! Upstream's `packages/subagent` is 9,575 lines across eleven packages, because it supports three
 //! external CLI drivers (claude-code, codex, acp) plus in-process fork and spawn. This module carries
 //! only the in-process path — a child that runs the same loop with its own session and a trimmed tool
-//! set — because that is the part that can be verified without those CLIs installed. See
-//! `docs/phase7-scope.md`.
+//! set — because that is the part that can be verified without those CLIs installed.
 //!
 //! # The depth limit is the safety property
 //!
@@ -22,15 +21,14 @@
 //! stopping runaway fan-out. Removing `subagent` from a child at the depth ceiling makes the limit
 //! structural rather than advisory — the model cannot ask for what is not offered.
 
-
 pub mod deep;
 pub mod depth;
 pub mod extra;
-pub mod subagent_final;
 pub mod interrupt;
 pub mod pool;
 pub mod providers;
 pub mod rpc;
+pub mod subagent_final;
 pub mod tools;
 
 use std::sync::Arc;
@@ -39,9 +37,9 @@ use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::agent_loop::{LoopContext, LoopError, LoopStep};
-use crate::util::brand::AgentId;
-use crate::session::{MemorySession, Session};
 use crate::core::tools::{ToolDefinition, ToolRegistryView, ToolResult};
+use crate::session::{MemorySession, Session};
+use crate::util::brand::AgentId;
 
 /// How far a delegation is from the root agent.
 ///
@@ -145,7 +143,7 @@ pub async fn delegate(
     max_depth: u32,
     cancel: CancellationToken,
 ) -> Result<DelegationResult, SubagentError> {
-    delegate_with(context, prompt, depth, max_depth, cancel, None).await
+    delegate_with(context, prompt, depth, max_depth, cancel, None, Vec::new()).await
 }
 
 /// Runs one child, using `agent` as its inbox when the caller has one.
@@ -159,6 +157,7 @@ pub async fn delegate_with(
     max_depth: u32,
     cancel: CancellationToken,
     agent: Option<Arc<crate::core::agent::Agent>>,
+    prior: Vec<crate::llm::Message>,
 ) -> Result<DelegationResult, SubagentError> {
     // Checked before anything is spent. A refusal must not cost a model call.
     if !depth.can_delegate(max_depth) {
@@ -205,7 +204,15 @@ pub async fn delegate_with(
     child.depth = child_depth;
     child.max_depth = max_depth;
     child.agent = agent;
+    child.prior_messages = prior;
+    child.live_parents = context.live_parents.clone();
     let child = Arc::new(child);
+    // A nested call from a server turn looks its parent up by agent id. The child is a parent of
+    // the next delegation, so it has to be published for the same reason the root turn is.
+    let _lease = child
+        .live_parents
+        .as_ref()
+        .map(|parents| parents.publish(child_id.as_str(), Arc::clone(&child)));
 
     let mut stream = Box::pin(crate::core::agent_loop::run(child, prompt, cancel.clone()));
     let mut text = String::new();

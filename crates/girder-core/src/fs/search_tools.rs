@@ -9,11 +9,12 @@
 //! "No file matches" and "I stopped looking" are different facts. A model told the first stops; a model told the
 //! second asks a narrower question. Both tools therefore bound their output and say so, rather than silently capping.
 //!
-//! # Why `grep` prefers ripgrep and falls back
+//! # Why `grep` walks the tree itself
 //!
-//! Ripgrep is fast, honours `.gitignore`, and is what a person expects. It is not always installed, so the fallback
-//! walks the tree itself: slower, but a tool that only works where one binary happens to exist is worse than a slow
-//! one.
+//! Ripgrep is fast, but its line-oriented output is not the contract this tool exposes: the result must
+//! be grouped by file, capped globally, and report the complete match count. Keeping one in-process
+//! path makes those facts identical on hosts with and without the optional binary, while the walk
+//! still honours the workspace boundary and the ignored-directory policy below.
 //!
 //! # Why patterns are matched case-insensitively by default
 //!
@@ -337,64 +338,13 @@ fn grep(args: &serde_json::Value, base: &Path, workspace: &Path) -> ToolResult {
         }
     };
 
-    // Ripgrep when it is installed: it honours `.gitignore`, which is the difference between searching a project and
-    // searching its build output.
-    if let Some(result) = grep_with_ripgrep(&root, pattern, case_sensitive, limit) {
-        return result;
-    }
+    // Keep one presentation path on every host. A raw ripgrep result cannot preserve the grouped,
+    // globally-capped contract without reimplementing its parser here, and `--max-count` is per file
+    // rather than global.
     grep_in_process(&root, workspace, pattern, case_sensitive, limit)
 }
 
-/// Searches with ripgrep, returning `None` when the binary is not available.
-fn grep_with_ripgrep(
-    root: &Path,
-    pattern: &str,
-    case_sensitive: bool,
-    limit: usize,
-) -> Option<ToolResult> {
-    let mut command = std::process::Command::new("rg");
-    command
-        .arg("--line-number")
-        .arg("--no-heading")
-        .arg("--color")
-        .arg("never")
-        // One file over the limit is enough to know the result is partial, so no file is read past it.
-        .arg("--max-count")
-        .arg(limit.to_string())
-        .arg("--")
-        .arg(pattern)
-        .arg(root)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    if !case_sensitive {
-        command.arg("-i");
-    }
-
-    let output = command.output().ok()?;
-    // Exit code 2 means ripgrep could not run (a bad pattern, a missing path); falling back is better than
-    // reporting that as "no matches".
-    if output.status.code() == Some(2) {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut lines: Vec<&str> = text.lines().collect();
-    let truncated = lines.len() > limit;
-    lines.truncate(limit);
-
-    if lines.is_empty() {
-        return Some(ToolResult::text(format!("no matches for `{pattern}`")));
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    if truncated {
-        use std::fmt::Write as _;
-        let _ = write!(out, "\n(stopped after {limit} matches)\n");
-    }
-    Some(ToolResult::text(out))
-}
-
-/// Searches by walking, for a host with no ripgrep.
+/// Searches by walking while preserving the tool's complete-result accounting.
 fn grep_in_process(
     root: &Path,
     workspace: &Path,
@@ -423,6 +373,9 @@ fn grep_in_process(
             files.push(path.to_path_buf());
         });
     }
+    // `read_dir` order is filesystem-dependent, but the first retained page is part of the
+    // model-facing result. Match the stable path order a project searcher expects.
+    files.sort();
 
     for file in files {
         // No early exit on the cap: `seen` has to count every hit in the tree, not the hits before
@@ -461,7 +414,8 @@ fn grep_in_process(
     // Through `fs_gap` rather than a local join: that module owns the bounded presentation — the
     // per-line preview, the file grouping, the `Found K of N` header, and the zero-result wording.
     // A second join here is what made a truncated search read as a complete one.
-    let mut retained = crate::fs::search_view::retain_grep_matches(matches, limit, GREP_PREVIEW_BYTES);
+    let mut retained =
+        crate::fs::search_view::retain_grep_matches(matches, limit, GREP_PREVIEW_BYTES);
     // The retainer only sees what was collected, so its `seen` counts the matches it was handed.
     // The walk above saw more: it counted every hit before the cap bit. The larger number is the
     // fact about the tree, and the header has to report that one.
@@ -469,5 +423,7 @@ fn grep_in_process(
     retained.truncated |= truncated;
     // `format_retained_grep` rather than `format_grep_output`: the former names a zero-result
     // search as an answer ("No matches found") instead of a count that reads like a failure.
-    ToolResult::text(crate::fs::search_view::format_retained_grep(&retained, None))
+    ToolResult::text(crate::fs::search_view::format_retained_grep(
+        &retained, None,
+    ))
 }

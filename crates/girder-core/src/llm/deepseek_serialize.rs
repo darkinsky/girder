@@ -1276,8 +1276,21 @@ pub fn serialize_llm_request(
     route: SerializeRoute,
     request: &LlmRequest,
 ) -> Result<Value, SerializeError> {
+    serialize_llm_request_with_images(route, request, &|_| None)
+}
+
+/// Serializes a durable [`LlmRequest`], resolving each image through `images`.
+///
+/// # Errors
+///
+/// Returns whatever [`serialize`] refuses, including [`SerializeError::MissingImage`] when `images`
+/// has no bytes for an attachment the request names.
+pub fn serialize_llm_request_with_images(
+    route: SerializeRoute,
+    request: &LlmRequest,
+    images: ImageLookup<'_>,
+) -> Result<Value, SerializeError> {
     let prepared = SerializeRequest::from_llm(route, request);
-    let no_images: ImageLookup<'_> = &|_| None;
     // `request.messages` goes through, not `&[]` -- the shim passed an empty history, so every
     // conversation serialized to `"messages": []` while its `thinking` declaration and tools were
     // correct. A request about nothing is exactly what the API rejects.
@@ -1319,7 +1332,7 @@ pub fn serialize_llm_request(
             )
         })
         .collect();
-    serialize(&prepared, &history, no_images, &mut SilentReplay)
+    serialize(&prepared, &history, images, &mut SilentReplay)
 }
 
 /// Builds the envelope upstream's `replayState` writes, for callers and tests assembling history.

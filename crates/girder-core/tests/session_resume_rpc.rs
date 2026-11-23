@@ -382,8 +382,8 @@ async fn a_resumed_session_accepts_a_prompt_and_continues_the_turn_numbering() {
     let after = resume(&registry, json!({"sessionId": "s1"}))
         .await
         .expect("resumes again");
-    assert_eq!(after.events, 3);
-    assert_eq!(after.last_seq, 3);
+    assert_eq!(after.events, 4);
+    assert_eq!(after.last_seq, 4);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

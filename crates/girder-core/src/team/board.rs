@@ -21,7 +21,7 @@
 //! - `agent-team/src/journal.ts` — `TeamJournal.transact/appendAndFlush` ordering.
 //! - `agent-team/src/error.ts` — `TeamError` and its stable codes.
 //!
-//! Everything above except the two agent-facing tool registrations is ported here.
+//! The domain above is what `team/tools` calls. The four model-facing tools live there.
 //!
 //! # Why this gap and not `packages/web`
 //!
@@ -61,12 +61,10 @@
 //!
 //! # What is deliberately not here, and why
 //!
-//! - **`tool-agent-team`'s four tool registrations** and `TEAM_POLICY` prompt section.
-//!   They are wiring: they need `Agent` identity, `ctx.subagents.resolveName`, and the
-//!   tools registry's conditional-visibility hook. The domain below is what they call;
-//!   [`TeamTaskView::to_json`] and [`TeamTaskList::to_json`] provide the two model-facing
-//!   shapes (`NamedTaskView`, `TASK_LIST_VALUE_SCHEMA`) so the wiring has nothing left
-//!   to decide.
+//! - **`tool-agent-team`'s four tool registrations** and `TEAM_POLICY` live in
+//!   [`crate::team::tools`]. They replay this board from the session log. A name that is
+//!   not the caller and not an owner already on the board is refused: this build does not
+//!   hold the subagent tree `resolveName` walks.
 //! - **`TeamService`'s Cordis lifecycle** (`Service.init`, `agent/created` hook,
 //!   `sessionProjections.register`). This crate has its own [`girder_core::Registry`]
 //!   and no projection registry, so the service is represented by [`TeamTaskBoard`],

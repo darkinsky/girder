@@ -140,6 +140,158 @@ pub fn discover(roots: &[PathBuf]) -> Vec<SkillMeta> {
     skills
 }
 
+/// One directory the filesystem skill provider scans.
+///
+/// `layer` uses this crate's rule that a higher layer wins. Upstream's ranks run the other way
+/// (a project rank of 100 beats a user rank of 400), so the numbers here are the precedence
+/// itself: project shelves sit above the user shelves, and a bundled shelf sits last.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillRoot {
+    /// The directory to scan. A missing directory contributes nothing.
+    pub path: PathBuf,
+    /// Provider name recorded on each skill found here.
+    pub source: &'static str,
+    /// Precedence. A higher layer hides the same name from a lower one.
+    pub layer: u32,
+}
+
+/// The skill directories that are not inside the workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkillHomes {
+    /// `$GIRDER_HOME/skills`, or `~/.girder/skills` when the override is absent.
+    pub user_skills: Option<PathBuf>,
+    /// `$GIRDER_AGENTS_HOME/skills`, or `~/.agents/skills`.
+    pub agents_skills: Option<PathBuf>,
+    /// `GIRDER_BUNDLED_SKILL_DIR`, already the shelf rather than its parent.
+    pub bundled: Option<PathBuf>,
+    /// Extra shelves from `GIRDER_SKILL_DIRS`, scanned after the project and before the user.
+    pub custom: Vec<PathBuf>,
+}
+
+impl SkillHomes {
+    /// Resolves the shelves from the same environment the process was given.
+    ///
+    /// A relative override is skipped. A home path that depends on the launch directory would
+    /// find a different shelf every time the process was started from somewhere else.
+    #[must_use]
+    pub fn resolve(
+        girder_home: Option<&str>,
+        user_home: Option<&str>,
+        agents_home: Option<&str>,
+        bundled: Option<&str>,
+        custom: Option<&str>,
+    ) -> Self {
+        Self {
+            user_skills: absolute_child(girder_home, user_home, ".girder", "skills"),
+            agents_skills: absolute_child(agents_home, user_home, ".agents", "skills"),
+            bundled: absolute_path(bundled),
+            custom: custom
+                .unwrap_or("")
+                .split(':')
+                .filter_map(|item| absolute_path(Some(item)))
+                .collect(),
+        }
+    }
+}
+
+fn absolute_path(value: Option<&str>) -> Option<PathBuf> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+fn absolute_child(
+    override_home: Option<&str>,
+    user_home: Option<&str>,
+    fallback_dir: &str,
+    child: &str,
+) -> Option<PathBuf> {
+    if override_home.is_some() {
+        return absolute_path(override_home).map(|path| path.join(child));
+    }
+    absolute_path(user_home).map(|path| path.join(fallback_dir).join(child))
+}
+
+/// The shelves a session scans, most specific first.
+#[must_use]
+pub fn skill_roots(workspace: &std::path::Path, homes: &SkillHomes) -> Vec<SkillRoot> {
+    let mut roots = vec![
+        SkillRoot {
+            path: workspace.join(".dsh/skills"),
+            source: "project-dsh",
+            layer: 600,
+        },
+        SkillRoot {
+            path: workspace.join(".agents/skills"),
+            source: "project-agents",
+            layer: 500,
+        },
+    ];
+    for path in &homes.custom {
+        roots.push(SkillRoot {
+            path: path.clone(),
+            source: "custom",
+            layer: 400,
+        });
+    }
+    if let Some(path) = &homes.user_skills {
+        roots.push(SkillRoot {
+            path: path.clone(),
+            source: "user-dsh",
+            layer: 300,
+        });
+    }
+    if let Some(path) = &homes.agents_skills {
+        roots.push(SkillRoot {
+            path: path.clone(),
+            source: "user-agents",
+            layer: 200,
+        });
+    }
+    if let Some(path) = &homes.bundled {
+        roots.push(SkillRoot {
+            path: path.clone(),
+            source: "bundled",
+            layer: 100,
+        });
+    }
+    roots
+}
+
+/// Loads every shelf into one registry. A project skill keeps a name a user skill also uses.
+#[must_use]
+pub fn load_skill_registry(roots: &[SkillRoot]) -> crate::skill::Registry {
+    let registry = crate::skill::Registry::new();
+    let mut index = 0;
+    while index < roots.len() {
+        let source = roots[index].source;
+        let layer = roots[index].layer;
+        let mut paths = Vec::new();
+        while index < roots.len() && roots[index].source == source {
+            paths.push(roots[index].path.clone());
+            index += 1;
+        }
+        let mut provider = crate::skill::Static::new(source, layer);
+        for meta in discover(&paths) {
+            let Ok(text) = std::fs::read_to_string(&meta.path) else {
+                continue;
+            };
+            let mut summary =
+                crate::skill::Summary::new(meta.name, meta.description, source, layer);
+            summary.model_invocable = meta.model_invocable;
+            summary.user_invocable = meta.user_invocable;
+            if let Some(definition) = crate::skill::Definition::new(summary, text) {
+                provider.add(definition);
+            }
+        }
+        let _ = registry.register(std::sync::Arc::new(provider));
+    }
+    registry
+}
+
 /// Reads `name` and `description` out of a skill file's front matter.
 ///
 /// Returns `None` when the file has no front matter, when the front matter is not terminated, or
@@ -548,5 +700,94 @@ mod invocation_tests {
     #[test]
     fn no_front_matter_is_the_default() {
         assert_eq!(parse_invocation("just body text\n"), (true, true));
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::{SkillHomes, load_skill_registry, skill_roots};
+
+    fn skill(dir: &std::path::Path, name: &str, description: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let body =
+            format!("---\nname: {name}\ndescription: {description}\n---\nFollow {description}.\n");
+        std::fs::write(dir.join("SKILL.md"), body).unwrap();
+    }
+
+    #[test]
+    fn shelves_run_from_the_project_down_to_the_bundle() {
+        let homes = SkillHomes::resolve(
+            Some("/data/girder"),
+            Some("/home/dev"),
+            None,
+            Some("/opt/skills"),
+            Some("/extra/one:/extra/two"),
+        );
+        let roots = skill_roots(std::path::Path::new("/work"), &homes);
+        let sources: Vec<_> = roots.iter().map(|root| root.source).collect();
+        assert_eq!(
+            sources,
+            vec![
+                "project-dsh",
+                "project-agents",
+                "custom",
+                "custom",
+                "user-dsh",
+                "user-agents",
+                "bundled",
+            ]
+        );
+        assert_eq!(roots[0].path, std::path::Path::new("/work/.dsh/skills"));
+        assert_eq!(roots[4].path, std::path::Path::new("/data/girder/skills"));
+        assert_eq!(
+            roots[5].path,
+            std::path::Path::new("/home/dev/.agents/skills")
+        );
+    }
+
+    #[test]
+    fn a_relative_home_override_does_not_fall_back_to_the_user_directory() {
+        let homes = SkillHomes::resolve(
+            Some("relative"),
+            Some("/home/dev"),
+            None,
+            Some("bundle"),
+            None,
+        );
+        assert!(homes.user_skills.is_none());
+        assert!(homes.bundled.is_none());
+        assert_eq!(
+            homes.agents_skills.as_deref(),
+            Some(std::path::Path::new("/home/dev/.agents/skills"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_project_skill_hides_the_user_copy_and_a_personal_skill_remains() {
+        let root = std::env::temp_dir().join(format!("girder-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("ws");
+        skill(
+            &workspace.join(".dsh/skills/shared"),
+            "shared",
+            "from the project",
+        );
+        let user = root.join("user-skills");
+        skill(&user.join("shared"), "shared", "from the user");
+        skill(&user.join("personal"), "personal", "only the user");
+        let homes = SkillHomes {
+            user_skills: Some(user),
+            ..SkillHomes::default()
+        };
+        let registry = load_skill_registry(&skill_roots(&workspace, &homes));
+        let catalog = registry.catalog().await.expect("catalog");
+        let shared = catalog
+            .iter()
+            .find(|skill| skill.name == "shared")
+            .expect("shared");
+        assert_eq!(shared.description, "from the project");
+        assert_eq!(shared.provider, "project-dsh");
+        assert!(catalog.iter().any(|skill| skill.name == "personal"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

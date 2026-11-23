@@ -151,8 +151,8 @@ fn a_new_boundary_closes_a_turn_that_never_ended() {
 
 #[test]
 fn a_repeated_start_for_the_open_turn_does_not_split_the_row() {
-    // The loop has written two `turn/start` records for one turn before (documented in
-    // `docs/migration-v2.md`); splitting would report one turn as two rows with half the tools each.
+    // Two `turn/start` records for one turn must stay one row; splitting would report one turn as
+    // two rows with half the tools each.
     let events = vec![
         SessionEvent::TurnStart { turn: 1 },
         SessionEvent::TurnStart { turn: 1 },
@@ -616,7 +616,6 @@ fn metadata_events_do_not_disturb_the_timeline() {
     assert_eq!(segments[0].steps, 1);
     let _ = segment(&segments, 1);
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod session {

@@ -481,7 +481,7 @@ struct Poller {
 /// one task cannot disturb its neighbours.
 pub struct SubscriptionHub {
     remote: Arc<girder_core::RemoteRegistry>,
-    outbound: tokio::sync::mpsc::UnboundedSender<crate::DownlinkFrame>,
+    outbound: crate::bounded_transport::Outbound,
     subscriptions: Arc<Subscriptions>,
     pollers: std::sync::Mutex<std::collections::BTreeMap<String, Poller>>,
 }
@@ -499,7 +499,7 @@ impl SubscriptionHub {
     #[must_use]
     pub fn new(
         remote: Arc<girder_core::RemoteRegistry>,
-        outbound: tokio::sync::mpsc::UnboundedSender<crate::DownlinkFrame>,
+        outbound: crate::bounded_transport::Outbound,
         limit: usize,
     ) -> Self {
         Self {
@@ -682,9 +682,9 @@ impl SubscriptionHub {
                     };
                     if outbound
                         .send(crate::DownlinkFrame::Subscription { frame })
-                        .is_err()
+                        .is_closed()
                     {
-                        // The connection is gone; stop polling rather than call methods into nothing.
+                        // The writer is gone. A full queue reports `Dropped` and polling continues.
                         return;
                     }
                 }

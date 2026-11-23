@@ -1,0 +1,2431 @@
+{
+  "scope": {
+    "included": [
+      "stable packages/*/* except client, experimental, test-support, extensions/ui-cordis",
+      "apps/cli",
+      "apps/desktop-host",
+      "apps/plugin-market-generator",
+      "native",
+      "python"
+    ],
+    "excluded": [
+      "packages/client",
+      "packages/experimental",
+      "packages/test-support",
+      "packages/extensions/ui-cordis",
+      "apps/web",
+      "apps/desktop"
+    ]
+  },
+  "upstream": {
+    "packages": [
+      {
+        "path": "packages/acp/acp",
+        "name": "@deepseek-ai/dsh-acp",
+        "files": 7,
+        "lines": 1781
+      },
+      {
+        "path": "packages/api/gateway",
+        "name": "@deepseek-ai/dsh-api-gateway",
+        "files": 12,
+        "lines": 5691
+      },
+      {
+        "path": "packages/api/job-controller",
+        "name": "@deepseek-ai/dsh-api-job-controller",
+        "files": 8,
+        "lines": 994
+      },
+      {
+        "path": "packages/api/remote-access",
+        "name": "@deepseek-ai/dsh-api-remote-access",
+        "files": 7,
+        "lines": 1073
+      },
+      {
+        "path": "packages/api/remotes",
+        "name": "@deepseek-ai/dsh-api-remotes",
+        "files": 4,
+        "lines": 469
+      },
+      {
+        "path": "packages/api/session-controller",
+        "name": "@deepseek-ai/dsh-api-session-controller",
+        "files": 40,
+        "lines": 9413
+      },
+      {
+        "path": "packages/api/settings-controller",
+        "name": "@deepseek-ai/dsh-api-settings-controller",
+        "files": 3,
+        "lines": 461
+      },
+      {
+        "path": "packages/api/terminal-controller",
+        "name": "@deepseek-ai/dsh-api-terminal-controller",
+        "files": 16,
+        "lines": 2857
+      },
+      {
+        "path": "packages/api/workspace-controller",
+        "name": "@deepseek-ai/dsh-api-workspace-controller",
+        "files": 10,
+        "lines": 1960
+      },
+      {
+        "path": "packages/api/workspace-files",
+        "name": "@deepseek-ai/dsh-api-workspace-files",
+        "files": 9,
+        "lines": 1624
+      },
+      {
+        "path": "packages/attachment/attachment",
+        "name": "@deepseek-ai/dsh-attachment",
+        "files": 6,
+        "lines": 710
+      },
+      {
+        "path": "packages/attachment/attachment-local",
+        "name": "@deepseek-ai/dsh-attachment-local",
+        "files": 9,
+        "lines": 1556
+      },
+      {
+        "path": "packages/boot/app-boot",
+        "name": "@deepseek-ai/dsh-app-boot",
+        "files": 22,
+        "lines": 5431
+      },
+      {
+        "path": "packages/boot/cmdline",
+        "name": "@deepseek-ai/dsh-cmdline",
+        "files": 1,
+        "lines": 239
+      },
+      {
+        "path": "packages/boot/config-editor",
+        "name": "@deepseek-ai/dsh-config-editor",
+        "files": 1,
+        "lines": 156
+      },
+      {
+        "path": "packages/boot/hmr",
+        "name": "@deepseek-ai/dsh-hmr",
+        "files": 5,
+        "lines": 1740
+      },
+      {
+        "path": "packages/boot/plugin-manager",
+        "name": "@deepseek-ai/dsh-plugin-manager",
+        "files": 17,
+        "lines": 3877
+      },
+      {
+        "path": "packages/boot/plugin-market",
+        "name": "@deepseek-ai/dsh-plugin-market",
+        "files": 11,
+        "lines": 1858
+      },
+      {
+        "path": "packages/browser-use/browser-use",
+        "name": "@deepseek-ai/dsh-browser-use",
+        "files": 2,
+        "lines": 63
+      },
+      {
+        "path": "packages/bundle/acp-app",
+        "name": "@deepseek-ai/dsh-acp-app",
+        "files": 1,
+        "lines": 48
+      },
+      {
+        "path": "packages/bundle/base",
+        "name": "@deepseek-ai/dsh-base",
+        "files": 1,
+        "lines": 9
+      },
+      {
+        "path": "packages/bundle/headless",
+        "name": "@deepseek-ai/dsh-headless",
+        "files": 5,
+        "lines": 992
+      },
+      {
+        "path": "packages/bundle/sdk-app",
+        "name": "@deepseek-ai/dsh-sdk-app",
+        "files": 1,
+        "lines": 62
+      },
+      {
+        "path": "packages/bundle/sdk-minimal",
+        "name": "@deepseek-ai/dsh-sdk-minimal",
+        "files": 1,
+        "lines": 9
+      },
+      {
+        "path": "packages/bundle/web-app",
+        "name": "@deepseek-ai/dsh-web-app",
+        "files": 3,
+        "lines": 424
+      },
+      {
+        "path": "packages/compaction/command-compact",
+        "name": "@deepseek-ai/dsh-command-compact",
+        "files": 1,
+        "lines": 108
+      },
+      {
+        "path": "packages/compaction/compaction",
+        "name": "@deepseek-ai/dsh-compaction",
+        "files": 5,
+        "lines": 505
+      },
+      {
+        "path": "packages/compaction/compaction-basic",
+        "name": "@deepseek-ai/dsh-compaction-basic",
+        "files": 5,
+        "lines": 1745
+      },
+      {
+        "path": "packages/compaction/compaction-image-offload",
+        "name": "@deepseek-ai/dsh-compaction-image-offload",
+        "files": 4,
+        "lines": 197
+      },
+      {
+        "path": "packages/compaction/compaction-tool-result-pruner",
+        "name": "@deepseek-ai/dsh-compaction-tool-result-pruner",
+        "files": 3,
+        "lines": 303
+      },
+      {
+        "path": "packages/computer-use/computer-use",
+        "name": "@deepseek-ai/dsh-computer-use",
+        "files": 2,
+        "lines": 63
+      },
+      {
+        "path": "packages/context/agent-instructions",
+        "name": "@deepseek-ai/dsh-agent-instructions",
+        "files": 6,
+        "lines": 2114
+      },
+      {
+        "path": "packages/context/file-reference",
+        "name": "@deepseek-ai/dsh-file-reference",
+        "files": 3,
+        "lines": 113
+      },
+      {
+        "path": "packages/context/file-reference-local",
+        "name": "@deepseek-ai/dsh-file-reference-local",
+        "files": 2,
+        "lines": 523
+      },
+      {
+        "path": "packages/context/harness-dev-context",
+        "name": "@deepseek-ai/dsh-harness-dev-context",
+        "files": 1,
+        "lines": 158
+      },
+      {
+        "path": "packages/context/session-reference",
+        "name": "@deepseek-ai/dsh-session-reference",
+        "files": 7,
+        "lines": 990
+      },
+      {
+        "path": "packages/context/time-context",
+        "name": "@deepseek-ai/dsh-time-context",
+        "files": 3,
+        "lines": 377
+      },
+      {
+        "path": "packages/context/tmux-context",
+        "name": "@deepseek-ai/dsh-tmux-context",
+        "files": 1,
+        "lines": 272
+      },
+      {
+        "path": "packages/core/agent",
+        "name": "@deepseek-ai/dsh-agent",
+        "files": 8,
+        "lines": 1790
+      },
+      {
+        "path": "packages/core/agent-default-model",
+        "name": "@deepseek-ai/dsh-agent-default-model",
+        "files": 1,
+        "lines": 97
+      },
+      {
+        "path": "packages/core/agent-loop",
+        "name": "@deepseek-ai/dsh-agent-loop",
+        "files": 6,
+        "lines": 2148
+      },
+      {
+        "path": "packages/core/agent-tool-presentation",
+        "name": "@deepseek-ai/dsh-agent-tool-presentation",
+        "files": 1,
+        "lines": 54
+      },
+      {
+        "path": "packages/core/scope",
+        "name": "@deepseek-ai/dsh-scope",
+        "files": 2,
+        "lines": 471
+      },
+      {
+        "path": "packages/core/session",
+        "name": "@deepseek-ai/dsh-session",
+        "files": 10,
+        "lines": 3485
+      },
+      {
+        "path": "packages/core/system-prompt",
+        "name": "@deepseek-ai/dsh-system-prompt",
+        "files": 1,
+        "lines": 699
+      },
+      {
+        "path": "packages/core/tool-executor-native",
+        "name": "@deepseek-ai/dsh-tool-executor-native",
+        "files": 1,
+        "lines": 35
+      },
+      {
+        "path": "packages/core/tool-executor-ptc",
+        "name": "@deepseek-ai/dsh-tool-executor-ptc",
+        "files": 11,
+        "lines": 2476
+      },
+      {
+        "path": "packages/core/tools",
+        "name": "@deepseek-ai/dsh-tools",
+        "files": 10,
+        "lines": 3784
+      },
+      {
+        "path": "packages/credentials/authorization",
+        "name": "@deepseek-ai/dsh-authorization",
+        "files": 2,
+        "lines": 541
+      },
+      {
+        "path": "packages/credentials/credentials",
+        "name": "@deepseek-ai/dsh-credentials",
+        "files": 2,
+        "lines": 409
+      },
+      {
+        "path": "packages/credentials/credentials-local",
+        "name": "@deepseek-ai/dsh-credentials-local",
+        "files": 1,
+        "lines": 930
+      },
+      {
+        "path": "packages/credentials/deepseek-account",
+        "name": "@deepseek-ai/dsh-deepseek-account",
+        "files": 8,
+        "lines": 1526
+      },
+      {
+        "path": "packages/deliverables/deliverable-file-references",
+        "name": "@deepseek-ai/dsh-deliverable-file-references",
+        "files": 1,
+        "lines": 30
+      },
+      {
+        "path": "packages/deliverables/tool-present",
+        "name": "@deepseek-ai/dsh-tool-present",
+        "files": 2,
+        "lines": 127
+      },
+      {
+        "path": "packages/deliverables/workspace-changes",
+        "name": "@deepseek-ai/dsh-workspace-changes",
+        "files": 8,
+        "lines": 1294
+      },
+      {
+        "path": "packages/document/office-kit",
+        "name": "@deepseek-ai/dsh-office-kit",
+        "files": 8,
+        "lines": 1394
+      },
+      {
+        "path": "packages/document/tool-office",
+        "name": "@deepseek-ai/dsh-tool-office",
+        "files": 3,
+        "lines": 672
+      },
+      {
+        "path": "packages/extensions/cordis-client-runner",
+        "name": "@deepseek-ai/dsh-cordis-client-runner",
+        "files": 10,
+        "lines": 9157
+      },
+      {
+        "path": "packages/extensions/cordis-host-runner",
+        "name": "@deepseek-ai/dsh-cordis-host-runner",
+        "files": 7,
+        "lines": 3391
+      },
+      {
+        "path": "packages/extensions/tool-cordis",
+        "name": "@deepseek-ai/dsh-tool-cordis",
+        "files": 6,
+        "lines": 11301
+      },
+      {
+        "path": "packages/feedback/command-feedback",
+        "name": "@deepseek-ai/dsh-command-feedback",
+        "files": 2,
+        "lines": 196
+      },
+      {
+        "path": "packages/feedback/message-feedback",
+        "name": "@deepseek-ai/dsh-message-feedback",
+        "files": 2,
+        "lines": 490
+      },
+      {
+        "path": "packages/fs/fs",
+        "name": "@deepseek-ai/dsh-fs",
+        "files": 3,
+        "lines": 640
+      },
+      {
+        "path": "packages/fs/fs-local",
+        "name": "@deepseek-ai/dsh-fs-local",
+        "files": 3,
+        "lines": 1399
+      },
+      {
+        "path": "packages/fs/fs-observation-policy",
+        "name": "@deepseek-ai/dsh-fs-observation-policy",
+        "files": 2,
+        "lines": 170
+      },
+      {
+        "path": "packages/fs/fs-patch",
+        "name": "@deepseek-ai/dsh-fs-patch",
+        "files": 4,
+        "lines": 350
+      },
+      {
+        "path": "packages/fs/fs-sandbox",
+        "name": "@deepseek-ai/dsh-fs-sandbox",
+        "files": 2,
+        "lines": 257
+      },
+      {
+        "path": "packages/fs/tool-fs",
+        "name": "@deepseek-ai/dsh-tool-fs",
+        "files": 21,
+        "lines": 2442
+      },
+      {
+        "path": "packages/fs/tool-fs-search",
+        "name": "@deepseek-ai/dsh-tool-fs-search",
+        "files": 7,
+        "lines": 1546
+      },
+      {
+        "path": "packages/fs/tool-str-replace-editor",
+        "name": "@deepseek-ai/dsh-tool-str-replace-editor",
+        "files": 1,
+        "lines": 537
+      },
+      {
+        "path": "packages/goal/command-goal",
+        "name": "@deepseek-ai/dsh-command-goal",
+        "files": 1,
+        "lines": 198
+      },
+      {
+        "path": "packages/goal/goal",
+        "name": "@deepseek-ai/dsh-goal",
+        "files": 6,
+        "lines": 1306
+      },
+      {
+        "path": "packages/goal/goal-round-driver",
+        "name": "@deepseek-ai/dsh-goal-round-driver",
+        "files": 2,
+        "lines": 510
+      },
+      {
+        "path": "packages/goal/tool-goal",
+        "name": "@deepseek-ai/dsh-tool-goal",
+        "files": 3,
+        "lines": 482
+      },
+      {
+        "path": "packages/guard/repeat-tool-reminder",
+        "name": "@deepseek-ai/dsh-repeat-tool-reminder",
+        "files": 1,
+        "lines": 234
+      },
+      {
+        "path": "packages/guard/timeout-policy",
+        "name": "@deepseek-ai/dsh-tool-call-timeout-policy",
+        "files": 1,
+        "lines": 81
+      },
+      {
+        "path": "packages/host/directory-picker",
+        "name": "@deepseek-ai/dsh-host-directory-picker",
+        "files": 2,
+        "lines": 154
+      },
+      {
+        "path": "packages/host/directory-picker-auto",
+        "name": "@deepseek-ai/dsh-host-directory-picker-auto",
+        "files": 3,
+        "lines": 217
+      },
+      {
+        "path": "packages/host/directory-picker-browse",
+        "name": "@deepseek-ai/dsh-host-directory-picker-browse",
+        "files": 1,
+        "lines": 324
+      },
+      {
+        "path": "packages/host/directory-picker-native",
+        "name": "@deepseek-ai/dsh-host-directory-picker-native",
+        "files": 7,
+        "lines": 781
+      },
+      {
+        "path": "packages/host/frontend-static",
+        "name": "@deepseek-ai/dsh-host-frontend-static",
+        "files": 1,
+        "lines": 167
+      },
+      {
+        "path": "packages/host/open-in-app",
+        "name": "@deepseek-ai/dsh-host-open-in-app",
+        "files": 6,
+        "lines": 1668
+      },
+      {
+        "path": "packages/host/plugin-inventory",
+        "name": "@deepseek-ai/dsh-host-plugin-inventory",
+        "files": 2,
+        "lines": 198
+      },
+      {
+        "path": "packages/host/product-telemetry-otel",
+        "name": "@deepseek-ai/dsh-host-product-telemetry-otel",
+        "files": 1,
+        "lines": 121
+      },
+      {
+        "path": "packages/host/webserver",
+        "name": "@deepseek-ai/dsh-host-webserver",
+        "files": 2,
+        "lines": 862
+      },
+      {
+        "path": "packages/identity/anonymous-user-id",
+        "name": "@deepseek-ai/dsh-anonymous-user-id",
+        "files": 1,
+        "lines": 100
+      },
+      {
+        "path": "packages/interaction/commands",
+        "name": "@deepseek-ai/dsh-commands",
+        "files": 4,
+        "lines": 741
+      },
+      {
+        "path": "packages/interaction/permission-presets",
+        "name": "@deepseek-ai/dsh-permission-presets",
+        "files": 3,
+        "lines": 555
+      },
+      {
+        "path": "packages/interaction/tool-ask-user",
+        "name": "@deepseek-ai/dsh-tool-ask-user",
+        "files": 2,
+        "lines": 332
+      },
+      {
+        "path": "packages/interaction/user-approval",
+        "name": "@deepseek-ai/dsh-user-approval",
+        "files": 2,
+        "lines": 429
+      },
+      {
+        "path": "packages/interaction/user-questions",
+        "name": "@deepseek-ai/dsh-user-questions",
+        "files": 4,
+        "lines": 958
+      },
+      {
+        "path": "packages/jobs/jobs",
+        "name": "@deepseek-ai/dsh-jobs",
+        "files": 6,
+        "lines": 726
+      },
+      {
+        "path": "packages/jobs/jobs-local",
+        "name": "@deepseek-ai/dsh-jobs-local",
+        "files": 4,
+        "lines": 1049
+      },
+      {
+        "path": "packages/jobs/tool-jobs",
+        "name": "@deepseek-ai/dsh-tool-jobs",
+        "files": 2,
+        "lines": 697
+      },
+      {
+        "path": "packages/llm/deepseek-llm-api-extensions",
+        "name": "@deepseek-ai/dsh-deepseek-llm-api-extensions",
+        "files": 2,
+        "lines": 203
+      },
+      {
+        "path": "packages/llm/llm",
+        "name": "@deepseek-ai/dsh-llm",
+        "files": 13,
+        "lines": 4246
+      },
+      {
+        "path": "packages/llm/llm-deepseek",
+        "name": "@deepseek-ai/dsh-llm-deepseek",
+        "files": 29,
+        "lines": 3699
+      },
+      {
+        "path": "packages/llm/llm-deepseek-account",
+        "name": "@deepseek-ai/dsh-llm-deepseek-account",
+        "files": 2,
+        "lines": 196
+      },
+      {
+        "path": "packages/llm/llm-deepseek-api-key",
+        "name": "@deepseek-ai/dsh-llm-deepseek-api-key",
+        "files": 2,
+        "lines": 185
+      },
+      {
+        "path": "packages/llm/llm-pi-ai",
+        "name": "@deepseek-ai/dsh-llm-pi-ai",
+        "files": 16,
+        "lines": 4638
+      },
+      {
+        "path": "packages/llm/llm-retry",
+        "name": "@deepseek-ai/dsh-llm-retry",
+        "files": 3,
+        "lines": 318
+      },
+      {
+        "path": "packages/llm/plugin-package-inventory-deepseek",
+        "name": "@deepseek-ai/dsh-plugin-package-inventory-deepseek",
+        "files": 2,
+        "lines": 233
+      },
+      {
+        "path": "packages/llm/token-meter",
+        "name": "@deepseek-ai/dsh-token-meter",
+        "files": 12,
+        "lines": 1625
+      },
+      {
+        "path": "packages/lsp/lsp",
+        "name": "@deepseek-ai/dsh-lsp",
+        "files": 3,
+        "lines": 320
+      },
+      {
+        "path": "packages/lsp/lsp-stdio",
+        "name": "@deepseek-ai/dsh-lsp-stdio",
+        "files": 8,
+        "lines": 1756
+      },
+      {
+        "path": "packages/lsp/tool-lsp",
+        "name": "@deepseek-ai/dsh-tool-lsp",
+        "files": 2,
+        "lines": 438
+      },
+      {
+        "path": "packages/mcp/mcp-client",
+        "name": "@deepseek-ai/dsh-mcp-client",
+        "files": 13,
+        "lines": 1986
+      },
+      {
+        "path": "packages/mcp/mcp-manager",
+        "name": "@deepseek-ai/dsh-mcp-manager",
+        "files": 2,
+        "lines": 652
+      },
+      {
+        "path": "packages/mcp/mcp-resources",
+        "name": "@deepseek-ai/dsh-mcp-resources",
+        "files": 3,
+        "lines": 223
+      },
+      {
+        "path": "packages/plan/plan-mode",
+        "name": "@deepseek-ai/dsh-plan-mode",
+        "files": 3,
+        "lines": 538
+      },
+      {
+        "path": "packages/preset/agent-preset",
+        "name": "@deepseek-ai/dsh-agent-preset",
+        "files": 1,
+        "lines": 30
+      },
+      {
+        "path": "packages/preset/agent-preset-registry",
+        "name": "@deepseek-ai/dsh-agent-preset-registry",
+        "files": 8,
+        "lines": 1082
+      },
+      {
+        "path": "packages/preset/persona",
+        "name": "@deepseek-ai/dsh-persona",
+        "files": 1,
+        "lines": 75
+      },
+      {
+        "path": "packages/ptc-runtime/ptc-runtime",
+        "name": "@deepseek-ai/dsh-ptc-runtime",
+        "files": 3,
+        "lines": 395
+      },
+      {
+        "path": "packages/ptc-runtime/ptc-runtime-node",
+        "name": "@deepseek-ai/dsh-ptc-runtime-node",
+        "files": 31,
+        "lines": 4084
+      },
+      {
+        "path": "packages/sandbox/sandbox",
+        "name": "@deepseek-ai/dsh-sandbox",
+        "files": 5,
+        "lines": 759
+      },
+      {
+        "path": "packages/sandbox/sandbox-local",
+        "name": "@deepseek-ai/dsh-sandbox-local",
+        "files": 2,
+        "lines": 686
+      },
+      {
+        "path": "packages/sandbox/sandbox-policy",
+        "name": "@deepseek-ai/dsh-sandbox-policy",
+        "files": 2,
+        "lines": 328
+      },
+      {
+        "path": "packages/sandbox/sandbox-windows-acl",
+        "name": "@deepseek-ai/dsh-sandbox-windows-acl",
+        "files": 11,
+        "lines": 2194
+      },
+      {
+        "path": "packages/schedule/schedule",
+        "name": "@deepseek-ai/dsh-schedule",
+        "files": 8,
+        "lines": 3565
+      },
+      {
+        "path": "packages/schedule/tool-schedule",
+        "name": "@deepseek-ai/dsh-tool-schedule",
+        "files": 1,
+        "lines": 489
+      },
+      {
+        "path": "packages/sdk/client",
+        "name": "@deepseek-ai/dsh-sdk-client",
+        "files": 6,
+        "lines": 1425
+      },
+      {
+        "path": "packages/sdk/protocol",
+        "name": "@deepseek-ai/dsh-sdk-protocol",
+        "files": 3,
+        "lines": 571
+      },
+      {
+        "path": "packages/sdk/server",
+        "name": "@deepseek-ai/dsh-sdk-jsonrpc-server",
+        "files": 6,
+        "lines": 1049
+      },
+      {
+        "path": "packages/session/message-quotes",
+        "name": "@deepseek-ai/dsh-message-quotes",
+        "files": 8,
+        "lines": 208
+      },
+      {
+        "path": "packages/session/session-checkpoint-policy",
+        "name": "@deepseek-ai/dsh-session-checkpoint-policy",
+        "files": 1,
+        "lines": 83
+      },
+      {
+        "path": "packages/session/session-format",
+        "name": "@deepseek-ai/dsh-session-format",
+        "files": 8,
+        "lines": 945
+      },
+      {
+        "path": "packages/session/session-format-catalog",
+        "name": "@deepseek-ai/dsh-session-format-catalog",
+        "files": 6,
+        "lines": 153
+      },
+      {
+        "path": "packages/session/session-format-v0-to-v1",
+        "name": "@deepseek-ai/dsh-session-format-v0-to-v1",
+        "files": 10,
+        "lines": 2879
+      },
+      {
+        "path": "packages/session/session-format-v1-to-v2",
+        "name": "@deepseek-ai/dsh-session-format-v1-to-v2",
+        "files": 6,
+        "lines": 1256
+      },
+      {
+        "path": "packages/session/session-format-v2-to-v3",
+        "name": "@deepseek-ai/dsh-session-format-v2-to-v3",
+        "files": 6,
+        "lines": 815
+      },
+      {
+        "path": "packages/session/session-format-v3-to-v4",
+        "name": "@deepseek-ai/dsh-session-format-v3-to-v4",
+        "files": 17,
+        "lines": 1702
+      },
+      {
+        "path": "packages/session/session-log-deepseek",
+        "name": "@deepseek-ai/dsh-session-log-deepseek",
+        "files": 2,
+        "lines": 396
+      },
+      {
+        "path": "packages/session/session-persistence",
+        "name": "@deepseek-ai/dsh-session-persistence",
+        "files": 5,
+        "lines": 636
+      },
+      {
+        "path": "packages/session/session-persistence-jsonl",
+        "name": "@deepseek-ai/dsh-session-persistence-jsonl",
+        "files": 13,
+        "lines": 5086
+      },
+      {
+        "path": "packages/session/session-projection",
+        "name": "@deepseek-ai/dsh-session-projection",
+        "files": 2,
+        "lines": 1031
+      },
+      {
+        "path": "packages/session/session-projection-cache",
+        "name": "@deepseek-ai/dsh-session-projection-cache",
+        "files": 2,
+        "lines": 579
+      },
+      {
+        "path": "packages/session/session-stats",
+        "name": "@deepseek-ai/dsh-session-stats",
+        "files": 4,
+        "lines": 299
+      },
+      {
+        "path": "packages/session/session-telemetry",
+        "name": "@deepseek-ai/dsh-session-telemetry",
+        "files": 2,
+        "lines": 479
+      },
+      {
+        "path": "packages/session/session-telemetry-otel",
+        "name": "@deepseek-ai/dsh-session-telemetry-otel",
+        "files": 1,
+        "lines": 278
+      },
+      {
+        "path": "packages/session/session-title",
+        "name": "@deepseek-ai/dsh-session-title",
+        "files": 4,
+        "lines": 1027
+      },
+      {
+        "path": "packages/session/session-title-first-prompt-llm",
+        "name": "@deepseek-ai/dsh-session-title-first-prompt-llm",
+        "files": 1,
+        "lines": 167
+      },
+      {
+        "path": "packages/session/session-title-llm",
+        "name": "@deepseek-ai/dsh-session-title-llm",
+        "files": 1,
+        "lines": 291
+      },
+      {
+        "path": "packages/session/session-turn-outline",
+        "name": "@deepseek-ai/dsh-session-turn-outline",
+        "files": 4,
+        "lines": 229
+      },
+      {
+        "path": "packages/session/tool-working-directory",
+        "name": "@deepseek-ai/dsh-tool-working-directory",
+        "files": 1,
+        "lines": 43
+      },
+      {
+        "path": "packages/session/working-directory",
+        "name": "@deepseek-ai/dsh-working-directory",
+        "files": 2,
+        "lines": 290
+      },
+      {
+        "path": "packages/session-query/session-log-export",
+        "name": "@deepseek-ai/dsh-session-log-export",
+        "files": 10,
+        "lines": 1923
+      },
+      {
+        "path": "packages/session-query/session-query",
+        "name": "@deepseek-ai/dsh-session-query",
+        "files": 12,
+        "lines": 2241
+      },
+      {
+        "path": "packages/session-query/session-query-sqlite",
+        "name": "@deepseek-ai/dsh-session-query-sqlite",
+        "files": 3,
+        "lines": 1781
+      },
+      {
+        "path": "packages/settings/settings",
+        "name": "@deepseek-ai/dsh-settings",
+        "files": 4,
+        "lines": 704
+      },
+      {
+        "path": "packages/shell/bash-local",
+        "name": "@deepseek-ai/dsh-bash-local",
+        "files": 1,
+        "lines": 404
+      },
+      {
+        "path": "packages/shell/bash-sandbox",
+        "name": "@deepseek-ai/dsh-bash-sandbox",
+        "files": 2,
+        "lines": 206
+      },
+      {
+        "path": "packages/shell/pwsh-local",
+        "name": "@deepseek-ai/dsh-pwsh-local",
+        "files": 2,
+        "lines": 528
+      },
+      {
+        "path": "packages/shell/pwsh-sandbox",
+        "name": "@deepseek-ai/dsh-pwsh-sandbox",
+        "files": 2,
+        "lines": 320
+      },
+      {
+        "path": "packages/shell/shell",
+        "name": "@deepseek-ai/dsh-shell",
+        "files": 3,
+        "lines": 377
+      },
+      {
+        "path": "packages/shell/shell-env",
+        "name": "@deepseek-ai/dsh-shell-env",
+        "files": 2,
+        "lines": 255
+      },
+      {
+        "path": "packages/shell/tool-bash",
+        "name": "@deepseek-ai/dsh-tool-bash",
+        "files": 3,
+        "lines": 854
+      },
+      {
+        "path": "packages/shell/tool-bash-persistent",
+        "name": "@deepseek-ai/dsh-tool-bash-persistent",
+        "files": 1,
+        "lines": 488
+      },
+      {
+        "path": "packages/shell/tool-pwsh",
+        "name": "@deepseek-ai/dsh-tool-pwsh",
+        "files": 3,
+        "lines": 929
+      },
+      {
+        "path": "packages/shell/tool-pwsh-persistent",
+        "name": "@deepseek-ai/dsh-tool-pwsh-persistent",
+        "files": 1,
+        "lines": 500
+      },
+      {
+        "path": "packages/skill/skill",
+        "name": "@deepseek-ai/dsh-skill",
+        "files": 1,
+        "lines": 868
+      },
+      {
+        "path": "packages/skill/skill-filesystem",
+        "name": "@deepseek-ai/dsh-skill-filesystem",
+        "files": 1,
+        "lines": 1063
+      },
+      {
+        "path": "packages/skill/skill-office",
+        "name": "@deepseek-ai/dsh-skill-office",
+        "files": 1,
+        "lines": 141
+      },
+      {
+        "path": "packages/skill/tool-skill",
+        "name": "@deepseek-ai/dsh-tool-skill",
+        "files": 1,
+        "lines": 451
+      },
+      {
+        "path": "packages/skill/tool-workspace-dependencies",
+        "name": "@deepseek-ai/dsh-tool-workspace-dependencies",
+        "files": 1,
+        "lines": 322
+      },
+      {
+        "path": "packages/spill/spill",
+        "name": "@deepseek-ai/dsh-spill",
+        "files": 2,
+        "lines": 138
+      },
+      {
+        "path": "packages/spill/spill-local",
+        "name": "@deepseek-ai/dsh-spill-local",
+        "files": 3,
+        "lines": 726
+      },
+      {
+        "path": "packages/spill/spill-policy",
+        "name": "@deepseek-ai/dsh-spill-policy",
+        "files": 4,
+        "lines": 346
+      },
+      {
+        "path": "packages/ssh/fs-ssh",
+        "name": "@deepseek-ai/dsh-fs-ssh",
+        "files": 1,
+        "lines": 126
+      },
+      {
+        "path": "packages/ssh/sandbox-ssh",
+        "name": "@deepseek-ai/dsh-sandbox-ssh",
+        "files": 1,
+        "lines": 33
+      },
+      {
+        "path": "packages/ssh/ssh",
+        "name": "@deepseek-ai/dsh-ssh",
+        "files": 7,
+        "lines": 1509
+      },
+      {
+        "path": "packages/ssh/ssh-helper-runtime",
+        "name": "@deepseek-ai/dsh-ssh-helper-runtime",
+        "files": 1,
+        "lines": 39
+      },
+      {
+        "path": "packages/ssh/subprocess-ssh",
+        "name": "@deepseek-ai/dsh-subprocess-ssh",
+        "files": 1,
+        "lines": 345
+      },
+      {
+        "path": "packages/storage/storage",
+        "name": "@deepseek-ai/dsh-storage",
+        "files": 4,
+        "lines": 364
+      },
+      {
+        "path": "packages/storage/storage-domain",
+        "name": "@deepseek-ai/dsh-storage-domain",
+        "files": 5,
+        "lines": 910
+      },
+      {
+        "path": "packages/storage/storage-json",
+        "name": "@deepseek-ai/dsh-storage-json",
+        "files": 5,
+        "lines": 844
+      },
+      {
+        "path": "packages/storage/storage-sqlite",
+        "name": "@deepseek-ai/dsh-storage-sqlite",
+        "files": 3,
+        "lines": 516
+      },
+      {
+        "path": "packages/subagent/subagent",
+        "name": "@deepseek-ai/dsh-subagent",
+        "files": 22,
+        "lines": 4955
+      },
+      {
+        "path": "packages/subagent/subagent-acp",
+        "name": "@deepseek-ai/dsh-subagent-acp",
+        "files": 2,
+        "lines": 747
+      },
+      {
+        "path": "packages/subagent/subagent-claude-code",
+        "name": "@deepseek-ai/dsh-subagent-claude-code",
+        "files": 3,
+        "lines": 893
+      },
+      {
+        "path": "packages/subagent/subagent-codex",
+        "name": "@deepseek-ai/dsh-subagent-codex",
+        "files": 3,
+        "lines": 1280
+      },
+      {
+        "path": "packages/subagent/subagent-dsh-sdk",
+        "name": "@deepseek-ai/dsh-subagent-dsh-sdk",
+        "files": 2,
+        "lines": 561
+      },
+      {
+        "path": "packages/subagent/subagent-fork-in-process",
+        "name": "@deepseek-ai/dsh-subagent-fork-in-process",
+        "files": 1,
+        "lines": 83
+      },
+      {
+        "path": "packages/subagent/subagent-spawn-in-process",
+        "name": "@deepseek-ai/dsh-subagent-spawn-in-process",
+        "files": 1,
+        "lines": 59
+      },
+      {
+        "path": "packages/subagent/tool-subagent",
+        "name": "@deepseek-ai/dsh-tool-subagent",
+        "files": 6,
+        "lines": 949
+      },
+      {
+        "path": "packages/subagent/tool-subagent-control",
+        "name": "@deepseek-ai/dsh-tool-subagent-control",
+        "files": 3,
+        "lines": 373
+      },
+      {
+        "path": "packages/subprocess/subprocess",
+        "name": "@deepseek-ai/dsh-subprocess",
+        "files": 4,
+        "lines": 576
+      },
+      {
+        "path": "packages/subprocess/subprocess-local",
+        "name": "@deepseek-ai/dsh-subprocess-local",
+        "files": 17,
+        "lines": 5104
+      },
+      {
+        "path": "packages/subprocess/win32-process",
+        "name": "@deepseek-ai/dsh-win32-process",
+        "files": 7,
+        "lines": 1195
+      },
+      {
+        "path": "packages/team/agent-team",
+        "name": "@deepseek-ai/dsh-agent-team",
+        "files": 10,
+        "lines": 1110
+      },
+      {
+        "path": "packages/team/tool-agent-team",
+        "name": "@deepseek-ai/dsh-tool-agent-team",
+        "files": 1,
+        "lines": 235
+      },
+      {
+        "path": "packages/telemetry/otel",
+        "name": "@deepseek-ai/dsh-otel",
+        "files": 5,
+        "lines": 475
+      },
+      {
+        "path": "packages/terminal/terminal",
+        "name": "@deepseek-ai/dsh-terminal",
+        "files": 3,
+        "lines": 693
+      },
+      {
+        "path": "packages/terminal/terminal-bash",
+        "name": "@deepseek-ai/dsh-terminal-bash",
+        "files": 4,
+        "lines": 1369
+      },
+      {
+        "path": "packages/todo/tool-todo",
+        "name": "@deepseek-ai/dsh-tool-todo",
+        "files": 3,
+        "lines": 271
+      },
+      {
+        "path": "packages/typert/generator",
+        "name": "@deepseek-ai/dsh-typert-generator",
+        "files": 12,
+        "lines": 7598
+      },
+      {
+        "path": "packages/typert/loader",
+        "name": "@deepseek-ai/dsh-typert-loader",
+        "files": 1,
+        "lines": 507
+      },
+      {
+        "path": "packages/typert/protocol",
+        "name": "@deepseek-ai/dsh-typert-protocol",
+        "files": 8,
+        "lines": 1802
+      },
+      {
+        "path": "packages/typert/registry",
+        "name": "@deepseek-ai/dsh-typert-registry",
+        "files": 4,
+        "lines": 977
+      },
+      {
+        "path": "packages/util/atomic-write",
+        "name": "@deepseek-ai/dsh-atomic-write",
+        "files": 1,
+        "lines": 273
+      },
+      {
+        "path": "packages/util/brand",
+        "name": "@deepseek-ai/dsh-brand",
+        "files": 1,
+        "lines": 39
+      },
+      {
+        "path": "packages/util/chunked-list",
+        "name": "@deepseek-ai/dsh-chunked-list",
+        "files": 1,
+        "lines": 58
+      },
+      {
+        "path": "packages/util/code-language",
+        "name": "@deepseek-ai/dsh-util-code-language",
+        "files": 1,
+        "lines": 233
+      },
+      {
+        "path": "packages/util/crypto",
+        "name": "@deepseek-ai/dsh-util-crypto",
+        "files": 1,
+        "lines": 41
+      },
+      {
+        "path": "packages/util/deque",
+        "name": "@deepseek-ai/dsh-deque",
+        "files": 1,
+        "lines": 95
+      },
+      {
+        "path": "packages/util/error",
+        "name": "@deepseek-ai/dsh-error",
+        "files": 1,
+        "lines": 22
+      },
+      {
+        "path": "packages/util/file-drag",
+        "name": "@deepseek-ai/dsh-util-file-drag",
+        "files": 1,
+        "lines": 76
+      },
+      {
+        "path": "packages/util/home-paths",
+        "name": "@deepseek-ai/dsh-home-paths",
+        "files": 1,
+        "lines": 197
+      },
+      {
+        "path": "packages/util/http-proxy",
+        "name": "@deepseek-ai/dsh-http-proxy",
+        "files": 3,
+        "lines": 737
+      },
+      {
+        "path": "packages/util/launch-environment",
+        "name": "@deepseek-ai/dsh-launch-environment",
+        "files": 1,
+        "lines": 137
+      },
+      {
+        "path": "packages/util/lazy-require",
+        "name": "@deepseek-ai/dsh-lazy-require",
+        "files": 1,
+        "lines": 24
+      },
+      {
+        "path": "packages/util/native-command",
+        "name": "@deepseek-ai/dsh-native-command",
+        "files": 9,
+        "lines": 1052
+      },
+      {
+        "path": "packages/util/official-bundles",
+        "name": "@deepseek-ai/dsh-official-bundles",
+        "files": 4,
+        "lines": 203
+      },
+      {
+        "path": "packages/util/output-retention",
+        "name": "@deepseek-ai/dsh-output-retention",
+        "files": 1,
+        "lines": 460
+      },
+      {
+        "path": "packages/util/package-manifest",
+        "name": "@deepseek-ai/dsh-package-manifest",
+        "files": 2,
+        "lines": 115
+      },
+      {
+        "path": "packages/util/plugin-detail",
+        "name": "@deepseek-ai/dsh-plugin-detail",
+        "files": 5,
+        "lines": 485
+      },
+      {
+        "path": "packages/util/plugin-market-index",
+        "name": "@deepseek-ai/dsh-plugin-market-index",
+        "files": 2,
+        "lines": 445
+      },
+      {
+        "path": "packages/util/ripgrep",
+        "name": "@deepseek-ai/dsh-util-ripgrep",
+        "files": 1,
+        "lines": 109
+      },
+      {
+        "path": "packages/util/time",
+        "name": "@deepseek-ai/dsh-util-time",
+        "files": 6,
+        "lines": 1708
+      },
+      {
+        "path": "packages/util/timeout",
+        "name": "@deepseek-ai/dsh-timeout",
+        "files": 1,
+        "lines": 212
+      },
+      {
+        "path": "packages/util/values",
+        "name": "@deepseek-ai/dsh-util-values",
+        "files": 2,
+        "lines": 959
+      },
+      {
+        "path": "packages/util/workspace-path",
+        "name": "@deepseek-ai/dsh-util-workspace-path",
+        "files": 2,
+        "lines": 236
+      },
+      {
+        "path": "packages/web/tool-web",
+        "name": "@deepseek-ai/dsh-tool-web",
+        "files": 5,
+        "lines": 1054
+      },
+      {
+        "path": "packages/web/web",
+        "name": "@deepseek-ai/dsh-web",
+        "files": 2,
+        "lines": 507
+      },
+      {
+        "path": "packages/web/web-deepseek-api",
+        "name": "@deepseek-ai/dsh-web-deepseek-api",
+        "files": 4,
+        "lines": 1052
+      },
+      {
+        "path": "packages/web/web-fetch-http",
+        "name": "@deepseek-ai/dsh-web-fetch-http",
+        "files": 3,
+        "lines": 478
+      },
+      {
+        "path": "packages/web/web-search-deepseek",
+        "name": "@deepseek-ai/dsh-web-search-deepseek",
+        "files": 3,
+        "lines": 696
+      },
+      {
+        "path": "packages/workflow/tool-workflow",
+        "name": "@deepseek-ai/dsh-tool-workflow",
+        "files": 3,
+        "lines": 615
+      },
+      {
+        "path": "packages/workflow/workflow",
+        "name": "@deepseek-ai/dsh-workflow",
+        "files": 3,
+        "lines": 383
+      },
+      {
+        "path": "packages/workflow/workflow-ptc",
+        "name": "@deepseek-ai/dsh-workflow-ptc",
+        "files": 9,
+        "lines": 1339
+      },
+      {
+        "path": "packages/workspace/workspace",
+        "name": "@deepseek-ai/dsh-workspace",
+        "files": 5,
+        "lines": 1447
+      }
+    ],
+    "applications": [
+      {
+        "path": "apps/cli",
+        "files": 10,
+        "lines": 1081
+      },
+      {
+        "path": "apps/desktop-host",
+        "files": 10,
+        "lines": 525
+      },
+      {
+        "path": "apps/plugin-market-generator",
+        "files": 9,
+        "lines": 1453
+      },
+      {
+        "path": "native",
+        "files": 17,
+        "lines": 1772
+      },
+      {
+        "path": "python",
+        "files": 16,
+        "lines": 2447
+      }
+    ],
+    "remote_sources": [
+      {
+        "package": "packages/api/job-controller",
+        "file": "src/index.ts",
+        "namespaces": [
+          "job"
+        ],
+        "methods": [
+          "follow",
+          "kill",
+          "list"
+        ]
+      },
+      {
+        "package": "packages/api/remote-access",
+        "file": "src/index.ts",
+        "namespaces": [
+          "remoteAccess"
+        ],
+        "methods": [
+          "follow"
+        ]
+      },
+      {
+        "package": "packages/api/session-controller",
+        "file": "src/file-references.ts",
+        "namespaces": [
+          "fileReferences"
+        ],
+        "methods": [
+          "list"
+        ]
+      },
+      {
+        "package": "packages/api/session-controller",
+        "file": "src/index.ts",
+        "namespaces": [
+          "session"
+        ],
+        "methods": [
+          "attachment",
+          "canOpenWorkspacePath",
+          "cancel",
+          "control",
+          "create",
+          "events",
+          "follow",
+          "fork",
+          "initializeDefaultModel",
+          "list",
+          "modelCatalog",
+          "observeEvent",
+          "observeProjections",
+          "observeState",
+          "openWorkspacePath",
+          "page",
+          "projections",
+          "prompt",
+          "rename",
+          "search",
+          "selectModel",
+          "state",
+          "updateQueue",
+          "wait",
+          "workspacePathApplications"
+        ]
+      },
+      {
+        "package": "packages/api/session-controller",
+        "file": "src/skill-catalog.ts",
+        "namespaces": [
+          "skills"
+        ],
+        "methods": [
+          "list"
+        ]
+      },
+      {
+        "package": "packages/api/settings-controller",
+        "file": "src/credentials.ts",
+        "namespaces": [
+          "credentials"
+        ],
+        "methods": [
+          "describe",
+          "set",
+          "unset"
+        ]
+      },
+      {
+        "package": "packages/api/settings-controller",
+        "file": "src/index.ts",
+        "namespaces": [
+          "settings"
+        ],
+        "methods": [
+          "describe",
+          "mutate",
+          "openSettingsDocument",
+          "replace",
+          "update"
+        ]
+      },
+      {
+        "package": "packages/api/terminal-controller",
+        "file": "src/index.ts",
+        "namespaces": [
+          "terminal"
+        ],
+        "methods": [
+          "attach",
+          "close",
+          "create",
+          "environment",
+          "list",
+          "rename",
+          "retain",
+          "shells",
+          "watch"
+        ]
+      },
+      {
+        "package": "packages/api/workspace-controller",
+        "file": "src/directory-picker.ts",
+        "namespaces": [
+          "directoryPicker"
+        ],
+        "methods": [
+          "createDirectory",
+          "list",
+          "pick"
+        ]
+      },
+      {
+        "package": "packages/api/workspace-controller",
+        "file": "src/index.ts",
+        "namespaces": [
+          "workspace"
+        ],
+        "methods": [
+          "archiveSession",
+          "create",
+          "delete",
+          "follow",
+          "initializeDefault",
+          "insertBefore",
+          "insertSessionBefore",
+          "pinSession",
+          "rename",
+          "unarchiveSession",
+          "unpinSession"
+        ]
+      },
+      {
+        "package": "packages/api/workspace-files",
+        "file": "src/index.ts",
+        "namespaces": [
+          "workspaceFiles"
+        ],
+        "methods": [
+          "changes",
+          "list",
+          "read",
+          "readBytes",
+          "search",
+          "stat"
+        ]
+      },
+      {
+        "package": "packages/boot/plugin-manager",
+        "file": "src/index.ts",
+        "namespaces": [
+          "pluginManager"
+        ],
+        "methods": [
+          "cancelInstall",
+          "inspect",
+          "installBundle",
+          "listBundles",
+          "listPlugins",
+          "listVersionExemptions",
+          "listVersions",
+          "readBundleDetail",
+          "registries",
+          "removeBundle",
+          "setBundleEnabled",
+          "setPluginEnabled",
+          "setVersionExemption",
+          "updateBundle",
+          "waitForInstall"
+        ]
+      },
+      {
+        "package": "packages/boot/plugin-market",
+        "file": "src/index.ts",
+        "namespaces": [
+          "pluginMarket"
+        ],
+        "methods": [
+          "listIndexes",
+          "readEntryDetail",
+          "search",
+          "setIndexes"
+        ]
+      },
+      {
+        "package": "packages/context/session-reference",
+        "file": "src/index.ts",
+        "namespaces": [
+          "sessionReferenceResolver"
+        ],
+        "methods": [
+          "candidates"
+        ]
+      },
+      {
+        "package": "packages/credentials/deepseek-account",
+        "file": "src/index.ts",
+        "namespaces": [
+          "account"
+        ],
+        "methods": [
+          "cancelSignIn",
+          "getBalance",
+          "getNotificationContent",
+          "getNotifications",
+          "getProfile",
+          "getState",
+          "hasRunningAccountTasks",
+          "reportNotificationEvent",
+          "signOut",
+          "startSignIn",
+          "watch",
+          "watchExpiry"
+        ]
+      },
+      {
+        "package": "packages/document/office-kit",
+        "file": "src/index.ts",
+        "namespaces": [
+          "officeKit"
+        ],
+        "methods": [
+          "generation",
+          "render"
+        ]
+      },
+      {
+        "package": "packages/extensions/cordis-host-runner",
+        "file": "src/index.ts",
+        "namespaces": [
+          "dynamicCordisRunner"
+        ],
+        "methods": [
+          "getClientCode",
+          "inventory",
+          "invoke",
+          "reportClientGuardFailure",
+          "reportRenderFailure",
+          "resolveInspectQuery",
+          "resolveRequestRun",
+          "runHostHalf",
+          "settleUserRun",
+          "stopFromPanel",
+          "syncInspectManifest",
+          "undefineFromPanel"
+        ]
+      },
+      {
+        "package": "packages/feedback/command-feedback",
+        "file": "src/index.ts",
+        "namespaces": [
+          "sessionFeedback"
+        ],
+        "methods": [
+          "record"
+        ]
+      },
+      {
+        "package": "packages/feedback/message-feedback",
+        "file": "src/index.ts",
+        "namespaces": [
+          "messageFeedback"
+        ],
+        "methods": [
+          "delete",
+          "list",
+          "put"
+        ]
+      },
+      {
+        "package": "packages/goal/goal",
+        "file": "src/index.ts",
+        "namespaces": [
+          "goals"
+        ],
+        "methods": [
+          "clear",
+          "complete",
+          "create",
+          "edit",
+          "get",
+          "pause",
+          "resume"
+        ]
+      },
+      {
+        "package": "packages/host/plugin-inventory",
+        "file": "src/index.ts",
+        "namespaces": [
+          "pluginInventory"
+        ],
+        "methods": [
+          "list"
+        ]
+      },
+      {
+        "package": "packages/interaction/commands",
+        "file": "src/index.ts",
+        "namespaces": [
+          "commands"
+        ],
+        "methods": [
+          "execute",
+          "list"
+        ]
+      },
+      {
+        "package": "packages/interaction/permission-presets",
+        "file": "src/index.ts",
+        "namespaces": [
+          "permissionPresets"
+        ],
+        "methods": [
+          "catalog"
+        ]
+      },
+      {
+        "package": "packages/interaction/user-questions",
+        "file": "src/index.ts",
+        "namespaces": [
+          "userQuestions"
+        ],
+        "methods": [
+          "answer",
+          "attachWait"
+        ]
+      },
+      {
+        "package": "packages/llm/llm",
+        "file": "src/index.ts",
+        "namespaces": [
+          "llm"
+        ],
+        "methods": [
+          "discoverModels",
+          "listConfigurableProviders",
+          "listProviders"
+        ]
+      },
+      {
+        "package": "packages/mcp/mcp-manager",
+        "file": "src/index.ts",
+        "namespaces": [
+          "mcpManager"
+        ],
+        "methods": [
+          "probe",
+          "restart",
+          "watch"
+        ]
+      },
+      {
+        "package": "packages/preset/agent-preset-registry",
+        "file": "src/index.ts",
+        "namespaces": [
+          "agentPresets"
+        ],
+        "methods": [
+          "list",
+          "read",
+          "select"
+        ]
+      },
+      {
+        "package": "packages/schedule/schedule",
+        "file": "src/index.ts",
+        "namespaces": [
+          "schedule"
+        ],
+        "methods": [
+          "catalog",
+          "create",
+          "deleteInactive",
+          "deliveryLimits",
+          "edit",
+          "history",
+          "list",
+          "run",
+          "view"
+        ]
+      },
+      {
+        "package": "packages/subagent/subagent",
+        "file": "src/index.ts",
+        "namespaces": [
+          "subagents"
+        ],
+        "methods": [
+          "interruptByUser",
+          "prompt"
+        ]
+      },
+      {
+        "package": "packages/team/agent-team",
+        "file": "src/index.ts",
+        "namespaces": [
+          "agentTeams"
+        ],
+        "methods": [
+          "setEnabled"
+        ]
+      },
+      {
+        "package": "packages/web/web",
+        "file": "src/index.ts",
+        "namespaces": [
+          "web"
+        ],
+        "methods": [
+          "listProviders"
+        ]
+      }
+    ],
+    "totals": {
+      "package_files": 1076,
+      "package_lines": 242103,
+      "application_files": 62,
+      "application_lines": 7278,
+      "remote_files": 31,
+      "remote_methods": 153,
+      "remote_namespaces": [
+        "account",
+        "agentPresets",
+        "agentTeams",
+        "commands",
+        "credentials",
+        "directoryPicker",
+        "dynamicCordisRunner",
+        "fileReferences",
+        "goals",
+        "job",
+        "llm",
+        "mcpManager",
+        "messageFeedback",
+        "officeKit",
+        "permissionPresets",
+        "pluginInventory",
+        "pluginManager",
+        "pluginMarket",
+        "remoteAccess",
+        "schedule",
+        "session",
+        "sessionFeedback",
+        "sessionReferenceResolver",
+        "settings",
+        "skills",
+        "subagents",
+        "terminal",
+        "userQuestions",
+        "web",
+        "workspace",
+        "workspaceFiles"
+      ]
+    }
+  },
+  "girder": {
+    "production_files": 407,
+    "production_lines": 240819,
+    "test_files": 400,
+    "test_lines": 214502
+  },
+  "surface_comparison": {
+    "upstream_remote_methods": [
+      "account.cancelSignIn",
+      "account.getBalance",
+      "account.getNotificationContent",
+      "account.getNotifications",
+      "account.getProfile",
+      "account.getState",
+      "account.hasRunningAccountTasks",
+      "account.reportNotificationEvent",
+      "account.signOut",
+      "account.startSignIn",
+      "account.watch",
+      "account.watchExpiry",
+      "agentPresets.list",
+      "agentPresets.read",
+      "agentPresets.select",
+      "agentTeams.setEnabled",
+      "commands.execute",
+      "commands.list",
+      "credentials.describe",
+      "credentials.set",
+      "credentials.unset",
+      "directoryPicker.createDirectory",
+      "directoryPicker.list",
+      "directoryPicker.pick",
+      "dynamicCordisRunner.getClientCode",
+      "dynamicCordisRunner.inventory",
+      "dynamicCordisRunner.invoke",
+      "dynamicCordisRunner.reportClientGuardFailure",
+      "dynamicCordisRunner.reportRenderFailure",
+      "dynamicCordisRunner.resolveInspectQuery",
+      "dynamicCordisRunner.resolveRequestRun",
+      "dynamicCordisRunner.runHostHalf",
+      "dynamicCordisRunner.settleUserRun",
+      "dynamicCordisRunner.stopFromPanel",
+      "dynamicCordisRunner.syncInspectManifest",
+      "dynamicCordisRunner.undefineFromPanel",
+      "fileReferences.list",
+      "goals.clear",
+      "goals.complete",
+      "goals.create",
+      "goals.edit",
+      "goals.get",
+      "goals.pause",
+      "goals.resume",
+      "job.follow",
+      "job.kill",
+      "job.list",
+      "llm.discoverModels",
+      "llm.listConfigurableProviders",
+      "llm.listProviders",
+      "mcpManager.probe",
+      "mcpManager.restart",
+      "mcpManager.watch",
+      "messageFeedback.delete",
+      "messageFeedback.list",
+      "messageFeedback.put",
+      "officeKit.generation",
+      "officeKit.render",
+      "permissionPresets.catalog",
+      "pluginInventory.list",
+      "pluginManager.cancelInstall",
+      "pluginManager.inspect",
+      "pluginManager.installBundle",
+      "pluginManager.listBundles",
+      "pluginManager.listPlugins",
+      "pluginManager.listVersionExemptions",
+      "pluginManager.listVersions",
+      "pluginManager.readBundleDetail",
+      "pluginManager.registries",
+      "pluginManager.removeBundle",
+      "pluginManager.setBundleEnabled",
+      "pluginManager.setPluginEnabled",
+      "pluginManager.setVersionExemption",
+      "pluginManager.updateBundle",
+      "pluginManager.waitForInstall",
+      "pluginMarket.listIndexes",
+      "pluginMarket.readEntryDetail",
+      "pluginMarket.search",
+      "pluginMarket.setIndexes",
+      "remoteAccess.follow",
+      "schedule.catalog",
+      "schedule.create",
+      "schedule.deleteInactive",
+      "schedule.deliveryLimits",
+      "schedule.edit",
+      "schedule.history",
+      "schedule.list",
+      "schedule.run",
+      "schedule.view",
+      "session.attachment",
+      "session.canOpenWorkspacePath",
+      "session.cancel",
+      "session.control",
+      "session.create",
+      "session.events",
+      "session.follow",
+      "session.fork",
+      "session.initializeDefaultModel",
+      "session.list",
+      "session.modelCatalog",
+      "session.observeEvent",
+      "session.observeProjections",
+      "session.observeState",
+      "session.openWorkspacePath",
+      "session.page",
+      "session.projections",
+      "session.prompt",
+      "session.rename",
+      "session.search",
+      "session.selectModel",
+      "session.state",
+      "session.updateQueue",
+      "session.wait",
+      "session.workspacePathApplications",
+      "sessionFeedback.record",
+      "sessionReferenceResolver.candidates",
+      "settings.describe",
+      "settings.mutate",
+      "settings.openSettingsDocument",
+      "settings.replace",
+      "settings.update",
+      "skills.list",
+      "subagents.interruptByUser",
+      "subagents.prompt",
+      "terminal.attach",
+      "terminal.close",
+      "terminal.create",
+      "terminal.environment",
+      "terminal.list",
+      "terminal.rename",
+      "terminal.retain",
+      "terminal.shells",
+      "terminal.watch",
+      "userQuestions.answer",
+      "userQuestions.attachWait",
+      "web.listProviders",
+      "workspace.archiveSession",
+      "workspace.create",
+      "workspace.delete",
+      "workspace.follow",
+      "workspace.initializeDefault",
+      "workspace.insertBefore",
+      "workspace.insertSessionBefore",
+      "workspace.pinSession",
+      "workspace.rename",
+      "workspace.unarchiveSession",
+      "workspace.unpinSession",
+      "workspaceFiles.changes",
+      "workspaceFiles.list",
+      "workspaceFiles.read",
+      "workspaceFiles.readBytes",
+      "workspaceFiles.search",
+      "workspaceFiles.stat"
+    ],
+    "girder_declared_methods": [
+      "account.cancelSignIn",
+      "account.getBalance",
+      "account.getNotificationContent",
+      "account.getNotifications",
+      "account.getProfile",
+      "account.getState",
+      "account.hasRunningAccountTasks",
+      "account.reportNotificationEvent",
+      "account.signOut",
+      "account.startSignIn",
+      "account.watch",
+      "account.watchState",
+      "agentPresets.list",
+      "agentPresets.read",
+      "agentPresets.select",
+      "agentTeams.setEnabled",
+      "commands.execute",
+      "commands.list",
+      "directoryPicker.createDirectory",
+      "directoryPicker.list",
+      "directoryPicker.pick",
+      "extension.activate",
+      "extension.approve",
+      "extension.deactivate",
+      "extension.list",
+      "extension.status",
+      "fileReferences.list",
+      "goals.clear",
+      "goals.complete",
+      "goals.create",
+      "goals.edit",
+      "goals.get",
+      "goals.list",
+      "goals.pause",
+      "goals.resume",
+      "host.openPath",
+      "host.revealInFileManager",
+      "job.follow",
+      "job.kill",
+      "job.list",
+      "llm.discoverModels",
+      "llm.listConfigurableProviders",
+      "llm.listProviders",
+      "mcpManager.probe",
+      "mcpManager.restart",
+      "messageFeedback.delete",
+      "messageFeedback.list",
+      "messageFeedback.put",
+      "officeKit.generation",
+      "officeKit.render",
+      "permissionPresets.catalog",
+      "pluginInventory.list",
+      "pluginManager.cancelInstall",
+      "pluginManager.inspect",
+      "pluginManager.installBundle",
+      "pluginManager.listBundles",
+      "pluginManager.listPlugins",
+      "pluginManager.listVersionExemptions",
+      "pluginManager.listVersions",
+      "pluginManager.readBundleDetail",
+      "pluginManager.registries",
+      "pluginManager.removeBundle",
+      "pluginManager.setBundleEnabled",
+      "pluginManager.setPluginEnabled",
+      "pluginManager.setVersionExemption",
+      "pluginManager.updateBundle",
+      "pluginManager.waitForInstall",
+      "pluginMarket.listIndexes",
+      "pluginMarket.readEntryDetail",
+      "pluginMarket.search",
+      "pluginMarket.setIndexes",
+      "schedule.catalog",
+      "schedule.create",
+      "schedule.deleteInactive",
+      "schedule.deliveryLimits",
+      "schedule.edit",
+      "schedule.history",
+      "schedule.list",
+      "schedule.run",
+      "schedule.view",
+      "session.archive",
+      "session.attachment",
+      "session.canOpenWorkspacePath",
+      "session.cancel",
+      "session.control",
+      "session.create",
+      "session.delete",
+      "session.duplicate",
+      "session.events",
+      "session.export",
+      "session.follow",
+      "session.fork",
+      "session.initializeDefaultModel",
+      "session.list",
+      "session.modelCatalog",
+      "session.observeEvent",
+      "session.observeProjections",
+      "session.observeState",
+      "session.openWorkspacePath",
+      "session.page",
+      "session.projections",
+      "session.prompt",
+      "session.rename",
+      "session.resume",
+      "session.search",
+      "session.selectModel",
+      "session.state",
+      "session.stream",
+      "session.updateQueue",
+      "session.version",
+      "session.wait",
+      "session.workspaceDesktop",
+      "session.workspacePathApplications",
+      "sessionFeedback.record",
+      "sessionReferenceResolver.candidates",
+      "settings.delete",
+      "settings.describe",
+      "settings.get",
+      "settings.list",
+      "settings.mutate",
+      "settings.openSettingsDocument",
+      "settings.replace",
+      "settings.set",
+      "settings.update",
+      "skills.list",
+      "subagents.interruptByUser",
+      "subagents.prompt",
+      "terminal.attach",
+      "terminal.close",
+      "terminal.create",
+      "terminal.environment",
+      "terminal.list",
+      "terminal.read",
+      "terminal.rename",
+      "terminal.retain",
+      "terminal.send",
+      "terminal.shells",
+      "userQuestions.answer",
+      "userQuestions.attachWait",
+      "userQuestions.cancel",
+      "userQuestions.list",
+      "web.listProviders",
+      "workflow.cancel",
+      "workflow.get",
+      "workflow.list",
+      "workflow.start",
+      "workspace.archiveSession",
+      "workspace.create",
+      "workspace.delete",
+      "workspace.initializeDefault",
+      "workspace.insertBefore",
+      "workspace.insertSessionBefore",
+      "workspace.list",
+      "workspace.pinSession",
+      "workspace.rename",
+      "workspace.unarchiveSession",
+      "workspace.unpinSession",
+      "workspaceFiles.changes",
+      "workspaceFiles.list",
+      "workspaceFiles.read",
+      "workspaceFiles.readBytes",
+      "workspaceFiles.search",
+      "workspaceFiles.stat",
+      "workspaceFiles.watch"
+    ],
+    "matched": [
+      "account.cancelSignIn",
+      "account.getBalance",
+      "account.getNotificationContent",
+      "account.getNotifications",
+      "account.getProfile",
+      "account.getState",
+      "account.hasRunningAccountTasks",
+      "account.reportNotificationEvent",
+      "account.signOut",
+      "account.startSignIn",
+      "account.watch",
+      "agentPresets.list",
+      "agentPresets.read",
+      "agentPresets.select",
+      "agentTeams.setEnabled",
+      "commands.execute",
+      "commands.list",
+      "directoryPicker.createDirectory",
+      "directoryPicker.list",
+      "directoryPicker.pick",
+      "fileReferences.list",
+      "goals.clear",
+      "goals.complete",
+      "goals.create",
+      "goals.edit",
+      "goals.get",
+      "goals.pause",
+      "goals.resume",
+      "job.follow",
+      "job.kill",
+      "job.list",
+      "llm.discoverModels",
+      "llm.listConfigurableProviders",
+      "llm.listProviders",
+      "mcpManager.probe",
+      "mcpManager.restart",
+      "messageFeedback.delete",
+      "messageFeedback.list",
+      "messageFeedback.put",
+      "officeKit.generation",
+      "officeKit.render",
+      "permissionPresets.catalog",
+      "pluginInventory.list",
+      "pluginManager.cancelInstall",
+      "pluginManager.inspect",
+      "pluginManager.installBundle",
+      "pluginManager.listBundles",
+      "pluginManager.listPlugins",
+      "pluginManager.listVersionExemptions",
+      "pluginManager.listVersions",
+      "pluginManager.readBundleDetail",
+      "pluginManager.registries",
+      "pluginManager.removeBundle",
+      "pluginManager.setBundleEnabled",
+      "pluginManager.setPluginEnabled",
+      "pluginManager.setVersionExemption",
+      "pluginManager.updateBundle",
+      "pluginManager.waitForInstall",
+      "pluginMarket.listIndexes",
+      "pluginMarket.readEntryDetail",
+      "pluginMarket.search",
+      "pluginMarket.setIndexes",
+      "schedule.catalog",
+      "schedule.create",
+      "schedule.deleteInactive",
+      "schedule.deliveryLimits",
+      "schedule.edit",
+      "schedule.history",
+      "schedule.list",
+      "schedule.run",
+      "schedule.view",
+      "session.attachment",
+      "session.canOpenWorkspacePath",
+      "session.cancel",
+      "session.control",
+      "session.create",
+      "session.events",
+      "session.follow",
+      "session.fork",
+      "session.initializeDefaultModel",
+      "session.list",
+      "session.modelCatalog",
+      "session.observeEvent",
+      "session.observeProjections",
+      "session.observeState",
+      "session.openWorkspacePath",
+      "session.page",
+      "session.projections",
+      "session.prompt",
+      "session.rename",
+      "session.search",
+      "session.selectModel",
+      "session.state",
+      "session.updateQueue",
+      "session.wait",
+      "session.workspacePathApplications",
+      "sessionFeedback.record",
+      "sessionReferenceResolver.candidates",
+      "settings.describe",
+      "settings.mutate",
+      "settings.openSettingsDocument",
+      "settings.replace",
+      "settings.update",
+      "skills.list",
+      "subagents.interruptByUser",
+      "subagents.prompt",
+      "terminal.attach",
+      "terminal.close",
+      "terminal.create",
+      "terminal.environment",
+      "terminal.list",
+      "terminal.rename",
+      "terminal.retain",
+      "terminal.shells",
+      "userQuestions.answer",
+      "userQuestions.attachWait",
+      "web.listProviders",
+      "workspace.archiveSession",
+      "workspace.create",
+      "workspace.delete",
+      "workspace.initializeDefault",
+      "workspace.insertBefore",
+      "workspace.insertSessionBefore",
+      "workspace.pinSession",
+      "workspace.rename",
+      "workspace.unarchiveSession",
+      "workspace.unpinSession",
+      "workspaceFiles.changes",
+      "workspaceFiles.list",
+      "workspaceFiles.read",
+      "workspaceFiles.readBytes",
+      "workspaceFiles.search",
+      "workspaceFiles.stat"
+    ],
+    "missing_in_girder": [
+      "account.watchExpiry",
+      "credentials.describe",
+      "credentials.set",
+      "credentials.unset",
+      "dynamicCordisRunner.getClientCode",
+      "dynamicCordisRunner.inventory",
+      "dynamicCordisRunner.invoke",
+      "dynamicCordisRunner.reportClientGuardFailure",
+      "dynamicCordisRunner.reportRenderFailure",
+      "dynamicCordisRunner.resolveInspectQuery",
+      "dynamicCordisRunner.resolveRequestRun",
+      "dynamicCordisRunner.runHostHalf",
+      "dynamicCordisRunner.settleUserRun",
+      "dynamicCordisRunner.stopFromPanel",
+      "dynamicCordisRunner.syncInspectManifest",
+      "dynamicCordisRunner.undefineFromPanel",
+      "mcpManager.watch",
+      "remoteAccess.follow",
+      "terminal.watch",
+      "workspace.follow"
+    ],
+    "extra_in_girder": [
+      "account.watchState",
+      "extension.activate",
+      "extension.approve",
+      "extension.deactivate",
+      "extension.list",
+      "extension.status",
+      "goals.list",
+      "host.openPath",
+      "host.revealInFileManager",
+      "session.archive",
+      "session.delete",
+      "session.duplicate",
+      "session.export",
+      "session.resume",
+      "session.stream",
+      "session.version",
+      "session.workspaceDesktop",
+      "settings.delete",
+      "settings.get",
+      "settings.list",
+      "settings.set",
+      "terminal.read",
+      "terminal.send",
+      "userQuestions.cancel",
+      "userQuestions.list",
+      "workflow.cancel",
+      "workflow.get",
+      "workflow.list",
+      "workflow.start",
+      "workspace.list",
+      "workspaceFiles.watch"
+    ]
+  }
+}

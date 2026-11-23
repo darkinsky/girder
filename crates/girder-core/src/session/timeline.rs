@@ -64,7 +64,7 @@
 //! them as belonging to whatever is open. The fold therefore follows log position: a user message
 //! outside an open turn is the prompt of the *next* turn, which is the order this build actually
 //! writes (the runtime records the prompt before spawning the loop, so `user/message` precedes
-//! `turn/start`; upstream opens the turn first — the deviation is recorded in `docs/migration-v2.md`).
+//! `turn/start`; upstream opens the turn first).
 //! Both orders attribute the same way, which is why the fold is not simply "events after the last
 //! boundary".
 //!
@@ -204,7 +204,7 @@ pub fn outline(events: &[SessionEvent]) -> Vec<Segment> {
         match event {
             SessionEvent::TurnStart { turn } => {
                 // A repeated `turn/start` for the turn already open keeps the segment: the log writer
-                // has produced two records for one boundary before (see `docs/migration-v2.md`), and
+                // has produced two records for one boundary before, and
                 // splitting here would report one turn as two rows with half the tools each.
                 if open.as_ref().is_some_and(|building| building.turn == *turn) {
                     continue;
@@ -284,7 +284,7 @@ pub fn outline(events: &[SessionEvent]) -> Vec<Segment> {
             | SessionEvent::LlmRetry { .. }
             // a timeline places turns in time; feedback answers about a message, so it contributes nothing here.
             | SessionEvent::MessageFeedbackPut { .. }
-            | SessionEvent::MessageFeedbackDelete { .. } | SessionEvent::SessionFeedbackRecord { .. } | SessionEvent::TeamMode { .. } => {}
+            | SessionEvent::MessageFeedbackDelete { .. } | SessionEvent::SessionFeedbackRecord { .. } | SessionEvent::CompactionSummary { .. } | SessionEvent::ImageOffload { .. } | SessionEvent::TeamMode { .. } | SessionEvent::TeamTask { .. } => {}
         }
     }
 

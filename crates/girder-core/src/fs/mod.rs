@@ -24,19 +24,19 @@
 //! (`exec.rs` owns the path policy) and with M3's tool layer, which is where a model-supplied path
 //! first appears.
 
-
 pub mod diff_patch;
 pub mod file_lock;
 pub mod file_tools;
 pub mod file_watch;
-pub mod search_view;
-pub mod rpc;
-pub mod tools;
 pub mod patch;
+pub mod rpc;
 pub mod search_tools;
+pub mod search_view;
 pub mod str_replace_editor;
+pub mod tools;
 pub mod undo_log;
 
+use std::hash::Hasher as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -47,9 +47,8 @@ use crate::core::scope::BoxFut;
 /// A freshness token for one file state.
 ///
 /// Opaque to consumers: a writer receives one from [`FileSystem::stat`] and hands it back. The local
-/// backend derives it from modification time and size, which is cheap to compute and catches every
-/// change that matters — a same-mtime, same-size edit within one filesystem tick is the only miss,
-/// and upstream's local backend has the same one.
+/// backend derives it from modification time, size, and a content digest. Metadata alone is not
+/// sufficient on filesystems whose timestamp resolution allows two same-sized writes in one tick.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FsVersion(pub String);
 
@@ -289,14 +288,27 @@ pub trait FileSystem: Send + Sync {
 pub struct LocalFileSystem;
 
 impl LocalFileSystem {
-    /// Derives a version from a metadata snapshot.
-    fn version_of(metadata: &std::fs::Metadata) -> FsVersion {
+    /// Derives a version from a metadata snapshot and, for files, their bytes.
+    async fn version_of(path: &Path, metadata: &std::fs::Metadata) -> FsVersion {
         let modified = metadata
             .modified()
             .ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |elapsed| elapsed.as_nanos());
-        FsVersion(format!("{}-{}", modified, metadata.len()))
+        let digest = if metadata.is_file() {
+            tokio::fs::read(path)
+                .await
+                .ok()
+                .map(|bytes| {
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    std::hash::Hash::hash(&bytes, &mut hasher);
+                    hasher.finish()
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        FsVersion(format!("{}-{}-{digest:016x}", modified, metadata.len()))
     }
 
     fn type_of(metadata: &std::fs::Metadata) -> FsType {
@@ -336,7 +348,7 @@ impl FileSystem for LocalFileSystem {
             }
             match tokio::fs::metadata(&path).await {
                 Ok(metadata) => Ok(Some(FsInfo {
-                    version: Self::version_of(&metadata),
+                    version: Self::version_of(&path, &metadata).await,
                     file_type: Self::type_of(&metadata),
                     size: metadata.len(),
                 })),
@@ -484,7 +496,7 @@ impl FileSystem for LocalFileSystem {
             let _guard = lock.lock().await;
 
             let current = match tokio::fs::metadata(&path).await {
-                Ok(metadata) => Some(Self::version_of(&metadata)),
+                Ok(metadata) => Some(Self::version_of(&path, &metadata).await),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(FsError::io(&path, error)),
             };
@@ -527,7 +539,7 @@ impl FileSystem for LocalFileSystem {
             let metadata = tokio::fs::metadata(&path)
                 .await
                 .map_err(|error| FsError::io(&path, error))?;
-            Ok(Self::version_of(&metadata))
+            Ok(Self::version_of(&path, &metadata).await)
         })
     }
 
@@ -550,7 +562,7 @@ impl FileSystem for LocalFileSystem {
             let metadata = tokio::fs::metadata(&path)
                 .await
                 .map_err(|error| FsError::io(&path, error))?;
-            let actual = Self::version_of(&metadata);
+            let actual = Self::version_of(&path, &metadata).await;
             if actual != expected {
                 return Err(FsError::Stale {
                     path: path.display().to_string(),

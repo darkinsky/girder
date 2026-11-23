@@ -25,11 +25,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::agent_loop::{LoopContext, LoopStep};
-use crate::util::brand::AgentId;
 use crate::core::events::{Event, EventBus};
+use crate::core::tools::ToolRegistryView;
 use crate::llm::{ContentBlock, FinishReason, LlmProvider, StreamChunk};
 use crate::session::{Session, SessionEvent};
-use crate::core::tools::ToolRegistryView;
+use crate::util::brand::AgentId;
 
 /// A step the runtime publishes as it runs a turn.
 ///
@@ -167,6 +167,12 @@ pub struct AgentRuntime {
     refine_titles: bool,
     /// Where `exit_plan_mode` records the session it is reviewing.
     plan_sessions: Option<Arc<crate::core::plan_mode::PlanSessions>>,
+    /// Where the team task tools record the session they are reviewing.
+    team_sessions: Option<Arc<crate::team::tools::TeamSessions>>,
+    /// Turns currently inside the loop, so a tool registered once can find the caller.
+    live_parents: Option<Arc<crate::core::agent_loop::LiveParents>>,
+    /// How many nested delegations a turn started here may make.
+    max_depth: u32,
     /// The goal the loop advances, when one is set.
     ///
     /// Shared with the `goal` tool rather than owned: a tool that kept its own copy would let the model complete a
@@ -272,6 +278,9 @@ impl AgentRuntime {
             tool_settings: None,
             refine_titles: false,
             plan_sessions: None,
+            team_sessions: None,
+            live_parents: None,
+            max_depth: 2,
             // Unset until a deployment states them: the runtime does not know which model it is talking to beyond the
             // name, and a guessed window would make the budget check refuse requests the model would accept.
             context_window: None,
@@ -388,6 +397,36 @@ impl AgentRuntime {
         }
     }
 
+    /// Attaches the table the team task tools write through.
+    pub fn set_team_sessions(
+        this: &mut Arc<Self>,
+        sessions: Arc<crate::team::tools::TeamSessions>,
+    ) {
+        if let Some(inner) = Arc::get_mut(this) {
+            inner.team_sessions = Some(sessions);
+        }
+    }
+
+    /// Publishes each turn this runtime starts, so `subagent` can find the conversation that called it.
+    ///
+    /// Call this before the runtime is cloned. A clone already shared with the server ignores the
+    /// assignment, and the tools then answer that no turn is running.
+    pub fn set_live_parents(
+        this: &mut Arc<Self>,
+        parents: Arc<crate::core::agent_loop::LiveParents>,
+    ) {
+        if let Some(inner) = Arc::get_mut(this) {
+            inner.live_parents = Some(parents);
+        }
+    }
+
+    /// How deep a delegation from a turn started here may go.
+    pub fn set_max_depth(this: &mut Arc<Self>, depth: u32) {
+        if let Some(inner) = Arc::get_mut(this) {
+            inner.max_depth = depth;
+        }
+    }
+
     /// Number of sessions with a turn in flight, for tests and diagnosis.
     #[must_use]
     pub fn running_count(&self) -> usize {
@@ -458,8 +497,7 @@ impl AgentRuntime {
         // Written before the loop is spawned, which means `user/message` precedes `turn/start` --
         // upstream opens the turn first. The order is chosen deliberately: a prompt that reached the
         // server must survive a crash before the model answered, and a `turn/start` with no message
-        // would then be a turn that began for nothing. The deviation is recorded in
-        // `docs/migration-v2.md` rather than left for a reader to notice.
+        // would then be a turn that began for nothing.
         session
             .append(SessionEvent::UserMessage { message: prompt })
             .await?;
@@ -553,6 +591,9 @@ impl AgentRuntime {
         }
         context.refine_titles = self.refine_titles;
         context.plan_sessions = self.plan_sessions.clone();
+        context.team_sessions = self.team_sessions.clone();
+        context.live_parents = self.live_parents.clone();
+        context.max_depth = self.max_depth;
         // The model's limits, when the catalogue states them. Without this the loop sends whatever the conversation has
         // accumulated and learns the answer from the provider's error -- which names a limit without saying how far past
         // it the request was.
@@ -563,6 +604,10 @@ impl AgentRuntime {
         // The turn the client was told about, so the log agrees with the answer it already received.
         context.first_turn = first_turn;
         let context = Arc::new(context);
+        let _lease = self
+            .live_parents
+            .as_ref()
+            .map(|parents| parents.publish(session_id, Arc::clone(&context)));
 
         let mut stream = Box::pin(crate::core::agent_loop::run(context, text, cancel));
         while let Some(step) = stream.next().await {

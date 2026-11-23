@@ -17,6 +17,11 @@
 #[path = "../src/core/tool_result_pruning.rs"]
 pub mod tool_result_pruning;
 
+// The source is included directly, so mirror the library namespace used by its focused tests.
+mod llm {
+    pub use girder_core::llm::ContentBlock;
+}
+
 use std::fmt::Write as _;
 
 use tool_result_pruning::{Presentation, apply, decide};
@@ -334,8 +339,7 @@ fn head_tail_of_more_lines_than_exist_is_a_no_op() {
     assert_eq!(rendered, content);
 }
 
-
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod core {
-    pub use super::tool_result_pruning as tool_result_pruning;
+    pub use super::tool_result_pruning;
 }

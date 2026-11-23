@@ -35,7 +35,7 @@ async fn a_dispatched_event_reaches_a_connected_client() {
     let (address, cancel) = serve(Arc::clone(&bus)).await;
 
     let (mut socket, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/api/remote.mux"))
+        tokio_tungstenite::connect_async(format!("ws://{address}/api/remote.mux?legacy=1"))
             .await
             .expect("connect");
 
@@ -77,7 +77,7 @@ async fn a_client_that_connects_receives_the_ready_frame() {
     let (address, cancel) = serve(bus).await;
 
     let (mut socket, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/api/remote.mux"))
+        tokio_tungstenite::connect_async(format!("ws://{address}/api/remote.mux?legacy=1"))
             .await
             .expect("connect");
 
@@ -113,7 +113,7 @@ async fn a_server_watching_nothing_forwards_no_events() {
     });
 
     let (mut socket, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/api/remote.mux"))
+        tokio_tungstenite::connect_async(format!("ws://{address}/api/remote.mux?legacy=1"))
             .await
             .expect("connect");
     let _ = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;

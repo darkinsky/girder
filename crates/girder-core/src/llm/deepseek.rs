@@ -2,8 +2,8 @@
 //!
 //! Upstream's `packages/llm/llm-deepseek` posts to `{base}/messages` with `anthropic-version` and
 //! consumes a server-sent event stream. This module implements that protocol and nothing else about
-//! the provider — no image offload, no file ids, no model discovery, no pricing. Those are admin
-//! surfaces (see `docs/phase4-interfaces.md`), and the vertical slice never reaches them.
+//! the provider. Image bytes, file ids, model discovery, and pricing live in the neighbouring
+//! modules.
 //!
 //! # What is verified, and what is not
 //!
@@ -25,11 +25,11 @@ use std::sync::Arc;
 use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
+use crate::core::scope::BoxFut;
 use crate::llm::{
     ChunkStream, ContentBlock, FinishReason, LlmError, LlmProvider, LlmRequest, Role, StreamChunk,
     TokenUsage,
 };
-use crate::core::scope::BoxFut;
 
 /// Default endpoint. Upstream's `PUBLIC_BASE_URL`.
 pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com/anthropic";
@@ -153,6 +153,8 @@ pub struct DeepSeekProvider {
     /// Held here rather than read from the environment on each call because the resolution has to happen before the
     /// request is built -- a body with the wrong `max_tokens` is already wrong by the time it is serialized.
     calls: crate::settings::call_config::ConfigTable,
+    /// Where `sha256:` image bytes live, when this provider should inline them.
+    attachments: Option<std::path::PathBuf>,
 }
 
 impl DeepSeekProvider {
@@ -174,8 +176,37 @@ impl DeepSeekProvider {
         Ok(Self {
             config,
             client,
-            calls: crate::settings::call_config::ConfigTable::new(crate::settings::call_config::CallConfig::default()),
+            calls: crate::settings::call_config::ConfigTable::new(
+                crate::settings::call_config::CallConfig::default(),
+            ),
+            attachments: None,
         })
+    }
+
+    /// Reads `sha256:` images from `root` when a request is serialized.
+    ///
+    /// Absent means an image block stays the handle sentence. A test provider has no store, and
+    /// inventing one would make a fixture id look like a missing file.
+    #[must_use]
+    pub fn with_attachments(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.attachments = Some(root.into());
+        self
+    }
+
+    fn stored_image(&self, id: &str) -> Option<crate::llm::deepseek_serialize::SerializeImage> {
+        let root = self.attachments.as_ref()?;
+        let store = crate::attachment::FileStore::open(root).ok()?;
+        let image = crate::attachment::ImageShelf::fetch(&store, id)?;
+        let identity = match image.name.as_deref() {
+            Some(name) => format!("{name} ({id})"),
+            None => id.to_owned(),
+        };
+        Some(crate::llm::deepseek_serialize::SerializeImage::inline(
+            id,
+            format!("Image {identity}."),
+            image.media_type,
+            image.data,
+        ))
     }
 
     /// Replaces the per-model limits.
@@ -266,7 +297,8 @@ impl DeepSeekProvider {
                 .any(|block| matches!(block, ContentBlock::Reasoning { .. }))
         });
         let route = route.with_thinking_enabled(carries_reasoning);
-        crate::llm::deepseek_serialize::serialize_llm_request(route, request)
+        let images = |id: &str| self.stored_image(id);
+        crate::llm::deepseek_serialize::serialize_llm_request_with_images(route, request, &images)
     }
 
     /// The pre-serializer body, kept for the one caller that must not fail: a request this build
@@ -304,10 +336,9 @@ impl DeepSeekProvider {
                     message
                         .content
                         .iter()
-                        // The fallback path has no prepared versions: it exists for the case the serializer
-                        // refused, which is a conversation this build cannot express, not one it can
-                        // enrich. `None` here produces the handle sentence, never a source-less block.
-                        .map(|block| block_to_wire(block, &|_| None))
+                        // A conversation the serializer refused can still carry images the store has.
+                        // A miss stays the handle sentence, which is a block the API will accept.
+                        .map(|block| block_to_wire(block, &|id| self.stored_image(id)))
                         .collect::<Vec<_>>()
                 };
                 serde_json::json!({ "role": role, "content": content })
@@ -656,7 +687,10 @@ fn image_variant_id(attachment_id: &str, media_type: &str, data: &[u8]) -> Strin
     input.extend_from_slice(media_type.as_bytes());
     input.push(0);
     input.extend_from_slice(&u64::try_from(data.len()).unwrap_or(u64::MAX).to_be_bytes());
-    format!("sha256:{}", crate::session::migration_steps::sha256_hex(&input))
+    format!(
+        "sha256:{}",
+        crate::session::migration_steps::sha256_hex(&input)
+    )
 }
 
 /// Milliseconds on the Unix timeline, floored.
@@ -1120,5 +1154,68 @@ pub fn provider_from_env() -> Result<Arc<dyn LlmProvider>, LlmError> {
             "DEEPSEEK_API_KEY is not set; set it to use the live provider".to_owned(),
         )
     })?;
-    Ok(Arc::new(DeepSeekProvider::new(config)?))
+    Ok(Arc::new(DeepSeekProvider::new(config)?.with_attachments(
+        crate::attachment::file::environment_root(),
+    )))
+}
+
+#[cfg(test)]
+mod attachment_wire_tests {
+    use super::{DeepSeekConfig, DeepSeekProvider};
+    use crate::attachment::{DecodedImage, FileStore, ImageShelf};
+    use crate::llm::{ContentBlock, LlmRequest, Message, Role};
+
+    #[test]
+    fn a_stored_image_is_inlined_and_a_missing_one_stays_a_sentence() {
+        let root = std::env::temp_dir().join(format!("girder-wire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = FileStore::open(&root).expect("store");
+        let saved = store
+            .insert(
+                "ignored",
+                DecodedImage {
+                    data: b"png-bytes".to_vec(),
+                    media_type: "image/png".to_owned(),
+                    name: Some("diagram.png".to_owned()),
+                },
+            )
+            .expect("save");
+        let provider = DeepSeekProvider::new(DeepSeekConfig::new("https://example.invalid", "key"))
+            .expect("provider")
+            .with_attachments(&root);
+        let request = LlmRequest::new(
+            "deepseek-chat",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Image {
+                    attachment: saved.id.clone(),
+                }],
+            )],
+        );
+        let text = provider.body(&request).to_string();
+        assert!(text.contains("\"type\":\"image\""), "{text}");
+        assert!(
+            text.contains(&crate::attachment::encode_base64(b"png-bytes")),
+            "{text}"
+        );
+        assert!(text.contains("diagram.png"), "{text}");
+
+        let missing = LlmRequest::new(
+            "deepseek-chat",
+            vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Image {
+                    attachment:
+                        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                            .to_owned(),
+                }],
+            )],
+        );
+        let missing_text = provider.body(&missing).to_string();
+        assert!(
+            !missing_text.contains("\"type\":\"image\""),
+            "{missing_text}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

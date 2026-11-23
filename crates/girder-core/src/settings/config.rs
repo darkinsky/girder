@@ -51,7 +51,7 @@ pub enum ConfigError {
     /// A `!!js` tag was found. Upstream evaluates it; this crate does not.
     #[error(
         "`!!js` is not supported (line {line}); \
-         replace it with `when:` — see docs/migration-plan.md §2.6"
+         replace it with a `when:` condition"
     )]
     JsExpression {
         /// 1-based line of the offending tag.

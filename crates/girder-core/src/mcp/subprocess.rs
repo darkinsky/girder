@@ -285,11 +285,12 @@ impl Transport for Subprocess {
             )?;
             // The server reports a tool failure inside a successful reply, with `isError`. Passing it through as success
             // would tell a caller that a failed tool worked.
-            let response =
-                crate::mcp::client::parse_response(&reply).map_err(|error| McpError::Transport {
+            let response = crate::mcp::client::parse_response(&reply).map_err(|error| {
+                McpError::Transport {
                     name: name.clone(),
                     reason: format!("the reply could not be read: {error}"),
-                })?;
+                }
+            })?;
             let result = match response {
                 crate::mcp::client::McpResponse::Success { result, .. } => result,
                 crate::mcp::client::McpResponse::Failure { error, .. } => {
@@ -338,6 +339,126 @@ impl Transport for Subprocess {
     }
 
     fn resources(&self) -> BoxFut<Result<Vec<Resource>, McpError>> {
-        Box::pin(async { Ok(Vec::new()) })
+        let program = self.program.clone();
+        let child_slot = std::sync::Arc::clone(&self.child);
+        let next_id = std::sync::Arc::clone(&self.next_id);
+        Box::pin(async move {
+            let result = rpc(
+                &program,
+                &child_slot,
+                &next_id,
+                "resources/list",
+                serde_json::json!({}),
+            )?;
+            Ok(parse_resources(&result))
+        })
+    }
+
+    fn read_resource(&self, uri: &str) -> BoxFut<Result<crate::mcp::ResourceContent, McpError>> {
+        let program = self.program.clone();
+        let child_slot = std::sync::Arc::clone(&self.child);
+        let next_id = std::sync::Arc::clone(&self.next_id);
+        let uri = uri.to_owned();
+        Box::pin(async move {
+            let result = rpc(
+                &program,
+                &child_slot,
+                &next_id,
+                "resources/read",
+                serde_json::json!({ "uri": uri }),
+            )?;
+            Ok(parse_resource_content(&uri, &result))
+        })
+    }
+
+    fn request(&self, method: &str, params: Value) -> BoxFut<Result<Value, McpError>> {
+        let program = self.program.clone();
+        let child_slot = std::sync::Arc::clone(&self.child);
+        let next_id = std::sync::Arc::clone(&self.next_id);
+        let method = method.to_owned();
+        Box::pin(async move { rpc(&program, &child_slot, &next_id, &method, params) })
+    }
+}
+
+fn rpc(
+    program: &str,
+    child_slot: &Mutex<Option<Child>>,
+    next_id: &AtomicU64,
+    method: &str,
+    params: Value,
+) -> Result<Value, McpError> {
+    let reply = Subprocess::send(program, child_slot, next_id, method, &params)?;
+    match crate::mcp::client::parse_response(&reply) {
+        Ok(crate::mcp::client::McpResponse::Success { result, .. }) => Ok(result),
+        Ok(crate::mcp::client::McpResponse::Failure { error, .. }) => Err(McpError::ToolFailed {
+            name: method.to_owned(),
+            message: error.message,
+        }),
+        Err(error) => Err(McpError::Transport {
+            name: program.to_owned(),
+            reason: format!("the reply to `{method}` could not be read: {error}"),
+        }),
+    }
+}
+
+fn parse_resources(result: &Value) -> Vec<Resource> {
+    result
+        .get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let uri = item.get("uri").and_then(Value::as_str)?;
+            Some(Resource {
+                uri: uri.to_owned(),
+                name: item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(uri)
+                    .to_owned(),
+                description: item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                mime_type: item
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
+fn parse_resource_content(uri: &str, result: &Value) -> crate::mcp::ResourceContent {
+    let contents = result
+        .get("contents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut text = String::new();
+    let mut mime_type = None;
+    for item in contents {
+        if mime_type.is_none() {
+            mime_type = item
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        if let Some(body) = item.get("text").and_then(Value::as_str) {
+            text.push_str(body);
+        } else if let Some(blob) = item.get("blob").and_then(Value::as_str) {
+            text.push_str(&format!(
+                "[binary resource: {} base64 characters; available to programmatic callers]",
+                blob.len()
+            ));
+        }
+    }
+    crate::mcp::ResourceContent {
+        uri: uri.to_owned(),
+        mime_type,
+        text,
     }
 }

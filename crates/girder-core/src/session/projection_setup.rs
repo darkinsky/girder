@@ -13,8 +13,7 @@
 //! # Why one function
 //!
 //! A projection registry is a set, and a set assembled in three places is three sets. One function
-//! means `serve` and a test cannot disagree about what a session's state contains, which is exactly
-//! the drift `docs/port-map.md` exists to catch.
+//! means `serve` and a test cannot disagree about what a session's state contains.
 
 use std::sync::Arc;
 
@@ -51,7 +50,7 @@ pub fn assemble() -> Result<Arc<ProjectionRegistry>, crate::session::projection:
 /// These are the folds whose upstream consumer is the Host itself: a session's state, its stats, its
 /// turn outline, its token measurement, its working directory. A projection whose only reader is a
 /// browser (`turnOutline`'s rail) still belongs here, because the Host serves it; one that needs a
-/// subsystem this build lacks does not, and is named in `docs/final-report.md` instead.
+/// subsystem this build lacks does not.
 #[must_use]
 pub fn base_projections() -> Vec<Arc<dyn crate::session::projection::Projection>> {
     use crate::session::stats_rollup::Untimed;
@@ -65,9 +64,9 @@ pub fn base_projections() -> Vec<Arc<dyn crate::session::projection::Projection>
         // Whole-log turn and step counts with wall times. `Untimed` is the right source here: this
         // build's events carry their own timestamps, and a projection that dated them again would
         // disagree with the log it folded.
-        Arc::new(crate::session::stats_rollup::StatsProjection::new(Arc::new(
-            Untimed,
-        ))),
+        Arc::new(crate::session::stats_rollup::StatsProjection::new(
+            Arc::new(Untimed),
+        )),
         // Every started turn with the seq a jump can page through.
         Arc::new(crate::session::proj_extra::TurnOutlineProjection),
         // The model-list metadata a session carries, so a picker can render a row without reading

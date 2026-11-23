@@ -22,17 +22,17 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::bounded_transport::{FrameKind, Outbound, SendOutcome};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use girder_core::EventBus;
 use girder_core::api::gateway::{
     Connection, ConnectionOutcome, Credential, Peer, PeerDirectory, Rejection,
 };
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -89,7 +89,7 @@ pub enum TransportError {
 pub struct ClientHandle {
     /// This generation's identity.
     pub client_id: String,
-    outbound: mpsc::UnboundedSender<DownlinkFrame>,
+    outbound: Outbound,
     /// Resolutions for waterfalls awaiting a client answer.
     answers: Arc<
         tokio::sync::Mutex<
@@ -115,10 +115,7 @@ impl ClientHandle {
     /// For a caller that owns the write half itself — a test, or a future transport that is not a
     /// WebSocket. The production path constructs the same struct inside [`serve`].
     #[must_use]
-    pub fn test_handle(
-        client_id: impl Into<String>,
-        outbound: mpsc::UnboundedSender<DownlinkFrame>,
-    ) -> Self {
+    pub fn test_handle(client_id: impl Into<String>, outbound: Outbound) -> Self {
         Self {
             client_id: client_id.into(),
             outbound,
@@ -130,7 +127,16 @@ impl ClientHandle {
 
     /// Sends a frame, reporting whether the client is still connected.
     pub fn send(&self, frame: DownlinkFrame) -> bool {
-        self.outbound.send(frame).is_ok()
+        // A full queue drops a notification and keeps the connection. A dropped `ready` or
+        // `waterfall` is different: the client cannot join the generation, or the host waits on an
+        // answer that will never arrive. Those are reported as a closed send so `ask` fails the
+        // call instead of parking it.
+        let kind = FrameKind::of(&frame);
+        match self.outbound.send(frame) {
+            SendOutcome::Queued => true,
+            SendOutcome::Closed => false,
+            SendOutcome::Dropped => !matches!(kind, FrameKind::Ready | FrameKind::Waterfall),
+        }
     }
 
     /// Asks the client to resolve a waterfall, awaiting its answer.
@@ -246,6 +252,12 @@ pub struct RpcServer {
     trusted_origins: Arc<Vec<String>>,
     /// Whether a trusted request with no credential speaks for the local owner.
     local_owner: bool,
+    /// Optional browser frontend served from the router's fallback seat.
+    static_frontend: Option<girder_core::host::webserver::StaticConfig>,
+    /// Optional browser-session authenticator for the frontend index.
+    browser_auth: Option<Arc<crate::BrowserAuth>>,
+    /// Waterfall results shared by the WebSocket event stream and `/api` RPC.
+    event_pending: crate::mux::PendingEvents,
 }
 
 impl RpcServer {
@@ -259,6 +271,9 @@ impl RpcServer {
             directory: None,
             trusted_origins: Arc::new(Vec::new()),
             local_owner: false,
+            static_frontend: None,
+            browser_auth: None,
+            event_pending: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -320,35 +335,219 @@ impl RpcServer {
         self
     }
 
+    /// Serves a built frontend from the router's fallback seat.
+    ///
+    /// Named API routes still win over the fallback. The configured dist root is validated by
+    /// [`girder_core::host::webserver::serve_static`] for every request, so a browser cannot turn
+    /// the SPA entry point into a directory traversal primitive.
+    #[must_use]
+    pub fn with_static_frontend(
+        mut self,
+        config: girder_core::host::webserver::StaticConfig,
+    ) -> Self {
+        self.static_frontend = Some(config);
+        self
+    }
+
+    /// Protects the frontend index with the browser launch-token exchange.
+    #[must_use]
+    pub fn with_browser_auth(mut self, auth: Arc<crate::BrowserAuth>) -> Self {
+        self.browser_auth = Some(auth);
+        self
+    }
+
     /// Builds the axum router.
     ///
     /// The mux route is upstream's exact path; a second WebSocket path would let a client connect to
     /// something that is not the mux and then fail confusingly. The invoke endpoint is HTTP because
     /// upstream's unary calls are, and because a method result is not a stream.
     pub fn router(self) -> Router {
-        let mut router = Router::new()
-            .route(REMOTE_STREAM_MUX_PATH, get(upgrade))
+        let mut router = Router::new().route(REMOTE_STREAM_MUX_PATH, get(upgrade));
+        if self.static_frontend.is_none() {
             // The probe page. Served from the same process as the API so a browser has no second
             // origin to configure, and so opening it proves the server is running.
-            .route(crate::WEB_INDEX_PATH, get(web_index));
+            router = router.route(crate::WEB_INDEX_PATH, get(web_index));
+        }
         if self.remote.is_some() {
-            // The bound the server actually applied before this line was axum's default of 2 MiB -- an accidental ceiling
-            // rather than a configured one. `rpc_limits` documents a `max_request_bytes` and has no caller in this crate,
-            // so a deployment tuning it changed nothing.
             router = router
                 .route(INVOKE_PATH, axum::routing::post(invoke))
                 .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES));
+        }
+        // The browser Connection transport uses one envelope for every `/api/<endpoint>` call.
+        // Keep the older `remote.invoke` shape mounted for existing callers, but reserve the
+        // endpoint namespace so `$events/result` and generated Remote methods share one contract.
+        router = router
+            .route("/api/{*endpoint}", axum::routing::post(rpc_call))
+            .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES));
+        if self.static_frontend.is_some() {
+            router = router.fallback(static_frontend);
         }
         router.with_state(self)
     }
 }
 
-/// The largest request body the invoke endpoint accepts.
+/// The largest request body the invoke endpoint accepts, and the largest WebSocket message.
 ///
-/// Chosen to match what `api::rpc_limits::Quota::default` describes. A tool call carries its arguments inline and the largest
-/// one this build produces is a `write` of a source file, so a megabyte is generous for the protocol and small enough that
-/// a hostile body is refused before it is parsed.
+/// A tool call carries its arguments inline. Four mebibytes covers a source-file `write` and still
+/// refuses a hostile body before it is parsed. The same number is the WebSocket frame ceiling and
+/// the per-connection [`girder_core::Quota::max_request_bytes`].
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// How many downlink frames one connection may have queued.
+///
+/// Past this the producer drops the frame and counts it. `ready` and `waterfall` are treated as a
+/// failed send so the host does not wait on a frame the socket will never write.
+const OUTBOUND_CAPACITY: usize = 256;
+
+/// The admission policy for one WebSocket.
+///
+/// The bucket allows a burst of one second and then refills at the same rate. The reader is the
+/// only caller, so the in-flight ceiling bounds work that is still inside `deliver` or a subscribe
+/// dispatch, not messages sitting in a process-wide queue.
+fn connection_quota() -> girder_core::Quota {
+    girder_core::Quota {
+        in_flight: 32,
+        per_second: 256,
+        max_request_bytes: MAX_REQUEST_BYTES,
+    }
+}
+
+/// Handles the envelope used by the upstream Connection RPC transport.
+async fn rpc_call(
+    State(server): State<RpcServer>,
+    headers: HeaderMap,
+    axum::extract::Path(endpoint): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    if endpoint == "remote.invoke" && server.remote.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(object) = body.as_object() else {
+        return rpc_error_response(
+            "",
+            "gateway/bad-request",
+            "client-request must be an object",
+        );
+    };
+    let rpc_id = object
+        .get("rpcId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let method = object
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if object.get("type").and_then(serde_json::Value::as_str) != Some("client-request")
+        || rpc_id.is_empty()
+        || method != endpoint
+        || !object.contains_key("payload")
+    {
+        return rpc_error_response(
+            rpc_id,
+            "gateway/bad-request",
+            "invalid client-request envelope",
+        );
+    }
+    let payload = object
+        .get("payload")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    if endpoint == girder_core::api::gateway::EVENTS_RESULT_ENDPOINT {
+        if let Some(directory) = &server.directory {
+            let peer = match admit(directory, &server, &headers) {
+                Ok(peer) => peer,
+                Err(rejection) => {
+                    return rpc_error_response(
+                        rpc_id,
+                        "gateway/access-denied",
+                        &format!("{rejection:?}"),
+                    );
+                }
+            };
+            if !peer.principal().is_owner() {
+                return rpc_error_response(
+                    rpc_id,
+                    "gateway/invocation-unavailable",
+                    "only the owner Peer may answer forwarded Remote events",
+                );
+            }
+        }
+        return match crate::mux::settle_result(&server.event_pending, &payload) {
+            Ok(()) => rpc_success_response(rpc_id, serde_json::Value::Null),
+            Err(error) => rpc_error_response(rpc_id, "gateway/protocol", &error),
+        };
+    }
+
+    let Some(remote) = &server.remote else {
+        return rpc_error_response(
+            rpc_id,
+            "gateway/service-unavailable",
+            "this server exposes no Remote methods",
+        );
+    };
+    let (namespace, method_name) = match endpoint.split_once('/') {
+        Some((namespace, method)) if !namespace.is_empty() && !method.is_empty() => {
+            (namespace, method)
+        }
+        _ => {
+            return rpc_error_response(
+                rpc_id,
+                "gateway/bad-request",
+                "Remote endpoint must be namespace/method",
+            );
+        }
+    };
+    let call = match &server.directory {
+        None => girder_core::RemoteCall {
+            args: payload,
+            peer: String::new(),
+        },
+        Some(directory) => {
+            let peer = match admit(directory, &server, &headers) {
+                Ok(peer) => peer,
+                Err(rejection) => {
+                    return rpc_error_response(
+                        rpc_id,
+                        "gateway/access-denied",
+                        &format!("{rejection:?}"),
+                    );
+                }
+            };
+            match girder_core::api::gateway::admitted_call(&peer, payload) {
+                Ok(call) => call,
+                Err(error) => {
+                    return rpc_error_response(rpc_id, "gateway/access-denied", &error.to_string());
+                }
+            }
+        }
+    };
+    match remote.dispatch(namespace, method_name, call).await {
+        Ok(value) => rpc_success_response(rpc_id, value),
+        Err(error) => rpc_error_response(rpc_id, error.code(), &error.to_string()),
+    }
+}
+
+fn rpc_success_response(rpc_id: &str, value: serde_json::Value) -> Response {
+    axum::Json(serde_json::json!({
+        "type": "server-response",
+        "rpcId": rpc_id,
+        "result": {"ok": true, "value": value},
+    }))
+    .into_response()
+}
+
+fn rpc_error_response(rpc_id: &str, code: &str, message: &str) -> Response {
+    axum::Json(serde_json::json!({
+        "type": "server-response",
+        "rpcId": rpc_id,
+        "result": {
+            "ok": false,
+            "error": {"code": code, "message": message, "details": {}},
+        },
+    }))
+    .into_response()
+}
 
 /// Serves the embedded probe page.
 ///
@@ -359,6 +558,144 @@ async fn web_index() -> impl axum::response::IntoResponse {
         [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
         crate::INDEX_HTML,
     )
+}
+
+/// Answers a frontend fallback request through the same static-serving contract used by the host
+/// implementation. The index gets the readiness marker and a relative base so a dist bundle works
+/// at both `/` and a mounted path.
+async fn static_frontend(
+    State(server): State<RpcServer>,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(config) = server.static_frontend.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Some(auth) = server.browser_auth.as_ref()
+        && is_static_index_path(config, request.uri().path())
+    {
+        let target = request
+            .uri()
+            .path_and_query()
+            .map_or("/", axum::http::uri::PathAndQuery::as_str);
+        match auth.authorize_index(
+            request.method(),
+            target,
+            request.headers(),
+            false,
+            now_millis(),
+        ) {
+            crate::IndexAuth::Serve => {}
+            crate::IndexAuth::Redirect {
+                location,
+                set_cookie,
+            } => {
+                let mut response = Response::new(axum::body::Body::empty());
+                *response.status_mut() = StatusCode::SEE_OTHER;
+                let headers = response.headers_mut();
+                headers.insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-store"),
+                );
+                headers.insert(
+                    axum::http::header::LOCATION,
+                    axum::http::HeaderValue::from_static(location),
+                );
+                if let Ok(value) = set_cookie.parse() {
+                    headers.insert(axum::http::header::SET_COOKIE, value);
+                }
+                return response;
+            }
+            crate::IndexAuth::Unauthorized { body } => {
+                let mut response = Response::new(axum::body::Body::from(body));
+                *response.status_mut() = StatusCode::UNAUTHORIZED;
+                let headers = response.headers_mut();
+                headers.insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-store"),
+                );
+                headers.insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+                );
+                return response;
+            }
+        }
+    }
+    let if_none_match = request
+        .headers()
+        .get("if-none-match")
+        .and_then(|value| value.to_str().ok());
+    let static_request = girder_core::host::webserver::StaticRequest {
+        method: request.method().as_str(),
+        path: request.uri().path(),
+        if_none_match,
+    };
+    let render_index = |html: &str| {
+        let rendered = girder_core::host::webserver::render_index_injections(html, &[]);
+        rendered.replacen("<head>", "<head><base href=\"./\">", 1)
+    };
+    match girder_core::host::webserver::serve_static(&static_request, config, &render_index) {
+        Ok(static_response) => static_response_response(static_response),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            error.to_string(),
+        )
+            .into_response(),
+    }
+}
+
+fn is_static_index_path(config: &girder_core::host::webserver::StaticConfig, path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
+    let Ok(relative) = config.dist_index.strip_prefix(&config.dist_root) else {
+        return false;
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    format!("/{relative}") == path
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
+}
+
+/// Converts the pure static response into an axum response without dropping cache validators.
+fn static_response_response(
+    static_response: girder_core::host::webserver::StaticResponse,
+) -> Response {
+    let mut response = Response::new(axum::body::Body::from(static_response.body));
+    *response.status_mut() =
+        StatusCode::from_u16(static_response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let headers = response.headers_mut();
+    if let Some(content_type) = static_response.content_type {
+        if let Ok(value) = content_type.parse() {
+            headers.insert(axum::http::header::CONTENT_TYPE, value);
+        }
+    }
+    if let Some(cache_control) = static_response.cache_control {
+        if let Ok(value) = cache_control.parse() {
+            headers.insert(axum::http::header::CACHE_CONTROL, value);
+        }
+    }
+    if let Some(etag) = static_response.etag {
+        if let Ok(value) = etag.parse() {
+            headers.insert(axum::http::header::ETAG, value);
+        }
+    }
+    if let Some(allow) = static_response.allow {
+        if let Ok(value) = allow.parse() {
+            headers.insert(axum::http::header::ALLOW, value);
+        }
+    }
+    response
 }
 
 /// HTTP endpoint for unary Remote calls.
@@ -630,25 +967,48 @@ async fn upgrade(
     ws: WebSocketUpgrade,
     State(server): State<RpcServer>,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Response {
     let connection = match admit_socket(&server, &headers) {
         Ok(connection) => connection,
         Err(status) => return status.into_response(),
     };
-    ws.on_upgrade(move |socket| async move {
-        let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-        let client_id = format!("gen-{generation}");
-        let state = Arc::new(SessionState::new(client_id, Arc::clone(&server.bus)));
-        serve_full(
-            socket,
-            state,
-            server.watch.as_ref().clone(),
-            server.remote.clone(),
-            connection,
-        )
-        .await;
-    })
-    .into_response()
+    // The upstream stream mux is the protocol on this path. The old event generation remains
+    // available only for callers that explicitly opt into it while local compatibility consumers
+    // migrate; browser, Node, and other clients all get the standard mux by default.
+    let legacy = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .any(|part| part == "legacy=1");
+    ws.max_message_size(MAX_REQUEST_BYTES)
+        .max_frame_size(MAX_REQUEST_BYTES)
+        .on_upgrade(move |socket| async move {
+            if !legacy {
+                crate::mux::serve(
+                    socket,
+                    Arc::clone(&server.bus),
+                    Arc::clone(&server.watch),
+                    server.remote.clone(),
+                    connection,
+                    Arc::clone(&server.event_pending),
+                )
+                .await;
+            } else {
+                let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+                let client_id = format!("gen-{generation}");
+                let state = Arc::new(SessionState::new(client_id, Arc::clone(&server.bus)));
+                serve_full(
+                    socket,
+                    state,
+                    server.watch.as_ref().clone(),
+                    server.remote.clone(),
+                    connection,
+                )
+                .await;
+            }
+        })
+        .into_response()
 }
 
 /// Runs one connection to completion.
@@ -681,7 +1041,7 @@ async fn serve_full(
 ) {
     use futures::stream::StreamExt as _;
 
-    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<DownlinkFrame>();
+    let (outbound_tx, mut outbound_rx) = Outbound::new(OUTBOUND_CAPACITY);
     let (mut sink, mut stream) = socket.split();
 
     let handle = ClientHandle {
@@ -734,13 +1094,22 @@ async fn serve_full(
         })
     };
 
-    // Read uplinks until the socket closes.
+    // Read uplinks until the socket closes. One limiter per socket: a client that spends its
+    // quota refuses only itself.
     {
         use futures::StreamExt as _;
+        let mut limiter = girder_core::Limiter::new(connection_quota(), std::time::Instant::now());
         while let Some(message) = stream.next().await {
             let Ok(message) = message else { break };
             let Message::Text(text) = message else {
                 continue;
+            };
+            let permit = match limiter.admit(std::time::Instant::now(), text.len()) {
+                Ok(permit) => permit,
+                Err(refusal) => {
+                    tracing::debug!(%refusal, "refusing uplink");
+                    continue;
+                }
             };
             // A subscription control is recognised by its `type` before the result parse: both are
             // tagged, and attempting the result shape first would log every `subscribe` as garbage.
@@ -752,17 +1121,20 @@ async fn serve_full(
                 if let (Some(control), Some(hub)) = (control, hub.as_ref()) {
                     hub.handle(control);
                 }
+                limiter.release(permit);
                 continue;
             }
             let Ok(result) = serde_json::from_str::<RemoteEventResult>(&text) else {
                 // An unparseable uplink is not fatal: the client may be speaking a newer protocol.
                 // Dropping the frame keeps the generation alive for everything else.
                 tracing::debug!(frame = %text, "ignoring unparseable uplink frame");
+                limiter.release(permit);
                 continue;
             };
             if let Err(error) = handle.deliver(result).await {
                 tracing::debug!(%error, "ignoring uplink result");
             }
+            limiter.release(permit);
         }
     }
 
@@ -819,11 +1191,7 @@ pub async fn serve_with(
     remote: Option<Arc<girder_core::RemoteRegistry>>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
-    let mut server = RpcServer::new(bus).watching(watch);
-    if let Some(remote) = remote {
-        server = server.with_remote(remote);
-    }
-    serve_server(listener, server, cancel).await
+    serve_with_options(listener, bus, watch, remote, None, None, None, cancel).await
 }
 
 /// Serves with peer identity enforced.
@@ -844,11 +1212,47 @@ pub async fn serve_with_peers(
     directory: Arc<girder_core::api::gateway::PeerDirectory>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
-    let mut server = RpcServer::new(bus)
-        .watching(watch)
-        .with_peer_directory(directory);
+    serve_with_options(
+        listener,
+        bus,
+        watch,
+        remote,
+        Some(directory),
+        None,
+        None,
+        cancel,
+    )
+    .await
+}
+
+/// Serves the mux, Remote methods, an optional admitted-peer directory, and an optional built
+/// frontend from one listener.
+///
+/// This is the composition entry point used by the web profile. The older [`serve_with`] and
+/// [`serve_with_peers`] functions remain as convenience wrappers for deployments without a dist
+/// directory.
+pub async fn serve_with_options(
+    listener: tokio::net::TcpListener,
+    bus: Arc<EventBus>,
+    watch: Vec<&'static str>,
+    remote: Option<Arc<girder_core::RemoteRegistry>>,
+    directory: Option<Arc<girder_core::api::gateway::PeerDirectory>>,
+    static_frontend: Option<girder_core::host::webserver::StaticConfig>,
+    browser_auth: Option<Arc<crate::BrowserAuth>>,
+    cancel: CancellationToken,
+) -> std::io::Result<()> {
+    let mut server = RpcServer::new(bus).watching(watch);
     if let Some(remote) = remote {
         server = server.with_remote(remote);
+    }
+    if let Some(directory) = directory {
+        server = server.with_peer_directory(directory);
+    }
+    if let Some(static_frontend) = static_frontend {
+        server = server.with_static_frontend(static_frontend);
+    }
+    if let Some(browser_auth) = browser_auth {
+        server = server.with_browser_auth(browser_auth);
     }
     serve_server(listener, server, cancel).await
 }

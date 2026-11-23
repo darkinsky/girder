@@ -327,3 +327,115 @@ fn summary_notice(
         "[... {pruned_lines} of {total_lines} lines and {pruned_chars} of {total_chars} characters pruned ...]"
     )
 }
+
+/// The marker upstream substitutes for a removed middle.
+pub const PRUNE_MARKER: &str = "\n\n[... tool result middle pruned ...]\n\n";
+
+/// Characters a tool result may contain before its middle is replaced.
+pub const THRESHOLD_CHARS: usize = 8192;
+
+/// Characters kept from the start of an oversized result.
+pub const HEAD_CHARS: usize = 4096;
+
+/// Characters kept from the end of an oversized result.
+pub const TAIL_CHARS: usize = 1024;
+
+/// Replaces the middle of an oversized tool result, leaving other blocks in place.
+///
+/// A result within [`THRESHOLD_CHARS`] is returned unchanged. The session log keeps the original;
+/// this is only what the model is shown. Counting is by Unicode scalar, so a cut never splits a
+/// character.
+#[must_use]
+pub fn prune_blocks(blocks: &[crate::llm::ContentBlock]) -> Vec<crate::llm::ContentBlock> {
+    let total = text_chars(blocks);
+    if total <= THRESHOLD_CHARS {
+        return blocks.to_vec();
+    }
+    let removed_start = HEAD_CHARS;
+    let removed_end = total.saturating_sub(TAIL_CHARS);
+    let mut pruned = Vec::new();
+    let mut consumed = 0usize;
+    let mut marker_inserted = false;
+    for block in blocks {
+        let crate::llm::ContentBlock::Text { text } = block else {
+            pruned.push(block.clone());
+            continue;
+        };
+        let points: Vec<char> = text.chars().collect();
+        let block_start = consumed;
+        let block_end = block_start + points.len();
+        let head_end = points.len().min(removed_start.saturating_sub(block_start));
+        let tail_start = points.len().min(removed_end.saturating_sub(block_start));
+        let intersects = block_start < removed_end && block_end > removed_start;
+        let marker = if intersects && !marker_inserted {
+            marker_inserted = true;
+            PRUNE_MARKER
+        } else {
+            ""
+        };
+        let mut kept = String::new();
+        kept.extend(points.iter().take(head_end));
+        kept.push_str(marker);
+        kept.extend(points.iter().skip(tail_start));
+        if !kept.is_empty() {
+            pruned.push(crate::llm::ContentBlock::Text { text: kept });
+        }
+        consumed = block_end;
+    }
+    if !marker_inserted {
+        return blocks.to_vec();
+    }
+    let after = text_chars(&pruned);
+    if after > THRESHOLD_CHARS || after >= total {
+        return blocks.to_vec();
+    }
+    pruned
+}
+
+fn text_chars(blocks: &[crate::llm::ContentBlock]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            crate::llm::ContentBlock::Text { text } => text.chars().count(),
+            _ => 0,
+        })
+        .sum()
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::prune_blocks;
+    use crate::llm::ContentBlock;
+
+    #[test]
+    fn a_short_result_is_kept_whole() {
+        let blocks = vec![ContentBlock::Text {
+            text: "ok".to_owned(),
+        }];
+        assert_eq!(prune_blocks(&blocks), blocks);
+    }
+
+    #[test]
+    fn an_oversized_result_keeps_its_ends_and_marks_the_middle() {
+        let mut text = "a".repeat(9_000);
+        text.push_str("TAIL-END!!");
+        let blocks = vec![
+            ContentBlock::Text { text },
+            ContentBlock::Reasoning {
+                text: "kept".to_owned(),
+            },
+        ];
+        let pruned = prune_blocks(&blocks);
+        let ContentBlock::Text { text } = &pruned[0] else {
+            panic!("expected text, got {pruned:?}");
+        };
+        assert!(text.starts_with("aaaa"), "{text}");
+        assert!(
+            text.contains("[... tool result middle pruned ...]"),
+            "{text}"
+        );
+        assert!(text.ends_with("TAIL-END!!"), "{text}");
+        assert!(text.chars().count() < 9_010, "{}", text.chars().count());
+        assert!(matches!(pruned[1], ContentBlock::Reasoning { .. }));
+    }
+}

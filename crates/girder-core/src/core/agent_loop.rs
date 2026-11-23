@@ -27,16 +27,16 @@ use futures::Stream;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::events::EventBus;
-use crate::llm::{
-    AssembleError, AssistantMessage, ContentBlock, FinishReason, LlmProvider, LlmRequest, Message,
-    Role, StreamChunk,
-};
 use crate::core::scope::BoxFut;
-use crate::session::{Session, SessionEvent};
 use crate::core::tools::{
     PostExecuteArgs, PostToolDecision, PreToolDecision, ToolDefinition, ToolExecution,
     ToolPostExecute, ToolPreExecute, ToolRegistryView, ToolResult, ToolRunContext,
 };
+use crate::llm::{
+    AssembleError, AssistantMessage, ContentBlock, FinishReason, LlmProvider, LlmRequest, Message,
+    Role, StreamChunk,
+};
+use crate::session::{Session, SessionEvent};
 
 /// One observable step of the loop.
 #[derive(Clone, Debug)]
@@ -245,6 +245,21 @@ pub struct LoopContext {
     /// Sessions `exit_plan_mode` can write, when this deployment registered the tool.
     pub plan_sessions: Option<std::sync::Arc<crate::core::plan_mode::PlanSessions>>,
 
+    /// Sessions the team task tools write, when this deployment registered them.
+    pub team_sessions: Option<std::sync::Arc<crate::team::tools::TeamSessions>>,
+
+    /// Messages the child already knows, for a fork of a parent conversation.
+    ///
+    /// Empty for a normal turn, which reads its own log. A fork does not replay the child's empty
+    /// session; it starts from the parent's completed turns.
+    pub prior_messages: Vec<Message>,
+
+    /// The table a server publishes this turn into, so a tool can find the conversation it belongs to.
+    ///
+    /// A one-shot prompt captures its context when the tool is built. A server builds the tool once
+    /// and starts many turns, so the tool looks the turn up here instead.
+    pub live_parents: Option<Arc<LiveParents>>,
+
     /// The consecutive identical tool calls of this conversation.
     pub repeat_chain: std::sync::Mutex<crate::core::repeat_reminder::Chain>,
 
@@ -418,6 +433,9 @@ impl LoopContext {
             tool_tracker: None,
             tool_budget: None,
             plan_sessions: None,
+            team_sessions: None,
+            prior_messages: Vec::new(),
+            live_parents: None,
             repeat_chain: std::sync::Mutex::new(crate::core::repeat_reminder::Chain::new()),
             refine_titles: false,
             tool_cache: None,
@@ -459,7 +477,10 @@ impl LoopContext {
 
     /// Sets the approver an `Ask` is resolved through.
     #[must_use]
-    pub fn with_approver(mut self, approver: Arc<dyn crate::interaction::approval::Approver>) -> Self {
+    pub fn with_approver(
+        mut self,
+        approver: Arc<dyn crate::interaction::approval::Approver>,
+    ) -> Self {
         self.approver = Some(approver);
         self
     }
@@ -479,9 +500,9 @@ impl LoopContext {
     /// be two answers to one question.
     #[must_use]
     pub fn with_tool_limits(mut self, limits: crate::core::tool_limits::Limit) -> Self {
-        self.tool_tracker = Some(std::sync::Mutex::new(crate::core::tool_limits::Tracker::new(
-            limits,
-        )));
+        self.tool_tracker = Some(std::sync::Mutex::new(
+            crate::core::tool_limits::Tracker::new(limits),
+        ));
         self.tool_limits = Some(limits);
         self
     }
@@ -805,6 +826,72 @@ async fn goal_continuation(
     Some(message)
 }
 
+/// Turns that are inside `run` right now, keyed by agent id.
+///
+/// A server registers `subagent` once. The tool then has to find the turn that called it, which is
+/// this map. A prompt that captured its context at startup does not need an entry.
+#[derive(Default)]
+pub struct LiveParents {
+    parents: std::sync::Mutex<std::collections::BTreeMap<String, Arc<LoopContext>>>,
+}
+
+/// Removes one published turn when the turn ends, including when the task is dropped.
+pub struct ParentLease {
+    parents: Arc<LiveParents>,
+    id: String,
+}
+
+impl Drop for ParentLease {
+    fn drop(&mut self) {
+        self.parents.remove(&self.id);
+    }
+}
+
+impl LiveParents {
+    /// An empty table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Publishes `context` under `id` until the returned lease is dropped.
+    #[must_use]
+    pub fn publish(
+        self: &Arc<Self>,
+        id: impl Into<String>,
+        context: Arc<LoopContext>,
+    ) -> ParentLease {
+        let id = id.into();
+        self.insert(id.clone(), context);
+        ParentLease {
+            parents: Arc::clone(self),
+            id,
+        }
+    }
+
+    /// One published turn.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<Arc<LoopContext>> {
+        self.lock().get(id).cloned()
+    }
+
+    fn insert(&self, id: String, context: Arc<LoopContext>) {
+        self.lock().insert(id, context);
+    }
+
+    fn remove(&self, id: &str) {
+        self.lock().remove(id);
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Arc<LoopContext>>> {
+        self.parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Runs one conversation turn by turn.
 ///
 /// Returns a stream rather than a future; see the module docs.
@@ -815,10 +902,32 @@ pub fn run(
 ) -> impl Stream<Item = Result<LoopStep, LoopError>> + Send {
     let prompt = prompt.into();
     async_stream::stream! {
-        let mut messages = vec![Message::new(Role::User, vec![ContentBlock::Text { text: prompt.clone() }])];
+        let mut messages = if !context.prior_messages.is_empty() {
+            context.prior_messages.clone()
+        } else {
+            match context.session.replay().await {
+                Ok(events) => crate::session::model_messages(&events),
+                Err(_) => Vec::new(),
+            }
+        };
+        // `record_prompt` means this text is not in the log yet. A runtime that already wrote it
+        // leaves the flag clear, and the replay above already ends with that message.
+        if context.record_prompt || messages.is_empty() {
+            messages.push(Message::new(
+                Role::User,
+                vec![ContentBlock::Text { text: prompt.clone() }],
+            ));
+        }
         reset_repeat(&context);
         let _plan_binding = context.plan_sessions.as_ref().map(|gate| {
             crate::core::plan_mode::PlanBinding::bind(
+                std::sync::Arc::clone(gate),
+                context.agent_id.as_str(),
+                std::sync::Arc::clone(&context.session),
+            )
+        });
+        let _team_binding = context.team_sessions.as_ref().map(|gate| {
+            crate::team::tools::TeamBinding::bind(
                 std::sync::Arc::clone(gate),
                 context.agent_id.as_str(),
                 std::sync::Arc::clone(&context.session),
@@ -836,7 +945,14 @@ pub fn run(
             } else {
                 command.rest
             };
-            messages[0] = Message::new(Role::User, vec![ContentBlock::Text { text }]);
+            if let Some(last) = messages.last_mut() {
+                *last = Message::new(Role::User, vec![ContentBlock::Text { text }]);
+            }
+        }
+        if let Some(command) = crate::core::commands::parse(&prompt) {
+            let text = crate::core::commands::execute(&context, command).await;
+            yield Ok(LoopStep::Chunk(crate::llm::StreamChunk::TextDelta { index: 0, text }));
+            return;
         }
 
         // The first user message is durable before any turn starts, unless the caller already
@@ -897,7 +1013,10 @@ pub fn run(
                     context.next_message_id(),
                     crate::session::message::Role::User,
                     crate::session::message::MessageSource::User { form: None },
-                    messages[0].content.clone(),
+                    messages
+                        .last()
+                        .map(|message| message.content.clone())
+                        .unwrap_or_default(),
                 );
                 if let Err(error) = context
                     .session
@@ -1228,6 +1347,46 @@ fn over_budget(
 // `async_stream` body, and a `yield` cannot cross a function boundary. Splitting the surrounding code further would move
 // the model call away from the chunk loop it belongs to.
 #[allow(clippy::too_many_lines)]
+fn recorded_offloads(events: &[SessionEvent]) -> std::collections::HashSet<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::ImageOffload { attachments } => Some(attachments.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// How many oldest images a provider failure asked to drop.
+///
+/// The code is upstream's `IMAGE_OFFLOAD_REQUIRED`. A count rides along as `offload_images=N` when
+/// the provider named one; a bare code still drops the oldest image so the retry can make progress.
+fn image_offload_count(error: &crate::llm::LlmError) -> Option<usize> {
+    let crate::llm::LlmError::Provider(message) = error else {
+        return None;
+    };
+    if !message.contains(crate::llm::extra::IMAGE_OFFLOAD_REQUIRED) {
+        return None;
+    }
+    for marker in ["offload_images=", "offload_images:"] {
+        let Some(rest) = message.split(marker).nth(1) else {
+            continue;
+        };
+        let digits: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|char| char.is_ascii_digit())
+            .collect();
+        if let Ok(count) = digits.parse::<usize>() {
+            if count > 0 {
+                return Some(count);
+            }
+        }
+    }
+    Some(1)
+}
+
 fn turn_stream<'a>(
     context: &'a Arc<LoopContext>,
     messages: &'a mut Vec<Message>,
@@ -1252,30 +1411,91 @@ fn turn_stream<'a>(
             return;
         }
 
-        // A route that cannot see images must be told the image is there and omitted, rather than
-        // handed a block it will silently drop. `project_images_for_text_model` does exactly that
-        // replacement, and it is a no-op on a route that accepts images.
-        let projected = if context.accepts_images {
-            messages.clone()
-        } else {
-            crate::session::content_projection::project_images_for_text_model(messages)
-        };
-        let mut request = LlmRequest::new(context.model.clone(), projected)
-            .with_tools(tool_schemas);
-        if crate::core::plan_mode::session_is_planning(context.session.as_ref()).await {
-            request = request.with_system_prompt(crate::core::plan_mode::SECTION);
-        }
-        // The logged prefix has to be durable before the provider is asked. A failed flush stops
-        // the request: continuing would spend a model call the log cannot explain after a crash.
-        if let Err(error) = context.session.flush().await {
-            yield Err(LoopError::Session(error));
-            return;
-        }
-        let stream = match context.provider.stream(request, cancel.clone()).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                yield Err(LoopError::Llm(error));
+        // A recorded offload stays in force for every later request. A provider that answers
+        // `IMAGE_OFFLOAD_REQUIRED` drops the oldest remaining images once and is asked again.
+        let mut offload_attempted = false;
+        let stream = loop {
+            let recorded = match context.session.replay().await {
+                Ok(events) => recorded_offloads(&events),
+                Err(_) => std::collections::HashSet::new(),
+            };
+            let mut projected =
+                crate::session::content_projection::hide_offloaded_images(messages, &recorded);
+            // A route that cannot see images must be told the image is there and omitted, rather than
+            // handed a block it will silently drop.
+            if !context.accepts_images {
+                projected =
+                    crate::session::content_projection::project_images_for_text_model(&projected);
+            }
+            let mut request = LlmRequest::new(context.model.clone(), projected)
+                .with_tools(tool_schemas.clone());
+            let planning =
+                crate::core::plan_mode::session_is_planning(context.session.as_ref()).await;
+            let team = match context.session.replay().await {
+                Ok(events) => crate::team::agent_teams::is_enabled(&events),
+                Err(_) => false,
+            };
+            let mut guidance = String::new();
+            if planning {
+                guidance.push_str(crate::core::plan_mode::SECTION);
+            }
+            if team {
+                if !guidance.is_empty() {
+                    guidance.push_str("\n\n");
+                }
+                guidance.push_str(crate::team::tools::TEAM_POLICY);
+            }
+            if !guidance.is_empty() {
+                request = request.with_system_prompt(guidance);
+            }
+            // The logged prefix has to be durable before the provider is asked. A failed flush stops
+            // the request: continuing would spend a model call the log cannot explain after a crash.
+            if let Err(error) = context.session.flush().await {
+                yield Err(LoopError::Session(error));
                 return;
+            }
+            if cancel.is_cancelled() {
+                yield Err(LoopError::Cancelled);
+                return;
+            }
+            match context.provider.stream(request, cancel.clone()).await {
+                Ok(stream) => {
+                    // A provider may return successfully after cancellation when its own future
+                    // cannot observe the token while waiting for a response. Do not turn that
+                    // late response into a successful turn.
+                    if cancel.is_cancelled() {
+                        yield Err(LoopError::Cancelled);
+                        return;
+                    }
+                    break stream;
+                }
+                Err(error) if !offload_attempted => {
+                    let Some(count) = image_offload_count(&error) else {
+                        yield Err(LoopError::Llm(error));
+                        return;
+                    };
+                    offload_attempted = true;
+                    let removed =
+                        crate::session::content_projection::offload_oldest_images(messages, count);
+                    if removed.is_empty() {
+                        yield Err(LoopError::Llm(error));
+                        return;
+                    }
+                    if let Err(error) = context
+                        .session
+                        .append(SessionEvent::ImageOffload {
+                            attachments: removed,
+                        })
+                        .await
+                    {
+                        yield Err(LoopError::Session(error));
+                        return;
+                    }
+                }
+                Err(error) => {
+                    yield Err(LoopError::Llm(error));
+                    return;
+                }
             }
         };
 
@@ -1489,6 +1709,9 @@ fn tool_calls<'a>(
                 blocks
             };
 
+            // The log and the person keep the full result. The model sees the same head-and-tail
+            // cut a replay applies, so a later step and a later turn agree.
+            let shown = crate::core::tool_result_pruning::prune_blocks(&blocks);
             let _ = context
                 .session
                 .append(SessionEvent::ToolResult {
@@ -1506,7 +1729,7 @@ fn tool_calls<'a>(
             // A tool message records which call it answers. Without the call id the provider cannot
             // emit a `tool_result` block, and the API rejects the following request: every
             // `tool_use` must be answered by the very next message.
-            messages.push(Message::tool_result(id.clone(), result.content));
+            messages.push(Message::tool_result(id.clone(), shown));
             if let Some(reminder) = note_repeat(&context, name, arguments) {
                 reminders.push(reminder);
             }
@@ -1547,7 +1770,9 @@ fn decide_by_rules(
     };
     match decision.action {
         crate::interaction::approval_rules::Action::Allow => PreToolDecision::Allow,
-        crate::interaction::approval_rules::Action::Deny => PreToolDecision::Deny { reason: question },
+        crate::interaction::approval_rules::Action::Deny => {
+            PreToolDecision::Deny { reason: question }
+        }
         crate::interaction::approval_rules::Action::Ask => PreToolDecision::Ask { question },
     }
 }
@@ -1577,9 +1802,9 @@ async fn ask_approver(
     };
     match approver.ask(request).await {
         Ok(crate::interaction::approval::Decision::Approved { .. }) => Ok(()),
-        Ok(crate::interaction::approval::Decision::Denied { .. }) => Err(crate::core::tools::ToolResult::error(
-            format!("`{tool}` was not approved: {question}"),
-        )),
+        Ok(crate::interaction::approval::Decision::Denied { .. }) => Err(
+            crate::core::tools::ToolResult::error(format!("`{tool}` was not approved: {question}")),
+        ),
         // A timed-out or failed approval is not consent. Treating "nobody answered" as yes is the one reading that
         // cannot be undone.
         Err(error) => Err(crate::core::tools::ToolResult::error(format!(
@@ -1787,9 +2012,10 @@ pub async fn dispatch(
         .await;
 
     let outside_granted = match decision {
-        PreToolDecision::Allow => context.permissions.as_ref().is_some_and(|state| {
-            state.knobs().sandbox == crate::shell::SandboxMode::Full
-        }),
+        PreToolDecision::Allow => context
+            .permissions
+            .as_ref()
+            .is_some_and(|state| state.knobs().sandbox == crate::shell::SandboxMode::Full),
         PreToolDecision::Deny { reason } => {
             return Ok(ToolResult::error(format!(
                 "tool `{}` denied: {reason}",
@@ -1823,15 +2049,14 @@ pub async fn dispatch(
     }
     let executing_started = girder_core::now_millis();
     // The execute waterfall wraps the body, and the deadline wraps that.
-    let Some(result) =
-        run_with_deadline(
-            context,
-            &execution,
-            Arc::clone(&tool),
-            cancel.clone(),
-            outside_granted,
-        )
-        .await
+    let Some(result) = run_with_deadline(
+        context,
+        &execution,
+        Arc::clone(&tool),
+        cancel.clone(),
+        outside_granted,
+    )
+    .await
     else {
         // The deadline fired after the body had started, so the tool may have changed something.
         // `stopped_message` derives whether a retry is safe from the tool's idempotency and says so;
@@ -1839,10 +2064,7 @@ pub async fn dispatch(
         // enough: the kind without the advice lets a model duplicate a side effect, and the advice
         // without the identity is a sentence no client can branch on.
         return Ok(crate::core::ask::to_tool_result(
-            crate::core::ask::aborted_outcome_advising(
-                None,
-                &stopped_message(&execution.name),
-            ),
+            crate::core::ask::aborted_outcome_advising(None, &stopped_message(&execution.name)),
         ));
     };
 
@@ -1921,9 +2143,10 @@ async fn run_body(
     // Checked before parsing, not after: a hundred-megabyte argument string is the attack, and parsing it to discover
     // that is doing the work the check exists to avoid. The total is bounded first because it is the only check that
     // can be made without allocating, and every check after it then runs on bounded input.
-    if let Some(violation) =
-        crate::core::argument_limits::check(&crate::core::argument_limits::defaults(), &execution.arguments)
-    {
+    if let Some(violation) = crate::core::argument_limits::check(
+        &crate::core::argument_limits::defaults(),
+        &execution.arguments,
+    ) {
         return ToolResult::error(violation.explain());
     }
 
@@ -1989,7 +2212,8 @@ impl LoopContext {
         let value = self
             .message_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::util::brand::MessageId::new(format!("msg-{value}"))
-            .unwrap_or_else(|_| crate::util::brand::MessageId::new("msg-0").expect("constant is valid"))
+        crate::util::brand::MessageId::new(format!("msg-{value}")).unwrap_or_else(|_| {
+            crate::util::brand::MessageId::new("msg-0").expect("constant is valid")
+        })
     }
 }

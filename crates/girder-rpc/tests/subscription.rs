@@ -90,7 +90,7 @@ async fn start_server_with(remote: Arc<RemoteRegistry>) -> (String, Cancellation
             .await;
     });
 
-    (format!("ws://{address}/api/remote.mux"), cancel)
+    (format!("ws://{address}/api/remote.mux?legacy=1"), cancel)
 }
 
 /// Connects and reads past the `ready` frame, which every generation starts with.

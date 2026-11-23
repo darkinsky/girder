@@ -7,10 +7,10 @@
 //!
 //! # Why the id is minted here
 //!
-//! [`MemoryStore::put`] takes the id from its caller, so the caller decides identity. Content hashing
-//! would deduplicate identical bytes, which sounds attractive until two uploads of one screenshot
-//! collapse into one id and a later overwrite silently changes what an earlier reference means. This
-//! method instead mints a fresh id per call, so a reference always names one upload.
+//! [`MemoryStore::put`] takes the id from its caller. A memory shelf keeps that minted id, so two
+//! uploads of one screenshot stay two references. A file shelf ignores the minted id and stores the
+//! bytes under their SHA-256: the object is immutable, so a second upload of the same bytes is the
+//! same reference and cannot overwrite the first.
 //!
 //! # Why refusal is `InvalidArguments`
 //!
@@ -32,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use girder_core::{
-    AttachmentLimits, EncodedImage, MemoryStore, RemoteError, RemoteRegistry, admit_image,
+    AttachmentLimits, EncodedImage, ImageShelf, RemoteError, RemoteRegistry, admit_image,
 };
 
 /// The namespace the method is served under, matching the read method.
@@ -51,7 +51,10 @@ static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 ///
 /// The store is captured rather than passed per call: a caller chooser of destination could store an
 /// image where the read method is not looking, and the upload would look lost.
-pub fn register_attachment_upload_method(registry: &mut RemoteRegistry, store: &Arc<MemoryStore>) {
+pub fn register_attachment_upload_method<S: ImageShelf + 'static>(
+    registry: &mut RemoteRegistry,
+    store: &Arc<S>,
+) {
     let store = Arc::clone(store);
     registry.register(NAMESPACE, METHOD, move |call| {
         let store = Arc::clone(&store);
@@ -116,11 +119,12 @@ pub fn register_attachment_upload_method(registry: &mut RemoteRegistry, store: &
                 .map_err(|error| invalid(format!("`data` is not an acceptable image: {error}")))?;
 
             let id = allocate_id();
-            let Some(reference) = store.put(&id, decoded) else {
-                // Unreachable: every id `allocate_id` builds is alphanumeric with `-` separators, and
-                // `storage_key` accepts exactly that. Reported rather than asserted so a future change
-                // to the id format surfaces as a clear refusal instead of a panic in a request.
-                return Err(invalid(format!("`{id}` is not a usable storage id")));
+            let reference = match store.insert(&id, decoded) {
+                Ok(reference) => reference,
+                Err(girder_core::AttachmentError::Store { reason }) => {
+                    return Err(RemoteError::Failed(reason));
+                }
+                Err(error) => return Err(invalid(error.to_string())),
             };
 
             Ok(json!({
