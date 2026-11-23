@@ -16,7 +16,6 @@
 //! Rust server about a Python file, and the provider would either refuse or answer nonsense — both worse than
 //! a request that cannot express the mistake.
 
-
 pub mod tool;
 
 use std::collections::BTreeMap;

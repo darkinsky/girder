@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::fs::FileSystem;
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
+use crate::fs::FileSystem;
 use crate::workspace::path::{normalize as normalize_path, relative_to};
 use girder_core::api::config::WorkspaceRegistry;
 

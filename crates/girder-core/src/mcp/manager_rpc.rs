@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::mcp::config::{ServerConfig, start_all};
 use crate::api::remote::{RemoteCall, RemoteRegistry};
+use crate::mcp::config::{ServerConfig, start_all};
 
 /// The namespace these methods register under, as upstream spells it.
 pub const NAMESPACE: &str = "mcpManager";
@@ -35,6 +35,34 @@ pub const NAMESPACE: &str = "mcpManager";
 /// A failure is `ok: false` with the server's own diagnostic rather than an error: a probe that
 /// raised would make one unreachable server abort a client's whole refresh, when what it needs is a
 /// row saying which one failed.
+fn server_views(live: Option<&crate::mcp::Registry>) -> Value {
+    let Some(live) = live else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(
+        live.names()
+            .into_iter()
+            .map(|name| {
+                let status = live.status(&name);
+                let state = status
+                    .as_ref()
+                    .map(crate::mcp::Status::as_str)
+                    .unwrap_or("unknown");
+                let mut row = json!({
+                    "name": name,
+                    "configured": true,
+                    "status": {"state": state},
+                    "ready": status.as_ref().is_some_and(crate::mcp::Status::is_ready),
+                });
+                if let Some(crate::mcp::Status::Failed { reason }) = status {
+                    row["status"]["lastError"] = json!(reason);
+                }
+                row
+            })
+            .collect(),
+    )
+}
+
 fn outcome_to_wire(server: &crate::mcp::config::StartedServer) -> Value {
     let mut row = json!({
         "name": server.name,
@@ -154,29 +182,46 @@ pub fn register_mcp_manager_methods(
         })
     });
 
-    if let Some(watching) = live.clone() {
-        registry.register(NAMESPACE, "watch", move |_call: RemoteCall| {
-            let live = std::sync::Arc::clone(&watching);
-            Box::pin(async move {
-                let servers = live
-                    .names()
-                    .into_iter()
-                    .map(|name| {
-                        let status = live.status(&name);
-                        serde_json::json!({
-                            "name": name,
-                            "status": status.as_ref().map(|item| item.as_str()).unwrap_or("unknown"),
-                            "ready": status.as_ref().is_some_and(|item| item.is_ready()),
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                Ok(serde_json::json!({
-                    "servers": servers,
-                    "done": false,
-                }))
-            })
-        });
-    }
+    let watching = live.clone();
+    registry.register_stream(NAMESPACE, "watch", move |open| {
+        let live = watching.clone();
+        Box::pin(async move {
+            let mut last = Value::Null;
+            loop {
+                let snapshot = server_views(live.as_deref());
+                if snapshot != last {
+                    if !open.push(snapshot.clone()) {
+                        return;
+                    }
+                    last = snapshot;
+                }
+                let notified = live.as_ref().map(|live| live.notified());
+                if server_views(live.as_deref()) != last {
+                    continue;
+                }
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                    () = async {
+                        if let Some(notified) = notified {
+                            notified.await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {}
+                }
+            }
+        })
+    });
+    registry.declare(
+        NAMESPACE,
+        "watch",
+        crate::guard::access::Declaration::read("mcpServer"),
+    );
 
     registry.declare(
         NAMESPACE,
@@ -193,6 +238,72 @@ pub fn register_mcp_manager_methods(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Idle;
+
+    impl crate::mcp::Transport for Idle {
+        fn start(&self) -> crate::BoxFut<Result<crate::mcp::Catalogue, crate::mcp::McpError>> {
+            Box::pin(async { Ok(crate::mcp::Catalogue::default()) })
+        }
+
+        fn call(
+            &self,
+            _tool: &str,
+            _arguments: Value,
+        ) -> crate::BoxFut<Result<crate::mcp::CallResult, crate::mcp::McpError>> {
+            Box::pin(async {
+                Err(crate::mcp::McpError::UnknownTool {
+                    name: "idle".to_owned(),
+                })
+            })
+        }
+
+        fn stop(&self) -> crate::BoxFut<Result<(), crate::mcp::McpError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn watch_pushes_the_server_list_then_the_next_change() {
+        let live = Arc::new(crate::mcp::Registry::new());
+        let mut registry = RemoteRegistry::new();
+        register_mcp_manager_methods(
+            &mut registry,
+            &Arc::new(Vec::new()),
+            Some(Arc::clone(&live)),
+        );
+        let call = RemoteCall {
+            args: json!({}),
+            peer: "test".to_owned(),
+        };
+        let handler = registry
+            .stream_method(NAMESPACE, "watch", &call)
+            .expect("watch is a stream");
+        let inbox = Arc::new(crate::api::extra::UplinkInbox::new(
+            1024,
+            "mcpManager/watch",
+        ));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (open, mut frames) = crate::api::remote::StreamOpen::pair(call, inbox, cancel.clone());
+        let running = tokio::spawn(async move {
+            handler(open).await;
+        });
+
+        let first = frames.recv().await.expect("opens").expect("ok");
+        assert_eq!(first, json!([]));
+
+        live.add("alpha", Arc::new(Idle)).expect("added");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+            .await
+            .expect("the change arrives")
+            .expect("frame")
+            .expect("ok");
+        assert_eq!(second[0]["name"], "alpha");
+        assert_eq!(second[0]["status"]["state"], "stopped");
+
+        cancel.cancel();
+        let _ = running.await;
+    }
 
     #[test]
     fn a_failure_is_a_row_not_an_error() {

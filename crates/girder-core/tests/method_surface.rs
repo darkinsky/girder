@@ -108,6 +108,16 @@ fn serve_shaped_registry(scratch: &std::path::Path) -> girder_core::RemoteRegist
     register_goal_surface(&mut registry);
     register_workflow_surface(&mut registry);
     register_question_surface(&mut registry);
+    let credentials: Arc<dyn girder_core::CredentialSource> =
+        Arc::new(girder_core::MemoryCredentialSource::new());
+    girder_core::register_credential_methods(&mut registry, &credentials);
+    girder_core::register_remote_access_follow(&mut registry);
+    girder_core::api::session_status_rpc::register_session_status_methods(&mut registry);
+    girder_core::interaction::action_cards_rpc::register_action_card_methods(&mut registry);
+    girder_core::extensions::plugin_recommendations_rpc::register_plugin_recommendation_methods(
+        &mut registry,
+    );
+    girder_core::extensions::dynamic_runner_rpc::register_dynamic_runner_methods(&mut registry);
 
     registry
 }
@@ -249,6 +259,7 @@ fn register_terminal_surface(registry: &mut girder_core::RemoteRegistry) {
         Arc::new(girder_core::TerminalPersistStore::new(
             std::path::Path::new("/nonexistent-for-routing"),
         )),
+        &terminals,
     );
 }
 
@@ -275,6 +286,11 @@ fn register_workspace_file_surface(
         &preferences,
         &workspace_catalog,
     );
+    let feed = Arc::new(girder_core::WorkspaceFeed::new(
+        workspaces.as_ref(),
+        preferences.as_ref(),
+    ));
+    girder_core::register_workspace_follow_allow_all(registry, &workspaces, &preferences, &feed);
     girder_core::register_session_query_methods(registry, scratch);
 }
 
@@ -505,7 +521,7 @@ fn every_declared_method_is_reachable_in_the_serve_shaped_registry() {
             .split_once('.')
             .expect("every declared name has exactly one dot");
         assert!(
-            registry.get(namespace, method).is_some(),
+            registry.get(namespace, method).is_some() || registry.is_streaming(namespace, method),
             "`{qualified}` is declared and registered but not routable"
         );
     }

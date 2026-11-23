@@ -46,8 +46,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::util::atomic_write::{Mode, write_text_atomic};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::util::atomic_write::{Mode, write_text_atomic};
 
 /// Where one todo stands.
 ///

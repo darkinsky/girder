@@ -20,13 +20,12 @@
 //! a turn leaves a history whose tool calls and results reference a hole. A range keeps the surviving
 //! prefix and suffix each internally consistent, and the summary stands in for the middle.
 
-
 pub mod hook;
 pub mod pipeline;
 pub mod summary;
 
-use crate::util::brand::ToolCallId;
 use crate::session::{SessionEvent, TurnEndReason};
+use crate::util::brand::ToolCallId;
 
 /// One position in a session's surface, with the event it holds.
 ///
@@ -457,7 +456,10 @@ pub fn extract_summary(message: &crate::llm::AssistantMessage) -> Result<String,
 /// the summary as a request, and without the tags a second compaction cannot tell a checkpoint from
 /// something the user wrote.
 #[must_use]
-pub fn checkpoint_message(summary: &str, id: crate::util::brand::MessageId) -> crate::session::message::Message {
+pub fn checkpoint_message(
+    summary: &str,
+    id: crate::util::brand::MessageId,
+) -> crate::session::message::Message {
     let text =
         format!("{CHECKPOINT_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}\n{summary}\n{SUMMARY_CLOSE_TAG}");
     crate::session::message::Message::new(

@@ -27,9 +27,9 @@ use tokio_util::sync::CancellationToken;
 use crate::core::observation::{Conflict, Observation, Session as ObservationSession};
 use crate::credentials::permissions::State as PermissionState;
 
-use crate::util::brand::{AgentId, ToolCallId};
-use crate::llm::{ContentBlock, ToolSchema};
 use crate::core::scope::BoxFut;
+use crate::llm::{ContentBlock, ToolSchema};
+use crate::util::brand::{AgentId, ToolCallId};
 
 /// What a tool is about to be asked to do.
 #[derive(Clone, Debug, Serialize)]
@@ -139,9 +139,10 @@ impl ToolRunContext {
     #[must_use]
     pub fn allows_outside_workspace(&self) -> bool {
         self.outside_granted
-            || self.permissions.as_ref().is_some_and(|state| {
-                state.knobs().sandbox == crate::shell::SandboxMode::Full
-            })
+            || self
+                .permissions
+                .as_ref()
+                .is_some_and(|state| state.knobs().sandbox == crate::shell::SandboxMode::Full)
     }
 
     /// Attaches a permission state.

@@ -27,7 +27,6 @@
 //! and a job that reported `killed` while its children were still alive would let a caller start a
 //! second one against a port the first still holds.
 
-
 pub mod job_follow_rpc;
 pub mod job_tools;
 

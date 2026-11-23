@@ -1,14 +1,8 @@
 //! `job.follow`: reading a job's output from a byte offset.
 //!
-//! The method was declared in the descriptor list with a `JobFollowFrame` return and had no handler, so a client that
-//! read the API surface found a method the server answered `UNKNOWN_METHOD`. A descriptor is a promise; this keeps it.
-//!
-//! # Why a cursor rather than a stream
-//!
-//! `RemoteRegistry` has no stream mode: a handler resolves one value and returns. A stream-shaped method answered as
-//! request/response would be a different contract under the same name -- a client opens a subscription and no frame
-//! arrives. Polling with an absolute offset is the honest version: `from` names the byte the caller already has,
-//! `next` names the byte after what came back, and a caller that repeats `from` repeats nothing and misses nothing.
+//! The standard Remote mux receives an `opened` anchor, output batches, and a terminal `status` frame.
+//! The existing cursor-based projection remains available to code that reads the job model directly:
+//! `from` names the byte already held and `next` names the next byte to request.
 //!
 //! # Why the job's output is addressed by bytes rather than by chunk index
 //!
@@ -20,9 +14,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::api::job::project_chunk;
-use crate::jobs::{JobRegistry, Status};
+use crate::api::job::{project, project_chunk};
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
+use crate::jobs::{JobRegistry, Status};
 
 /// The namespace and method this module registers.
 pub const NAMESPACE: &str = "job";
@@ -31,12 +25,124 @@ pub const METHOD: &str = "follow";
 
 /// Registers `job.follow`.
 pub fn register_job_follow(registry: &mut RemoteRegistry, jobs: &Arc<JobRegistry>) {
-    let jobs = Arc::clone(jobs);
+    let unary_jobs = Arc::clone(jobs);
     registry.register(NAMESPACE, METHOD, move |call: RemoteCall| {
-        let jobs = Arc::clone(&jobs);
+        let jobs = Arc::clone(&unary_jobs);
         Box::pin(async move { follow(&call.args, &jobs) })
     });
-    registry.declare(NAMESPACE, METHOD, crate::guard::access::Declaration::read("job"));
+    let jobs = Arc::clone(jobs);
+    registry.register_stream(NAMESPACE, METHOD, move |open| {
+        let jobs = Arc::clone(&jobs);
+        Box::pin(async move { follow_stream(open, jobs).await })
+    });
+    registry.declare(
+        NAMESPACE,
+        METHOD,
+        crate::guard::access::Declaration::read("job"),
+    );
+}
+
+async fn follow_stream(open: girder_core::StreamOpen, jobs: Arc<JobRegistry>) {
+    let Some(job_id) = open.call.args.get("jobId").and_then(Value::as_str) else {
+        let _ = open.fail(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: METHOD.to_owned(),
+            message: "`jobId` is required".to_owned(),
+        });
+        return;
+    };
+    let job_id = job_id.to_owned();
+    let job = match jobs.get(&job_id) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = open.fail(RemoteError::InvalidArguments {
+                namespace: NAMESPACE.to_owned(),
+                method: METHOD.to_owned(),
+                message: error.to_string(),
+            });
+            return;
+        }
+    };
+    let mut cursor = open
+        .call
+        .args
+        .get("from")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| job.output.head_offset());
+    let opened = serde_json::json!({
+        "type": "opened",
+        "job": job_view(&job),
+        "from": cursor,
+    });
+    if !open.push(opened) {
+        return;
+    }
+
+    loop {
+        let job = match jobs.get(&job_id) {
+            Ok(job) => job,
+            Err(_) => return,
+        };
+        let (chunks, lost) = job.output.read_from(cursor);
+        if !chunks.is_empty() {
+            let next = chunks.last().map_or(cursor, |chunk| {
+                chunk
+                    .at
+                    .saturating_add(u64::try_from(chunk.text.len()).unwrap_or(0))
+            });
+            let frame = serde_json::json!({
+                "type": "output",
+                "chunks": chunks.iter().map(project_chunk_value).collect::<Vec<_>>(),
+                "next": next,
+                "lossy": lost.then_some(true),
+            });
+            cursor = next;
+            if !open.push(frame) {
+                return;
+            }
+            continue;
+        }
+        if job.status.is_terminal() {
+            if open.push(serde_json::json!({
+                "type": "status",
+                "job": job_view(&job),
+            })) {
+                return;
+            }
+            return;
+        }
+
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+    }
+}
+
+fn job_view(job: &crate::jobs::Job) -> serde_json::Value {
+    let view = project(job);
+    serde_json::json!({
+        "id": view.id,
+        "kind": view.kind,
+        "label": view.label,
+        "status": view.status,
+        "code": view.code,
+    })
+}
+
+fn project_chunk_value(chunk: &crate::jobs::JobChunk) -> serde_json::Value {
+    let frame = project_chunk(chunk);
+    serde_json::json!({
+        "at": frame.at,
+        "text": frame.text,
+        "channel": frame.channel,
+        "gap": frame.gap,
+    })
 }
 
 /// Runs one poll.

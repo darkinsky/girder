@@ -99,9 +99,7 @@ pub use girder_core::llm::extra::{
     SERVER, TIMEOUT, TRANSPORT,
 };
 use girder_core::llm::extra::{is_context_window_exceeded, is_quota_exceeded};
-use girder_core::{
-    ContentBlock, FinishReason, ImageDimensions, TokenUsage,
-};
+use girder_core::{ContentBlock, FinishReason, ImageDimensions, TokenUsage};
 
 use crate::session::extra::digest_hex;
 
@@ -1458,7 +1456,8 @@ pub fn assert_supported_history(messages: &[PiRequestMessage]) -> Result<(), Con
                 "Tool-change blocks require developer role",
             ));
         }
-        let carries_image = girder_core::session::content_projection::content_has_image(&message.content);
+        let carries_image =
+            girder_core::session::content_projection::content_has_image(&message.content);
         if message.role != PiRequestRole::User
             && message.role != PiRequestRole::Tool
             && carries_image

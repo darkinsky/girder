@@ -771,12 +771,11 @@ fn replace_page(state: &FeedState, access: &dyn FollowAccess) -> FollowPage {
 
 // ---- the follow registration ------------------------------------------------------------------
 
-/// Registers `workspace.follow`.
+/// Registers `workspace.follow` as a mux stream of frames.
 ///
-/// The handler refreshes the feed from the registry and the preference sets, then returns one
-/// page. That ordering matters: a page computed from a stale feed would tell a client it is caught
-/// up while the registry had already moved, and the next poll would then look like a skipped
-/// change.
+/// The handler refreshes the feed before the first frame, then again whenever it wakes, so a
+/// change that landed in the registry is journaled before the client is told it is caught up.
+/// `afterSeq` resumes from that cursor; an absent value starts with a baseline.
 pub fn register_workspace_follow(
     registry: &mut RemoteRegistry,
     workspaces: &Arc<WorkspaceRegistry>,
@@ -788,25 +787,37 @@ pub fn register_workspace_follow(
     let preferences = Arc::clone(preferences);
     let feed = Arc::clone(feed);
     registry.declare(NAMESPACE, FOLLOW_METHOD, Declaration::read(NAMESPACE));
-    registry.register(NAMESPACE, FOLLOW_METHOD, move |call: RemoteCall| {
+    registry.register_stream(NAMESPACE, FOLLOW_METHOD, move |open| {
         let workspaces = Arc::clone(&workspaces);
         let preferences = Arc::clone(&preferences);
         let feed = Arc::clone(&feed);
         let access = Arc::clone(&access);
         Box::pin(async move {
-            let after = call
+            let mut cursor = open
+                .call
                 .args
                 .get("afterSeq")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            let limit = call
-                .args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(DEFAULT_FOLLOW_FRAMES);
-            feed.refresh(workspaces.as_ref(), preferences.as_ref());
-            Ok(feed.page(after, limit, access.as_ref()).to_json())
+            loop {
+                feed.refresh(workspaces.as_ref(), preferences.as_ref());
+                let page = feed.page(cursor, usize::MAX, access.as_ref());
+                for frame in page.frames {
+                    if !open.push(frame) {
+                        return;
+                    }
+                }
+                cursor = page.next_seq;
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+                }
+            }
         })
     });
 }

@@ -22,7 +22,6 @@
 //! fill a context window with a scrollback nobody wrote for it, so the retained transcript is bounded and the
 //! bound is the caller's.
 
-
 pub mod attach;
 pub mod attach_rpc;
 pub mod buffer;
@@ -42,8 +41,8 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::session::retention::Omitted;
 use crate::core::scope::BoxFut;
+use crate::session::retention::Omitted;
 
 /// The dimensions of a terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +351,7 @@ pub trait Shell: Send + Sync {
 /// One managed terminal.
 pub struct Session {
     id: String,
+    owner_session_id: std::sync::Mutex<Option<String>>,
     shell: Arc<dyn Shell>,
     status: std::sync::Mutex<Status>,
     transcript: std::sync::Mutex<Transcript>,
@@ -380,6 +380,7 @@ impl Session {
     pub fn new(id: impl Into<String>, shell: Arc<dyn Shell>, size: Size, max_bytes: usize) -> Self {
         Self {
             id: id.into(),
+            owner_session_id: std::sync::Mutex::new(None),
             shell,
             status: std::sync::Mutex::new(Status::Running),
             transcript: std::sync::Mutex::new(Transcript::new(max_bytes)),
@@ -411,6 +412,26 @@ impl Session {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Associates this terminal with the Session that created it.
+    ///
+    /// The owner is optional for callers that use the lower-level registry directly. Remote
+    /// `terminal.create` calls always set it when a `sessionId` is supplied, allowing roster
+    /// streams to isolate one Session's terminals.
+    pub fn set_owner_session_id(&self, session_id: Option<&str>) {
+        if let Ok(mut owner) = self.owner_session_id.lock() {
+            *owner = session_id.map(str::to_owned);
+        }
+    }
+
+    /// The owning Session, when this terminal was created through a Session-scoped API.
+    #[must_use]
+    pub fn owner_session_id(&self) -> Option<String> {
+        self.owner_session_id
+            .lock()
+            .ok()
+            .and_then(|owner| owner.clone())
     }
 
     /// Its dimensions.
@@ -541,6 +562,7 @@ impl Session {
 #[derive(Default)]
 pub struct Registry {
     sessions: std::sync::Mutex<std::collections::BTreeMap<String, Arc<Session>>>,
+    changed: tokio::sync::Notify,
 }
 
 impl std::fmt::Debug for Registry {
@@ -570,7 +592,22 @@ impl Registry {
             return Err(id);
         }
         sessions.insert(id, session);
+        drop(sessions);
+        self.changed.notify_waiters();
         Ok(())
+    }
+
+    /// Wakes every `terminal.watch` stream.
+    ///
+    /// `add` and `remove` already do this. A change that keeps the same id, such as a rename, has
+    /// to say so itself.
+    pub fn poke(&self) {
+        self.changed.notify_waiters();
+    }
+
+    /// Resolves when [`Self::poke`], [`Self::add`], or [`Self::remove`] runs.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
     }
 
     /// One session.
@@ -607,6 +644,7 @@ impl Registry {
             .lock()
             .remove(id)
             .ok_or_else(|| TerminalError::Unknown { id: id.to_owned() })?;
+        self.changed.notify_waiters();
         session.close().await
     }
 

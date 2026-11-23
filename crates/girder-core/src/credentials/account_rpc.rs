@@ -30,8 +30,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::credentials::account::CredentialSource;
 use crate::api::remote::{RemoteCall, RemoteRegistry};
+use crate::credentials::account::CredentialSource;
 
 /// The namespace these methods register under, as upstream spells it.
 pub const NAMESPACE: &str = "account";
@@ -90,6 +90,15 @@ fn no_platform(method: &str) -> Value {
     })
 }
 
+fn account_state(store: &Arc<dyn CredentialSource>) -> Value {
+    let info = store.describe(CREDENTIAL_KEY);
+    json!({
+        "status": if info.configured { "credential-stored" } else { "signed-out" },
+        "attempt": Value::Null,
+        "links": links(),
+    })
+}
+
 /// The usage links every state carries.
 ///
 /// A function rather than two inline `format!` calls because the two must agree on the origin: a
@@ -116,14 +125,7 @@ pub fn register_account_methods(
             // A stored grant is a presence check, not a read of the secret: the store's `describe`
             // answers whether a value exists without returning it, which is what a state snapshot
             // needs and what keeps the token out of a reply.
-            let info = store.describe(CREDENTIAL_KEY);
-            Ok(json!({
-                "status": if info.configured { "credential-stored" } else { "signed-out" },
-                // This build runs no sign-in attempt, so there is none to report. `null` is
-                // upstream's shape for that, and unlike the Platform reads it is accurate here.
-                "attempt": Value::Null,
-                "links": links(),
-            }))
+            Ok(account_state(&store))
         })
     });
 
@@ -150,16 +152,71 @@ pub fn register_account_methods(
         });
     }
 
-    // The two streams need a carrier and a Platform endpoint; the carrier exists, the endpoint does
-    // not, so they answer the same refusal as the reads.
-    for method in ["watchState", "watch"] {
-        let method = method.to_owned();
-        let wire = method.clone();
-        registry.register(NAMESPACE, &wire, move |_call: RemoteCall| {
-            let method = method.clone();
-            Box::pin(async move { Ok(no_platform(&method)) })
+    // Upstream's wire name is `watch`. `watchState` is the TypeScript method name, kept as the same
+    // stream so an existing caller still receives the opening snapshot.
+    for method in ["watch", "watchState"] {
+        let store = Arc::clone(credentials);
+        registry.register_stream(NAMESPACE, method, move |open| {
+            let store = Arc::clone(&store);
+            Box::pin(async move {
+                let state = account_state(&store);
+                if !open.push(json!({ "type": "snapshot", "state": state })) {
+                    return;
+                }
+                let mut revision = store.revision();
+                loop {
+                    tokio::select! {
+                        () = open.cancel.cancelled() => return,
+                        incoming = open.uplink.recv() => {
+                            if !matches!(incoming, Ok(Some(_))) {
+                                return;
+                            }
+                        }
+                        () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                            let current = store.revision();
+                            if current != revision {
+                                revision = current;
+                                if !open.push(json!({
+                                    "type": "snapshot",
+                                    "state": account_state(&store),
+                                })) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            })
         });
+        registry.declare(
+            NAMESPACE,
+            method,
+            crate::guard::access::Declaration::read("account"),
+        );
     }
+
+    // Expiry has no replay: the upstream stream only emits a notification when the account service
+    // observes an expiry. Keep the stream open so a client can subscribe before that event. The
+    // platform expiry source remains a separate integration seam.
+    registry.register_stream(NAMESPACE, "watchExpiry", |open| {
+        Box::pin(async move {
+            loop {
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
+    registry.declare(
+        NAMESPACE,
+        "watchExpiry",
+        crate::guard::access::Declaration::read("account"),
+    );
 
     // `hasRunningAccountTasks` answers false rather than refusing: no sign-in attempt this build
     // runs can be in flight, so "no tasks" is a fact rather than a gap.
@@ -207,6 +264,80 @@ mod tests {
         let refusal = no_platform("getProfile");
         assert_eq!(refusal["code"], "no_platform");
         assert!(refusal.get("ok").is_some());
+    }
+
+    #[tokio::test]
+    async fn watch_opens_with_the_stored_account_snapshot() {
+        use std::sync::Arc;
+
+        use crate::api::extra::UplinkInbox;
+        use crate::api::remote::{RemoteCall, StreamOpen};
+
+        let store = Arc::new(MemoryCredentialSource::new());
+        store.set(CREDENTIAL_KEY, "token").expect("set");
+        let source: Arc<dyn CredentialSource> = store;
+        let mut registry = RemoteRegistry::new();
+        register_account_methods(&mut registry, &source, false);
+        let call = RemoteCall {
+            args: serde_json::json!({}),
+            peer: "browser".to_owned(),
+        };
+        let handler = registry
+            .stream_method(NAMESPACE, "watch", &call)
+            .expect("watch is a stream");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (open, mut frames) = StreamOpen::pair(
+            call,
+            Arc::new(UplinkInbox::new(1024, "account/watch")),
+            cancel.clone(),
+        );
+        let running = tokio::spawn(async move {
+            handler(open).await;
+        });
+        let frame = frames.recv().await.expect("snapshot").expect("ok");
+        assert_eq!(frame["type"], "snapshot");
+        assert_eq!(frame["state"]["status"], "credential-stored");
+        cancel.cancel();
+        let _ = running.await;
+    }
+
+    #[tokio::test]
+    async fn watch_replays_a_snapshot_after_the_credential_changes() {
+        use crate::api::extra::UplinkInbox;
+        use crate::api::remote::{RemoteCall, StreamOpen};
+
+        let store = Arc::new(MemoryCredentialSource::new());
+        let source: Arc<dyn CredentialSource> = store.clone();
+        let mut registry = RemoteRegistry::new();
+        register_account_methods(&mut registry, &source, false);
+        let call = RemoteCall {
+            args: serde_json::json!({}),
+            peer: "browser".to_owned(),
+        };
+        let handler = registry
+            .stream_method(NAMESPACE, "watch", &call)
+            .expect("watch is a stream");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (open, mut frames) = StreamOpen::pair(
+            call,
+            Arc::new(UplinkInbox::new(1024, "account/watch")),
+            cancel.clone(),
+        );
+        let running = tokio::spawn(async move {
+            handler(open).await;
+        });
+        let first = frames.recv().await.expect("snapshot").expect("ok");
+        assert_eq!(first["state"]["status"], "signed-out");
+
+        store.set(CREDENTIAL_KEY, "token").expect("set");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+            .await
+            .expect("updated snapshot")
+            .expect("stream")
+            .expect("ok");
+        assert_eq!(second["state"]["status"], "credential-stored");
+        cancel.cancel();
+        let _ = running.await;
     }
 
     #[test]

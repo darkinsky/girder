@@ -88,13 +88,11 @@ pub const ENVIRONMENT_METHOD: &str = "environment";
 /// The method name of the shell discovery query.
 pub const SHELLS_METHOD: &str = "shells";
 
-/// The upstream method this module declares as a gap.
+/// The roster stream.
 ///
-/// `watch` is declared here and not in `terminal_rpc` because that module's list predates it: the
-/// three streaming names it already declares (`attach`, `retain`) and `rename` are left alone so a
-/// declaration is not recorded twice, and `watch` — which upstream also marks `mode: 'stream'` — is
-/// added so a client is told "not implemented by this build" rather than "unknown method", which
-/// would read as its own typo.
+/// Registered by `register_terminal_methods`, which holds the registry the frames are read from.
+/// This module keeps the name so the environment tests can tell it apart from `environment` and
+/// `shells`.
 pub const WATCH_METHOD: &str = "watch";
 
 /// The programs `shells` probes, in the order a picker should prefer them.
@@ -143,10 +141,6 @@ pub fn register_terminal_extra_methods(registry: &mut RemoteRegistry) {
 
     registry.declare(NAMESPACE, ENVIRONMENT_METHOD, declaration());
     registry.declare(NAMESPACE, SHELLS_METHOD, declaration());
-
-    // Declared, not omitted: a client is told "this build cannot" rather than "no such method", and
-    // the two call for different handling on its side.
-    registry.declare_unimplemented(NAMESPACE, &[WATCH_METHOD]);
 }
 
 /// What both registrations declare.

@@ -17,23 +17,12 @@
 //! "no `Shell` implementation is wired into this deployment" learns that a wiring step is missing,
 //! while a rewritten "internal error" would send it looking for a bug in the request.
 //!
-//! # Why this build has no `attach`
-//!
-//! Upstream's terminal surface is two streaming methods (`attach` and `retain`) plus metadata.
-//! [`girder_core::RemoteRegistry`] has no stream mode — `session.stream` is declared missing for the
-//! same reason — so a byte-oriented attachment cannot be served. `terminal.send` and `terminal.read`
-//! are the non-streaming substitute: a client polls them instead of holding one connection open.
-//! That is a real difference in behaviour, not a rename, so the two missing names are declared as
-//! gaps instead of being silently absent.
-//!
 //! # Why terminals are not partitioned by peer
 //!
-//! Upstream scopes terminals per Session and requires an owning agent. This build has one process
-//! and one [`TerminalRegistry`], so every client that can call these methods sees every id. The peer
-//! is carried on [`RemoteCall`] and deliberately not used: inventing a peer-to-registry map here
-//! would put an access-control decision in a method table that has no way to authenticate a peer.
-//! Partitioning belongs to the host that knows what a peer is. Until then, ids are guessable
-//! (`terminal-1`), which is why this limitation is stated rather than assumed away.
+//! Upstream scopes terminals per Session and requires an owning agent. This build keeps one process
+//! registry, records the creating `sessionId`, and filters `list`, `watch`, and stream ownership
+//! checks by that value. The peer is carried on [`RemoteCall`] and deliberately not used here:
+//! peer ACLs belong to the host access layer that authenticates it.
 //!
 //! # Why there is no title, shell, or directory in the listing
 //!
@@ -110,12 +99,9 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Upstream methods this build cannot serve, declared so a client can tell a gap from a typo.
 ///
-/// Every name here must stay absent. `environment` and `shells` need a session's working directory
-/// and a shell-discovery provider; `rename` needs a title the session does not hold; `attach` and
-/// Methods still needing storage this build does not have.
-///
-/// `rename` needs a label store. It is declared rather than omitted so a client is told "this build cannot" instead of
-/// "no such method", which reads as its own typo.
+/// `rename` is the remaining gap because this registration path has no durable label store for
+/// terminals that outlive the in-memory registry. `environment` and `shells` are registered by the
+/// companion module.
 const UNIMPLEMENTED: &[&str] = &["rename"];
 
 /// The arguments of `terminal.create`.
@@ -130,6 +116,9 @@ struct CreateRequest {
     id: Option<String>,
     /// Shell to run, or the host default.
     shell: Option<String>,
+    /// Session that owns this terminal.
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
     /// Directory to start in.
     cwd: Option<String>,
     /// Width in columns.
@@ -183,16 +172,10 @@ pub fn register_terminal_methods(
     terminals: &Arc<TerminalRegistry>,
     launcher: &Arc<dyn TerminalLauncher>,
 ) {
-    // One fanout per terminal, created on first attach. Kept here rather than in the registry because a fanout is
-    // per-connection bookkeeping -- it remembers where each viewer is -- and the terminal itself has no idea who is
-    // watching it.
-    let fans: Arc<
-        std::sync::Mutex<std::collections::BTreeMap<String, crate::terminal::attach::Fanout>>,
-    > = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
     let listed = Arc::clone(terminals);
-    registry.register(NAMESPACE, METHOD_LIST, move |_call: RemoteCall| {
+    registry.register(NAMESPACE, METHOD_LIST, move |call: RemoteCall| {
         let terminals = Arc::clone(&listed);
-        Box::pin(async move { Ok(list(&terminals)) })
+        Box::pin(async move { Ok(list(&terminals, &call.args)) })
     });
 
     let created_terminals = Arc::clone(terminals);
@@ -221,9 +204,6 @@ pub fn register_terminal_methods(
         Box::pin(async move { close(&terminals, &call.args).await })
     });
 
-    // `attach` is a begin-poll pair rather than a push, because the transport has no stream mode: a begin returns a
-    // viewer id and `read` from that viewer's offset returns what arrived since. That is the honest shape -- a method
-    // that claimed to push and returned one array would be a different wire contract with the same name.
     registry.register(NAMESPACE, METHOD_SHELLS, move |_call: RemoteCall| {
         Box::pin(async move { Ok(json!({ "shells": shells() })) })
     });
@@ -232,19 +212,77 @@ pub fn register_terminal_methods(
         Box::pin(async move { Ok(environment()) })
     });
 
-    let attached = Arc::clone(&fans);
-    registry.register(NAMESPACE, METHOD_ATTACH, move |call: RemoteCall| {
-        let fans = Arc::clone(&attached);
-        Box::pin(async move { attach(&fans, &call.args) })
+    let attached = Arc::clone(terminals);
+    registry.register_stream(NAMESPACE, METHOD_ATTACH, move |open| {
+        let terminals = Arc::clone(&attached);
+        Box::pin(async move { attach_stream(open, terminals).await })
     });
 
-    // Declared, not omitted: a client is told "this build cannot" rather than "no such method", and
-    // the two call for different handling on its side.
-    // `retain` no longer needs a capability this build lacks: `terminal_persist` writes output that outlives the process,
-    // which is exactly what its entry in `UNIMPLEMENTED` asked for. It is registered by
-    // `register_terminal_retain_method`, which takes the store; leaving it declared as a gap would tell a client "this
-    // build cannot" about something it now can.
+    let watched = Arc::clone(terminals);
+    registry.register_stream(NAMESPACE, "watch", move |open| {
+        let terminals = Arc::clone(&watched);
+        Box::pin(async move {
+            let session_id = open
+                .call
+                .args
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if session_id.is_empty() {
+                let _ = open.fail(invalid("watch", "`sessionId` is required"));
+                return;
+            }
+            // The registry is process-wide, while each terminal records its owning Session. The
+            // stream exposes only that Session's roster.
+            let mut last = serde_json::Value::Null;
+            loop {
+                let snapshot = watch_snapshot(&terminals, session_id);
+                if snapshot != last {
+                    if !open.push(snapshot.clone()) {
+                        return;
+                    }
+                    last = snapshot;
+                }
+                let notified = terminals.notified();
+                if watch_snapshot(&terminals, session_id) != last {
+                    continue;
+                }
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                    () = notified => {}
+                }
+            }
+        })
+    });
+    registry.declare(
+        NAMESPACE,
+        "watch",
+        crate::guard::access::Declaration::read("terminal"),
+    );
+
     registry.declare_unimplemented(NAMESPACE, UNIMPLEMENTED);
+}
+
+fn watch_snapshot(terminals: &TerminalRegistry, session_id: &str) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = terminals
+        .ids()
+        .into_iter()
+        .filter_map(|id| terminals.get(&id))
+        .filter(|session| session.owner_session_id().as_deref() == Some(session_id))
+        .map(|session| {
+            let mut item = info(&session);
+            if let Some(title) = session.title() {
+                item["title"] = json!(title);
+            }
+            item
+        })
+        .collect();
+    serde_json::Value::Array(items)
 }
 
 /// The shells this host offers.
@@ -273,36 +311,127 @@ fn environment() -> Value {
     })
 }
 
-/// Starts a viewer on a terminal, answering with its id and starting offset.
-///
-/// The id is the handle the client uses for the rest of the attachment, so it is returned rather than inferred: a client
-/// that had to guess would address another viewer.
-fn attach(
-    fans: &std::sync::Mutex<std::collections::BTreeMap<String, crate::terminal::attach::Fanout>>,
-    args: &Value,
-) -> Result<Value, RemoteError> {
-    let terminal_id = args
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| RemoteError::InvalidArguments {
+/// Streams a terminal snapshot, output, and input acknowledgements.
+async fn attach_stream(open: girder_core::StreamOpen, terminals: Arc<TerminalRegistry>) {
+    let Some(terminal_id) = open.call.args.get("id").and_then(Value::as_str) else {
+        let _ = open.fail(RemoteError::InvalidArguments {
             namespace: NAMESPACE.to_owned(),
             method: METHOD_ATTACH.to_owned(),
             message: "`id` is required".to_owned(),
-        })?
-        .to_owned();
-    let mut fans = fans
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let fanout = fans
-        .entry(terminal_id.clone())
-        .or_insert_with(|| girder_core::terminal::attach::Fanout::new(terminal_id.clone()));
-    // Through the module that owns the wire shape, not a second copy of it: the response fields and the id sentinel are
-    // one contract, and two places spelling it would be two places to disagree.
-    let response = girder_core::terminal::attach_rpc::attach(fanout, &terminal_id);
-    Ok(json!({
-        "viewer": response.viewer,
-        "from": response.from,
-    }))
+        });
+        return;
+    };
+    let Some(session) = terminals.get(terminal_id) else {
+        let _ = open.fail(RemoteError::Failed(format!(
+            "no terminal `{terminal_id}` is known to this deployment"
+        )));
+        return;
+    };
+    if let Some(owner) = open.call.args.get("sessionId").and_then(Value::as_str)
+        && session.owner_session_id().as_deref() != Some(owner)
+    {
+        let _ = open.fail(RemoteError::Failed(format!(
+            "terminal `{terminal_id}` is not owned by session `{owner}`"
+        )));
+        return;
+    }
+
+    let info_value = info(&session);
+    if !open.push(json!({
+        "type": "snapshot",
+        "sequence": 0,
+        "screen": session.transcript(),
+        "info": info_value,
+        "writable": session.status().is_running(),
+    })) {
+        return;
+    }
+
+    let mut sequence = 0_u64;
+    loop {
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                let Ok(Some(value)) = incoming else {
+                    return;
+                };
+                let kind = value.get("type").and_then(Value::as_str);
+                let command_seq = value.get("sequence").and_then(Value::as_u64);
+                match (kind, command_seq) {
+                    (Some("write"), Some(command_seq)) => {
+                        let Some(data) = value.get("data").and_then(Value::as_str) else {
+                            let _ = open.fail(RemoteError::InvalidArguments {
+                                namespace: NAMESPACE.to_owned(),
+                                method: METHOD_ATTACH.to_owned(),
+                                message: "`write.data` is required".to_owned(),
+                            });
+                            return;
+                        };
+                        let refusal = session.send(data).await.err().map(|_| "not-running");
+                        if !open.push(match refusal {
+                            Some(reason) => json!({
+                                "type": "ack",
+                                "sequence": command_seq,
+                                "refusal": reason,
+                            }),
+                            None => json!({
+                                "type": "ack",
+                                "sequence": command_seq,
+                            }),
+                        }) {
+                            return;
+                        }
+                    }
+                    (Some("resize"), Some(command_seq)) => {
+                        if !open.push(json!({
+                            "type": "ack",
+                            "sequence": command_seq,
+                            "refusal": "read-only",
+                        })) {
+                            return;
+                        }
+                    }
+                    _ => {
+                        let _ = open.fail(RemoteError::InvalidArguments {
+                            namespace: NAMESPACE.to_owned(),
+                            method: METHOD_ATTACH.to_owned(),
+                            message: "input must be a write or resize command with a sequence".to_owned(),
+                        });
+                        return;
+                    }
+                }
+            }
+            output = session.read(Duration::from_millis(50)) => {
+                match output {
+                    Ok(Some(data)) => {
+                        sequence = sequence.saturating_add(1);
+                        if !open.push(json!({
+                            "type": "output",
+                            "sequence": sequence,
+                            "data": data,
+                        })) {
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        // A host shell may answer an empty read immediately. Yielding here keeps
+                        // that implementation from monopolising the stream task while it waits
+                        // for either input or the next output chunk.
+                        tokio::task::yield_now().await;
+                    }
+                    Err(_) => {
+                        if !open.push(json!({
+                            "type": "state",
+                            "info": info(&session),
+                            "writable": false,
+                        })) {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Answers with every session the registry holds, in id order.
@@ -310,11 +439,15 @@ fn attach(
 /// Unknown ids are skipped rather than failing: `ids` and `get` are two separate locks, so a session
 /// closed between them is expected under concurrency, and a listing that failed because something
 /// else closed a terminal would be unusable in exactly the situation it is most useful.
-fn list(terminals: &TerminalRegistry) -> Value {
+fn list(terminals: &TerminalRegistry, args: &Value) -> Value {
+    let session_id = args.get("sessionId").and_then(Value::as_str);
     let items: Vec<Value> = terminals
         .ids()
         .into_iter()
         .filter_map(|id| terminals.get(&id))
+        .filter(|session| {
+            session_id.is_none_or(|owner| session.owner_session_id().as_deref() == Some(owner))
+        })
         .map(|session| info(&session))
         .collect();
     json!({ "terminals": items })
@@ -376,6 +509,7 @@ async fn create(
     };
 
     let session = Arc::new(TerminalSession::new(id.clone(), shell, size, max_bytes));
+    session.set_owner_session_id(request.session_id.as_deref());
     if terminals.add(Arc::clone(&session)).is_err() {
         // The shell is already running and the registry refused the session, so nothing else holds a
         // handle that could stop it. Closing here is the last chance before a leak.
@@ -664,6 +798,7 @@ pub fn register_terminal_rename_method(
                 });
             };
             session.rename(Some(trimmed));
+            terminals.poke();
             Ok(serde_json::json!({ "id": id, "title": trimmed }))
         })
     });
@@ -672,32 +807,70 @@ pub fn register_terminal_rename_method(
 pub fn register_terminal_retain_method(
     registry: &mut RemoteRegistry,
     store: std::sync::Arc<crate::terminal::persist::Store>,
+    terminals: &std::sync::Arc<TerminalRegistry>,
 ) {
-    registry.register(NAMESPACE, "retain", move |call: RemoteCall| {
+    let terminals = std::sync::Arc::clone(terminals);
+    registry.register_stream(NAMESPACE, "retain", move |open| {
         let store = std::sync::Arc::clone(&store);
-        Box::pin(async move {
-            // Through the module's parser rather than by hand. Reading `lines` with `and_then(as_u64)` turned a negative
-            // or string limit into `None`, which means "keep everything" -- a caller asking for a bad value would have
-            // been given the whole transcript instead of an error.
-            let parsed = crate::terminal::retain_rpc::parse_args(&call.args).map_err(|detail| {
-                crate::api::remote::RemoteError::InvalidArguments {
-                    namespace: NAMESPACE.to_owned(),
-                    method: "retain".to_owned(),
-                    message: detail,
-                }
-            })?;
-            let output = call
-                .args
-                .get("output")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            crate::terminal::retain_rpc::execute(&store, &parsed, output).map_err(|detail| {
-                crate::api::remote::RemoteError::InvalidArguments {
-                    namespace: NAMESPACE.to_owned(),
-                    method: "retain".to_owned(),
-                    message: detail,
-                }
-            })
-        })
+        let terminals = std::sync::Arc::clone(&terminals);
+        Box::pin(async move { retain_stream(open, store, terminals).await })
     });
+}
+
+/// Persists one terminal's current transcript and keeps the physical hold open.
+async fn retain_stream(
+    open: girder_core::StreamOpen,
+    store: std::sync::Arc<crate::terminal::persist::Store>,
+    terminals: std::sync::Arc<TerminalRegistry>,
+) {
+    let parsed = match crate::terminal::retain_rpc::parse_args(&open.call.args) {
+        Ok(parsed) => parsed,
+        Err(detail) => {
+            let _ = open.fail(RemoteError::InvalidArguments {
+                namespace: NAMESPACE.to_owned(),
+                method: "retain".to_owned(),
+                message: detail,
+            });
+            return;
+        }
+    };
+    let Some(session) = terminals.get(&parsed.id) else {
+        let _ = open.fail(RemoteError::Failed(format!(
+            "no terminal `{}` is known to this deployment",
+            parsed.id
+        )));
+        return;
+    };
+    if let Some(owner) = open.call.args.get("sessionId").and_then(Value::as_str)
+        && session.owner_session_id().as_deref() != Some(owner)
+    {
+        let _ = open.fail(RemoteError::Failed(format!(
+            "terminal `{}` is not owned by session `{owner}`",
+            parsed.id
+        )));
+        return;
+    }
+    if let Err(detail) =
+        crate::terminal::retain_rpc::execute(&store, &parsed, &session.transcript())
+    {
+        let _ = open.fail(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: "retain".to_owned(),
+            message: detail,
+        });
+        return;
+    }
+    if !open.push(serde_json::json!({ "type": "retained" })) {
+        return;
+    }
+    loop {
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+        }
+    }
 }

@@ -20,22 +20,34 @@
   "upstream": {
     "packages": [
       {
+        "path": "packages/account/deepseek-account",
+        "name": "@deepseek-ai/dsh-deepseek-account",
+        "files": 7,
+        "lines": 1575
+      },
+      {
+        "path": "packages/account/deepseek-auth",
+        "name": "@deepseek-ai/dsh-deepseek-auth",
+        "files": 2,
+        "lines": 372
+      },
+      {
         "path": "packages/acp/acp",
         "name": "@deepseek-ai/dsh-acp",
         "files": 7,
-        "lines": 1781
+        "lines": 1786
       },
       {
         "path": "packages/api/gateway",
         "name": "@deepseek-ai/dsh-api-gateway",
         "files": 12,
-        "lines": 5691
+        "lines": 5741
       },
       {
         "path": "packages/api/job-controller",
         "name": "@deepseek-ai/dsh-api-job-controller",
         "files": 8,
-        "lines": 994
+        "lines": 997
       },
       {
         "path": "packages/api/remote-access",
@@ -47,13 +59,13 @@
         "path": "packages/api/remotes",
         "name": "@deepseek-ai/dsh-api-remotes",
         "files": 4,
-        "lines": 469
+        "lines": 479
       },
       {
         "path": "packages/api/session-controller",
         "name": "@deepseek-ai/dsh-api-session-controller",
-        "files": 40,
-        "lines": 9413
+        "files": 44,
+        "lines": 9695
       },
       {
         "path": "packages/api/settings-controller",
@@ -71,31 +83,31 @@
         "path": "packages/api/workspace-controller",
         "name": "@deepseek-ai/dsh-api-workspace-controller",
         "files": 10,
-        "lines": 1960
+        "lines": 1963
       },
       {
         "path": "packages/api/workspace-files",
         "name": "@deepseek-ai/dsh-api-workspace-files",
         "files": 9,
-        "lines": 1624
+        "lines": 1650
       },
       {
         "path": "packages/attachment/attachment",
         "name": "@deepseek-ai/dsh-attachment",
         "files": 6,
-        "lines": 710
+        "lines": 717
       },
       {
         "path": "packages/attachment/attachment-local",
         "name": "@deepseek-ai/dsh-attachment-local",
         "files": 9,
-        "lines": 1556
+        "lines": 1622
       },
       {
         "path": "packages/boot/app-boot",
         "name": "@deepseek-ai/dsh-app-boot",
-        "files": 22,
-        "lines": 5431
+        "files": 23,
+        "lines": 5514
       },
       {
         "path": "packages/boot/cmdline",
@@ -107,31 +119,31 @@
         "path": "packages/boot/config-editor",
         "name": "@deepseek-ai/dsh-config-editor",
         "files": 1,
-        "lines": 156
+        "lines": 155
       },
       {
         "path": "packages/boot/hmr",
         "name": "@deepseek-ai/dsh-hmr",
         "files": 5,
-        "lines": 1740
+        "lines": 1747
       },
       {
         "path": "packages/boot/plugin-manager",
         "name": "@deepseek-ai/dsh-plugin-manager",
-        "files": 17,
-        "lines": 3877
+        "files": 19,
+        "lines": 3952
       },
       {
         "path": "packages/boot/plugin-market",
         "name": "@deepseek-ai/dsh-plugin-market",
-        "files": 11,
-        "lines": 1858
+        "files": 12,
+        "lines": 2061
       },
       {
         "path": "packages/browser-use/browser-use",
         "name": "@deepseek-ai/dsh-browser-use",
-        "files": 2,
-        "lines": 63
+        "files": 3,
+        "lines": 65
       },
       {
         "path": "packages/bundle/acp-app",
@@ -149,7 +161,7 @@
         "path": "packages/bundle/headless",
         "name": "@deepseek-ai/dsh-headless",
         "files": 5,
-        "lines": 992
+        "lines": 990
       },
       {
         "path": "packages/bundle/sdk-app",
@@ -167,13 +179,13 @@
         "path": "packages/bundle/web-app",
         "name": "@deepseek-ai/dsh-web-app",
         "files": 3,
-        "lines": 424
+        "lines": 428
       },
       {
         "path": "packages/compaction/command-compact",
         "name": "@deepseek-ai/dsh-command-compact",
         "files": 1,
-        "lines": 108
+        "lines": 109
       },
       {
         "path": "packages/compaction/compaction",
@@ -184,8 +196,8 @@
       {
         "path": "packages/compaction/compaction-basic",
         "name": "@deepseek-ai/dsh-compaction-basic",
-        "files": 5,
-        "lines": 1745
+        "files": 6,
+        "lines": 1794
       },
       {
         "path": "packages/compaction/compaction-image-offload",
@@ -202,8 +214,62 @@
       {
         "path": "packages/computer-use/computer-use",
         "name": "@deepseek-ai/dsh-computer-use",
+        "files": 3,
+        "lines": 65
+      },
+      {
+        "path": "packages/connector/cli-account",
+        "name": "@deepseek-ai/dsh-cli-account",
+        "files": 6,
+        "lines": 839
+      },
+      {
+        "path": "packages/connector/dingtalk",
+        "name": "@deepseek-ai/dsh-dingtalk",
+        "files": 6,
+        "lines": 1018
+      },
+      {
+        "path": "packages/connector/feishu",
+        "name": "@deepseek-ai/dsh-feishu",
+        "files": 7,
+        "lines": 816
+      },
+      {
+        "path": "packages/connector/linear",
+        "name": "@deepseek-ai/dsh-linear",
         "files": 2,
-        "lines": 63
+        "lines": 234
+      },
+      {
+        "path": "packages/connector/notion",
+        "name": "@deepseek-ai/dsh-notion",
+        "files": 2,
+        "lines": 232
+      },
+      {
+        "path": "packages/connector/tencent-docs",
+        "name": "@deepseek-ai/dsh-tencent-docs",
+        "files": 2,
+        "lines": 235
+      },
+      {
+        "path": "packages/connector/tencent-meeting",
+        "name": "@deepseek-ai/dsh-tencent-meeting",
+        "files": 7,
+        "lines": 676
+      },
+      {
+        "path": "packages/connector/upstream-skills",
+        "name": "@deepseek-ai/dsh-upstream-skills",
+        "files": 3,
+        "lines": 483
+      },
+      {
+        "path": "packages/connector/wecom",
+        "name": "@deepseek-ai/dsh-wecom",
+        "files": 7,
+        "lines": 616
       },
       {
         "path": "packages/context/agent-instructions",
@@ -215,31 +281,31 @@
         "path": "packages/context/file-reference",
         "name": "@deepseek-ai/dsh-file-reference",
         "files": 3,
-        "lines": 113
+        "lines": 112
       },
       {
         "path": "packages/context/file-reference-local",
         "name": "@deepseek-ai/dsh-file-reference-local",
         "files": 2,
-        "lines": 523
+        "lines": 524
       },
       {
         "path": "packages/context/harness-dev-context",
         "name": "@deepseek-ai/dsh-harness-dev-context",
         "files": 1,
-        "lines": 158
+        "lines": 173
       },
       {
         "path": "packages/context/session-reference",
         "name": "@deepseek-ai/dsh-session-reference",
         "files": 7,
-        "lines": 990
+        "lines": 1012
       },
       {
         "path": "packages/context/time-context",
         "name": "@deepseek-ai/dsh-time-context",
         "files": 3,
-        "lines": 377
+        "lines": 376
       },
       {
         "path": "packages/context/tmux-context",
@@ -251,19 +317,19 @@
         "path": "packages/core/agent",
         "name": "@deepseek-ai/dsh-agent",
         "files": 8,
-        "lines": 1790
+        "lines": 1802
       },
       {
         "path": "packages/core/agent-default-model",
         "name": "@deepseek-ai/dsh-agent-default-model",
         "files": 1,
-        "lines": 97
+        "lines": 98
       },
       {
         "path": "packages/core/agent-loop",
         "name": "@deepseek-ai/dsh-agent-loop",
         "files": 6,
-        "lines": 2148
+        "lines": 2051
       },
       {
         "path": "packages/core/agent-tool-presentation",
@@ -280,14 +346,14 @@
       {
         "path": "packages/core/session",
         "name": "@deepseek-ai/dsh-session",
-        "files": 10,
-        "lines": 3485
+        "files": 12,
+        "lines": 3771
       },
       {
         "path": "packages/core/system-prompt",
         "name": "@deepseek-ai/dsh-system-prompt",
-        "files": 1,
-        "lines": 699
+        "files": 3,
+        "lines": 1131
       },
       {
         "path": "packages/core/tool-executor-native",
@@ -299,13 +365,13 @@
         "path": "packages/core/tool-executor-ptc",
         "name": "@deepseek-ai/dsh-tool-executor-ptc",
         "files": 11,
-        "lines": 2476
+        "lines": 1651
       },
       {
         "path": "packages/core/tools",
         "name": "@deepseek-ai/dsh-tools",
         "files": 10,
-        "lines": 3784
+        "lines": 3798
       },
       {
         "path": "packages/credentials/authorization",
@@ -316,8 +382,8 @@
       {
         "path": "packages/credentials/credentials",
         "name": "@deepseek-ai/dsh-credentials",
-        "files": 2,
-        "lines": 409
+        "files": 3,
+        "lines": 485
       },
       {
         "path": "packages/credentials/credentials-local",
@@ -326,16 +392,10 @@
         "lines": 930
       },
       {
-        "path": "packages/credentials/deepseek-account",
-        "name": "@deepseek-ai/dsh-deepseek-account",
-        "files": 8,
-        "lines": 1526
-      },
-      {
         "path": "packages/deliverables/deliverable-file-references",
         "name": "@deepseek-ai/dsh-deliverable-file-references",
         "files": 1,
-        "lines": 30
+        "lines": 31
       },
       {
         "path": "packages/deliverables/tool-present",
@@ -347,43 +407,55 @@
         "path": "packages/deliverables/workspace-changes",
         "name": "@deepseek-ai/dsh-workspace-changes",
         "files": 8,
-        "lines": 1294
+        "lines": 1320
       },
       {
         "path": "packages/document/office-kit",
         "name": "@deepseek-ai/dsh-office-kit",
         "files": 8,
-        "lines": 1394
+        "lines": 1399
       },
       {
         "path": "packages/document/tool-office",
         "name": "@deepseek-ai/dsh-tool-office",
-        "files": 3,
-        "lines": 672
+        "files": 4,
+        "lines": 761
       },
       {
         "path": "packages/extensions/cordis-client-runner",
         "name": "@deepseek-ai/dsh-cordis-client-runner",
         "files": 10,
-        "lines": 9157
+        "lines": 10072
       },
       {
         "path": "packages/extensions/cordis-host-runner",
         "name": "@deepseek-ai/dsh-cordis-host-runner",
         "files": 7,
-        "lines": 3391
+        "lines": 3539
+      },
+      {
+        "path": "packages/extensions/creation-recommendations",
+        "name": "@deepseek-ai/dsh-creation-recommendations",
+        "files": 4,
+        "lines": 543
+      },
+      {
+        "path": "packages/extensions/plugin-recommendations",
+        "name": "@deepseek-ai/dsh-plugin-recommendations",
+        "files": 3,
+        "lines": 226
       },
       {
         "path": "packages/extensions/tool-cordis",
         "name": "@deepseek-ai/dsh-tool-cordis",
         "files": 6,
-        "lines": 11301
+        "lines": 12413
       },
       {
         "path": "packages/feedback/command-feedback",
         "name": "@deepseek-ai/dsh-command-feedback",
         "files": 2,
-        "lines": 196
+        "lines": 197
       },
       {
         "path": "packages/feedback/message-feedback",
@@ -401,7 +473,7 @@
         "path": "packages/fs/fs-local",
         "name": "@deepseek-ai/dsh-fs-local",
         "files": 3,
-        "lines": 1399
+        "lines": 1401
       },
       {
         "path": "packages/fs/fs-observation-policy",
@@ -425,13 +497,13 @@
         "path": "packages/fs/tool-fs",
         "name": "@deepseek-ai/dsh-tool-fs",
         "files": 21,
-        "lines": 2442
+        "lines": 2468
       },
       {
         "path": "packages/fs/tool-fs-search",
         "name": "@deepseek-ai/dsh-tool-fs-search",
         "files": 7,
-        "lines": 1546
+        "lines": 1555
       },
       {
         "path": "packages/fs/tool-str-replace-editor",
@@ -443,13 +515,13 @@
         "path": "packages/goal/command-goal",
         "name": "@deepseek-ai/dsh-command-goal",
         "files": 1,
-        "lines": 198
+        "lines": 200
       },
       {
         "path": "packages/goal/goal",
         "name": "@deepseek-ai/dsh-goal",
         "files": 6,
-        "lines": 1306
+        "lines": 1309
       },
       {
         "path": "packages/goal/goal-round-driver",
@@ -461,19 +533,31 @@
         "path": "packages/goal/tool-goal",
         "name": "@deepseek-ai/dsh-tool-goal",
         "files": 3,
-        "lines": 482
+        "lines": 483
       },
       {
         "path": "packages/guard/repeat-tool-reminder",
         "name": "@deepseek-ai/dsh-repeat-tool-reminder",
         "files": 1,
-        "lines": 234
+        "lines": 232
       },
       {
         "path": "packages/guard/timeout-policy",
         "name": "@deepseek-ai/dsh-tool-call-timeout-policy",
         "files": 1,
         "lines": 81
+      },
+      {
+        "path": "packages/host/authentication-desktop",
+        "name": "@deepseek-ai/dsh-host-authentication-desktop",
+        "files": 1,
+        "lines": 42
+      },
+      {
+        "path": "packages/host/authentication-token",
+        "name": "@deepseek-ai/dsh-host-authentication-token",
+        "files": 3,
+        "lines": 629
       },
       {
         "path": "packages/host/directory-picker",
@@ -503,13 +587,13 @@
         "path": "packages/host/frontend-static",
         "name": "@deepseek-ai/dsh-host-frontend-static",
         "files": 1,
-        "lines": 167
+        "lines": 153
       },
       {
         "path": "packages/host/open-in-app",
         "name": "@deepseek-ai/dsh-host-open-in-app",
         "files": 6,
-        "lines": 1668
+        "lines": 1663
       },
       {
         "path": "packages/host/plugin-inventory",
@@ -527,7 +611,7 @@
         "path": "packages/host/webserver",
         "name": "@deepseek-ai/dsh-host-webserver",
         "files": 2,
-        "lines": 862
+        "lines": 991
       },
       {
         "path": "packages/identity/anonymous-user-id",
@@ -536,16 +620,22 @@
         "lines": 100
       },
       {
+        "path": "packages/interaction/action-cards",
+        "name": "@deepseek-ai/dsh-action-cards",
+        "files": 4,
+        "lines": 638
+      },
+      {
         "path": "packages/interaction/commands",
         "name": "@deepseek-ai/dsh-commands",
         "files": 4,
-        "lines": 741
+        "lines": 734
       },
       {
         "path": "packages/interaction/permission-presets",
         "name": "@deepseek-ai/dsh-permission-presets",
         "files": 3,
-        "lines": 555
+        "lines": 641
       },
       {
         "path": "packages/interaction/tool-ask-user",
@@ -557,31 +647,31 @@
         "path": "packages/interaction/user-approval",
         "name": "@deepseek-ai/dsh-user-approval",
         "files": 2,
-        "lines": 429
+        "lines": 430
       },
       {
         "path": "packages/interaction/user-questions",
         "name": "@deepseek-ai/dsh-user-questions",
         "files": 4,
-        "lines": 958
+        "lines": 985
       },
       {
         "path": "packages/jobs/jobs",
         "name": "@deepseek-ai/dsh-jobs",
         "files": 6,
-        "lines": 726
+        "lines": 722
       },
       {
         "path": "packages/jobs/jobs-local",
         "name": "@deepseek-ai/dsh-jobs-local",
         "files": 4,
-        "lines": 1049
+        "lines": 1055
       },
       {
         "path": "packages/jobs/tool-jobs",
         "name": "@deepseek-ai/dsh-tool-jobs",
         "files": 2,
-        "lines": 697
+        "lines": 699
       },
       {
         "path": "packages/llm/deepseek-llm-api-extensions",
@@ -593,37 +683,37 @@
         "path": "packages/llm/llm",
         "name": "@deepseek-ai/dsh-llm",
         "files": 13,
-        "lines": 4246
+        "lines": 4256
       },
       {
         "path": "packages/llm/llm-deepseek",
         "name": "@deepseek-ai/dsh-llm-deepseek",
         "files": 29,
-        "lines": 3699
+        "lines": 3896
       },
       {
         "path": "packages/llm/llm-deepseek-account",
         "name": "@deepseek-ai/dsh-llm-deepseek-account",
-        "files": 2,
-        "lines": 196
+        "files": 3,
+        "lines": 272
       },
       {
         "path": "packages/llm/llm-deepseek-api-key",
         "name": "@deepseek-ai/dsh-llm-deepseek-api-key",
         "files": 2,
-        "lines": 185
+        "lines": 198
       },
       {
         "path": "packages/llm/llm-pi-ai",
         "name": "@deepseek-ai/dsh-llm-pi-ai",
-        "files": 16,
-        "lines": 4638
+        "files": 17,
+        "lines": 4682
       },
       {
         "path": "packages/llm/llm-retry",
         "name": "@deepseek-ai/dsh-llm-retry",
         "files": 3,
-        "lines": 318
+        "lines": 319
       },
       {
         "path": "packages/llm/plugin-package-inventory-deepseek",
@@ -635,7 +725,7 @@
         "path": "packages/llm/token-meter",
         "name": "@deepseek-ai/dsh-token-meter",
         "files": 12,
-        "lines": 1625
+        "lines": 1627
       },
       {
         "path": "packages/lsp/lsp",
@@ -647,37 +737,43 @@
         "path": "packages/lsp/lsp-stdio",
         "name": "@deepseek-ai/dsh-lsp-stdio",
         "files": 8,
-        "lines": 1756
+        "lines": 1757
       },
       {
         "path": "packages/lsp/tool-lsp",
         "name": "@deepseek-ai/dsh-tool-lsp",
         "files": 2,
-        "lines": 438
+        "lines": 439
+      },
+      {
+        "path": "packages/mcp/mcp-account",
+        "name": "@deepseek-ai/dsh-mcp-account",
+        "files": 4,
+        "lines": 555
       },
       {
         "path": "packages/mcp/mcp-client",
         "name": "@deepseek-ai/dsh-mcp-client",
-        "files": 13,
-        "lines": 1986
+        "files": 19,
+        "lines": 3386
       },
       {
         "path": "packages/mcp/mcp-manager",
         "name": "@deepseek-ai/dsh-mcp-manager",
         "files": 2,
-        "lines": 652
+        "lines": 751
       },
       {
         "path": "packages/mcp/mcp-resources",
         "name": "@deepseek-ai/dsh-mcp-resources",
         "files": 3,
-        "lines": 223
+        "lines": 224
       },
       {
         "path": "packages/plan/plan-mode",
         "name": "@deepseek-ai/dsh-plan-mode",
-        "files": 3,
-        "lines": 538
+        "files": 4,
+        "lines": 588
       },
       {
         "path": "packages/preset/agent-preset",
@@ -695,19 +791,19 @@
         "path": "packages/preset/persona",
         "name": "@deepseek-ai/dsh-persona",
         "files": 1,
-        "lines": 75
+        "lines": 67
       },
       {
         "path": "packages/ptc-runtime/ptc-runtime",
         "name": "@deepseek-ai/dsh-ptc-runtime",
-        "files": 3,
-        "lines": 395
+        "files": 4,
+        "lines": 391
       },
       {
         "path": "packages/ptc-runtime/ptc-runtime-node",
         "name": "@deepseek-ai/dsh-ptc-runtime-node",
         "files": 31,
-        "lines": 4084
+        "lines": 4129
       },
       {
         "path": "packages/sandbox/sandbox",
@@ -725,7 +821,7 @@
         "path": "packages/sandbox/sandbox-policy",
         "name": "@deepseek-ai/dsh-sandbox-policy",
         "files": 2,
-        "lines": 328
+        "lines": 336
       },
       {
         "path": "packages/sandbox/sandbox-windows-acl",
@@ -737,31 +833,31 @@
         "path": "packages/schedule/schedule",
         "name": "@deepseek-ai/dsh-schedule",
         "files": 8,
-        "lines": 3565
+        "lines": 3569
       },
       {
         "path": "packages/schedule/tool-schedule",
         "name": "@deepseek-ai/dsh-tool-schedule",
         "files": 1,
-        "lines": 489
+        "lines": 496
       },
       {
         "path": "packages/sdk/client",
         "name": "@deepseek-ai/dsh-sdk-client",
         "files": 6,
-        "lines": 1425
+        "lines": 1438
       },
       {
         "path": "packages/sdk/protocol",
         "name": "@deepseek-ai/dsh-sdk-protocol",
         "files": 3,
-        "lines": 571
+        "lines": 577
       },
       {
         "path": "packages/sdk/server",
         "name": "@deepseek-ai/dsh-sdk-jsonrpc-server",
-        "files": 6,
-        "lines": 1049
+        "files": 7,
+        "lines": 1274
       },
       {
         "path": "packages/session/message-quotes",
@@ -785,7 +881,7 @@
         "path": "packages/session/session-format-catalog",
         "name": "@deepseek-ai/dsh-session-format-catalog",
         "files": 6,
-        "lines": 153
+        "lines": 150
       },
       {
         "path": "packages/session/session-format-v0-to-v1",
@@ -821,13 +917,19 @@
         "path": "packages/session/session-persistence",
         "name": "@deepseek-ai/dsh-session-persistence",
         "files": 5,
-        "lines": 636
+        "lines": 659
       },
       {
         "path": "packages/session/session-persistence-jsonl",
         "name": "@deepseek-ai/dsh-session-persistence-jsonl",
         "files": 13,
-        "lines": 5086
+        "lines": 5216
+      },
+      {
+        "path": "packages/session/session-persistence-sqlite",
+        "name": "@deepseek-ai/dsh-session-persistence-sqlite",
+        "files": 10,
+        "lines": 2219
       },
       {
         "path": "packages/session/session-projection",
@@ -863,13 +965,13 @@
         "path": "packages/session/session-title",
         "name": "@deepseek-ai/dsh-session-title",
         "files": 4,
-        "lines": 1027
+        "lines": 1025
       },
       {
         "path": "packages/session/session-title-first-prompt-llm",
         "name": "@deepseek-ai/dsh-session-title-first-prompt-llm",
         "files": 1,
-        "lines": 167
+        "lines": 166
       },
       {
         "path": "packages/session/session-title-llm",
@@ -884,34 +986,40 @@
         "lines": 229
       },
       {
-        "path": "packages/session/tool-working-directory",
-        "name": "@deepseek-ai/dsh-tool-working-directory",
+        "path": "packages/session/tool-session-control",
+        "name": "@deepseek-ai/dsh-tool-session-control",
         "files": 1,
-        "lines": 43
+        "lines": 130
       },
       {
         "path": "packages/session/working-directory",
         "name": "@deepseek-ai/dsh-working-directory",
-        "files": 2,
-        "lines": 290
+        "files": 3,
+        "lines": 319
       },
       {
         "path": "packages/session-query/session-log-export",
         "name": "@deepseek-ai/dsh-session-log-export",
         "files": 10,
-        "lines": 1923
+        "lines": 2013
       },
       {
         "path": "packages/session-query/session-query",
         "name": "@deepseek-ai/dsh-session-query",
-        "files": 12,
-        "lines": 2241
+        "files": 13,
+        "lines": 2285
       },
       {
         "path": "packages/session-query/session-query-sqlite",
         "name": "@deepseek-ai/dsh-session-query-sqlite",
         "files": 3,
-        "lines": 1781
+        "lines": 1782
+      },
+      {
+        "path": "packages/session-query/tool-session-list",
+        "name": "@deepseek-ai/dsh-tool-session-list",
+        "files": 2,
+        "lines": 223
       },
       {
         "path": "packages/settings/settings",
@@ -959,7 +1067,7 @@
         "path": "packages/shell/tool-bash",
         "name": "@deepseek-ai/dsh-tool-bash",
         "files": 3,
-        "lines": 854
+        "lines": 872
       },
       {
         "path": "packages/shell/tool-bash-persistent",
@@ -971,7 +1079,7 @@
         "path": "packages/shell/tool-pwsh",
         "name": "@deepseek-ai/dsh-tool-pwsh",
         "files": 3,
-        "lines": 929
+        "lines": 946
       },
       {
         "path": "packages/shell/tool-pwsh-persistent",
@@ -982,32 +1090,32 @@
       {
         "path": "packages/skill/skill",
         "name": "@deepseek-ai/dsh-skill",
-        "files": 1,
-        "lines": 868
+        "files": 2,
+        "lines": 902
       },
       {
         "path": "packages/skill/skill-filesystem",
         "name": "@deepseek-ai/dsh-skill-filesystem",
         "files": 1,
-        "lines": 1063
+        "lines": 1064
       },
       {
         "path": "packages/skill/skill-office",
         "name": "@deepseek-ai/dsh-skill-office",
         "files": 1,
-        "lines": 141
+        "lines": 139
       },
       {
         "path": "packages/skill/tool-skill",
         "name": "@deepseek-ai/dsh-tool-skill",
         "files": 1,
-        "lines": 451
+        "lines": 460
       },
       {
         "path": "packages/skill/tool-workspace-dependencies",
         "name": "@deepseek-ai/dsh-tool-workspace-dependencies",
-        "files": 1,
-        "lines": 322
+        "files": 2,
+        "lines": 388
       },
       {
         "path": "packages/spill/spill",
@@ -1019,7 +1127,7 @@
         "path": "packages/spill/spill-local",
         "name": "@deepseek-ai/dsh-spill-local",
         "files": 3,
-        "lines": 726
+        "lines": 727
       },
       {
         "path": "packages/spill/spill-policy",
@@ -1085,7 +1193,7 @@
         "path": "packages/subagent/subagent",
         "name": "@deepseek-ai/dsh-subagent",
         "files": 22,
-        "lines": 4955
+        "lines": 5106
       },
       {
         "path": "packages/subagent/subagent-acp",
@@ -1103,7 +1211,7 @@
         "path": "packages/subagent/subagent-codex",
         "name": "@deepseek-ai/dsh-subagent-codex",
         "files": 3,
-        "lines": 1280
+        "lines": 1277
       },
       {
         "path": "packages/subagent/subagent-dsh-sdk",
@@ -1127,13 +1235,13 @@
         "path": "packages/subagent/tool-subagent",
         "name": "@deepseek-ai/dsh-tool-subagent",
         "files": 6,
-        "lines": 949
+        "lines": 903
       },
       {
         "path": "packages/subagent/tool-subagent-control",
         "name": "@deepseek-ai/dsh-tool-subagent-control",
         "files": 3,
-        "lines": 373
+        "lines": 393
       },
       {
         "path": "packages/subprocess/subprocess",
@@ -1145,7 +1253,7 @@
         "path": "packages/subprocess/subprocess-local",
         "name": "@deepseek-ai/dsh-subprocess-local",
         "files": 17,
-        "lines": 5104
+        "lines": 5139
       },
       {
         "path": "packages/subprocess/win32-process",
@@ -1157,13 +1265,13 @@
         "path": "packages/team/agent-team",
         "name": "@deepseek-ai/dsh-agent-team",
         "files": 10,
-        "lines": 1110
+        "lines": 1115
       },
       {
         "path": "packages/team/tool-agent-team",
         "name": "@deepseek-ai/dsh-tool-agent-team",
         "files": 1,
-        "lines": 235
+        "lines": 236
       },
       {
         "path": "packages/telemetry/otel",
@@ -1175,7 +1283,7 @@
         "path": "packages/terminal/terminal",
         "name": "@deepseek-ai/dsh-terminal",
         "files": 3,
-        "lines": 693
+        "lines": 694
       },
       {
         "path": "packages/terminal/terminal-bash",
@@ -1205,7 +1313,7 @@
         "path": "packages/typert/protocol",
         "name": "@deepseek-ai/dsh-typert-protocol",
         "files": 8,
-        "lines": 1802
+        "lines": 1804
       },
       {
         "path": "packages/typert/registry",
@@ -1217,7 +1325,7 @@
         "path": "packages/util/atomic-write",
         "name": "@deepseek-ai/dsh-atomic-write",
         "files": 1,
-        "lines": 273
+        "lines": 293
       },
       {
         "path": "packages/util/brand",
@@ -1265,7 +1373,7 @@
         "path": "packages/util/home-paths",
         "name": "@deepseek-ai/dsh-home-paths",
         "files": 1,
-        "lines": 197
+        "lines": 238
       },
       {
         "path": "packages/util/http-proxy",
@@ -1295,7 +1403,7 @@
         "path": "packages/util/official-bundles",
         "name": "@deepseek-ai/dsh-official-bundles",
         "files": 4,
-        "lines": 203
+        "lines": 213
       },
       {
         "path": "packages/util/output-retention",
@@ -1306,8 +1414,8 @@
       {
         "path": "packages/util/package-manifest",
         "name": "@deepseek-ai/dsh-package-manifest",
-        "files": 2,
-        "lines": 115
+        "files": 3,
+        "lines": 167
       },
       {
         "path": "packages/util/plugin-detail",
@@ -1318,14 +1426,20 @@
       {
         "path": "packages/util/plugin-market-index",
         "name": "@deepseek-ai/dsh-plugin-market-index",
-        "files": 2,
-        "lines": 445
+        "files": 3,
+        "lines": 535
       },
       {
         "path": "packages/util/ripgrep",
         "name": "@deepseek-ai/dsh-util-ripgrep",
         "files": 1,
         "lines": 109
+      },
+      {
+        "path": "packages/util/text-search",
+        "name": "@deepseek-ai/dsh-util-text-search",
+        "files": 1,
+        "lines": 301
       },
       {
         "path": "packages/util/time",
@@ -1349,73 +1463,73 @@
         "path": "packages/util/workspace-path",
         "name": "@deepseek-ai/dsh-util-workspace-path",
         "files": 2,
-        "lines": 236
+        "lines": 232
       },
       {
         "path": "packages/web/tool-web",
         "name": "@deepseek-ai/dsh-tool-web",
         "files": 5,
-        "lines": 1054
+        "lines": 1061
       },
       {
         "path": "packages/web/web",
         "name": "@deepseek-ai/dsh-web",
         "files": 2,
-        "lines": 507
+        "lines": 545
       },
       {
         "path": "packages/web/web-deepseek-api",
         "name": "@deepseek-ai/dsh-web-deepseek-api",
         "files": 4,
-        "lines": 1052
+        "lines": 943
       },
       {
         "path": "packages/web/web-fetch-http",
         "name": "@deepseek-ai/dsh-web-fetch-http",
-        "files": 3,
-        "lines": 478
+        "files": 4,
+        "lines": 601
       },
       {
         "path": "packages/web/web-search-deepseek",
         "name": "@deepseek-ai/dsh-web-search-deepseek",
         "files": 3,
-        "lines": 696
+        "lines": 740
       },
       {
         "path": "packages/workflow/tool-workflow",
         "name": "@deepseek-ai/dsh-tool-workflow",
         "files": 3,
-        "lines": 615
+        "lines": 621
       },
       {
         "path": "packages/workflow/workflow",
         "name": "@deepseek-ai/dsh-workflow",
         "files": 3,
-        "lines": 383
+        "lines": 397
       },
       {
         "path": "packages/workflow/workflow-ptc",
         "name": "@deepseek-ai/dsh-workflow-ptc",
         "files": 9,
-        "lines": 1339
+        "lines": 1355
       },
       {
         "path": "packages/workspace/workspace",
         "name": "@deepseek-ai/dsh-workspace",
         "files": 5,
-        "lines": 1447
+        "lines": 1475
       }
     ],
     "applications": [
       {
         "path": "apps/cli",
         "files": 10,
-        "lines": 1081
+        "lines": 1078
       },
       {
         "path": "apps/desktop-host",
-        "files": 10,
-        "lines": 525
+        "files": 11,
+        "lines": 623
       },
       {
         "path": "apps/plugin-market-generator",
@@ -1430,10 +1544,31 @@
       {
         "path": "python",
         "files": 16,
-        "lines": 2447
+        "lines": 2483
       }
     ],
     "remote_sources": [
+      {
+        "package": "packages/account/deepseek-account",
+        "file": "src/index.ts",
+        "namespaces": [
+          "account"
+        ],
+        "methods": [
+          "cancelSignIn",
+          "getBalance",
+          "getNotificationContent",
+          "getNotifications",
+          "getProfile",
+          "getState",
+          "hasRunningAccountTasks",
+          "reportNotificationEvent",
+          "signOut",
+          "startSignIn",
+          "watch",
+          "watchExpiry"
+        ]
+      },
       {
         "package": "packages/api/job-controller",
         "file": "src/index.ts",
@@ -1649,27 +1784,6 @@
         ]
       },
       {
-        "package": "packages/credentials/deepseek-account",
-        "file": "src/index.ts",
-        "namespaces": [
-          "account"
-        ],
-        "methods": [
-          "cancelSignIn",
-          "getBalance",
-          "getNotificationContent",
-          "getNotifications",
-          "getProfile",
-          "getState",
-          "hasRunningAccountTasks",
-          "reportNotificationEvent",
-          "signOut",
-          "startSignIn",
-          "watch",
-          "watchExpiry"
-        ]
-      },
-      {
         "package": "packages/document/office-kit",
         "file": "src/index.ts",
         "namespaces": [
@@ -1699,6 +1813,16 @@
           "stopFromPanel",
           "syncInspectManifest",
           "undefineFromPanel"
+        ]
+      },
+      {
+        "package": "packages/extensions/plugin-recommendations",
+        "file": "src/index.ts",
+        "namespaces": [
+          "pluginRecommendations"
+        ],
+        "methods": [
+          "describe"
         ]
       },
       {
@@ -1750,6 +1874,16 @@
         ]
       },
       {
+        "package": "packages/interaction/action-cards",
+        "file": "src/index.ts",
+        "namespaces": [
+          "actionCards"
+        ],
+        "methods": [
+          "act"
+        ]
+      },
+      {
         "package": "packages/interaction/commands",
         "file": "src/index.ts",
         "namespaces": [
@@ -1767,7 +1901,8 @@
           "permissionPresets"
         ],
         "methods": [
-          "catalog"
+          "catalog",
+          "set"
         ]
       },
       {
@@ -1868,14 +2003,15 @@
       }
     ],
     "totals": {
-      "package_files": 1076,
-      "package_lines": 242103,
-      "application_files": 62,
-      "application_lines": 7278,
-      "remote_files": 31,
-      "remote_methods": 153,
+      "package_files": 1186,
+      "package_lines": 259693,
+      "application_files": 63,
+      "application_lines": 7409,
+      "remote_files": 33,
+      "remote_methods": 156,
       "remote_namespaces": [
         "account",
+        "actionCards",
         "agentPresets",
         "agentTeams",
         "commands",
@@ -1893,6 +2029,7 @@
         "pluginInventory",
         "pluginManager",
         "pluginMarket",
+        "pluginRecommendations",
         "remoteAccess",
         "schedule",
         "session",
@@ -1910,10 +2047,10 @@
     }
   },
   "girder": {
-    "production_files": 407,
-    "production_lines": 240819,
-    "test_files": 400,
-    "test_lines": 214502
+    "production_files": 414,
+    "production_lines": 243845,
+    "test_files": 401,
+    "test_lines": 215219
   },
   "surface_comparison": {
     "upstream_remote_methods": [
@@ -1929,6 +2066,7 @@
       "account.startSignIn",
       "account.watch",
       "account.watchExpiry",
+      "actionCards.act",
       "agentPresets.list",
       "agentPresets.read",
       "agentPresets.select",
@@ -1976,6 +2114,7 @@
       "officeKit.generation",
       "officeKit.render",
       "permissionPresets.catalog",
+      "permissionPresets.set",
       "pluginInventory.list",
       "pluginManager.cancelInstall",
       "pluginManager.inspect",
@@ -1996,6 +2135,7 @@
       "pluginMarket.readEntryDetail",
       "pluginMarket.search",
       "pluginMarket.setIndexes",
+      "pluginRecommendations.describe",
       "remoteAccess.follow",
       "schedule.catalog",
       "schedule.create",
@@ -2083,16 +2223,33 @@
       "account.signOut",
       "account.startSignIn",
       "account.watch",
+      "account.watchExpiry",
       "account.watchState",
+      "actionCards.act",
       "agentPresets.list",
       "agentPresets.read",
       "agentPresets.select",
       "agentTeams.setEnabled",
       "commands.execute",
       "commands.list",
+      "credentials.describe",
+      "credentials.set",
+      "credentials.unset",
       "directoryPicker.createDirectory",
       "directoryPicker.list",
       "directoryPicker.pick",
+      "dynamicCordisRunner.getClientCode",
+      "dynamicCordisRunner.inventory",
+      "dynamicCordisRunner.invoke",
+      "dynamicCordisRunner.reportClientGuardFailure",
+      "dynamicCordisRunner.reportRenderFailure",
+      "dynamicCordisRunner.resolveInspectQuery",
+      "dynamicCordisRunner.resolveRequestRun",
+      "dynamicCordisRunner.runHostHalf",
+      "dynamicCordisRunner.settleUserRun",
+      "dynamicCordisRunner.stopFromPanel",
+      "dynamicCordisRunner.syncInspectManifest",
+      "dynamicCordisRunner.undefineFromPanel",
       "extension.activate",
       "extension.approve",
       "extension.deactivate",
@@ -2117,12 +2274,14 @@
       "llm.listProviders",
       "mcpManager.probe",
       "mcpManager.restart",
+      "mcpManager.watch",
       "messageFeedback.delete",
       "messageFeedback.list",
       "messageFeedback.put",
       "officeKit.generation",
       "officeKit.render",
       "permissionPresets.catalog",
+      "permissionPresets.set",
       "pluginInventory.list",
       "pluginManager.cancelInstall",
       "pluginManager.inspect",
@@ -2143,6 +2302,8 @@
       "pluginMarket.readEntryDetail",
       "pluginMarket.search",
       "pluginMarket.setIndexes",
+      "pluginRecommendations.describe",
+      "remoteAccess.follow",
       "schedule.catalog",
       "schedule.create",
       "schedule.deleteInactive",
@@ -2187,6 +2348,8 @@
       "session.workspacePathApplications",
       "sessionFeedback.record",
       "sessionReferenceResolver.candidates",
+      "sessionStatus.follow",
+      "sessionStatus.mark",
       "settings.delete",
       "settings.describe",
       "settings.get",
@@ -2209,6 +2372,7 @@
       "terminal.retain",
       "terminal.send",
       "terminal.shells",
+      "terminal.watch",
       "userQuestions.answer",
       "userQuestions.attachWait",
       "userQuestions.cancel",
@@ -2221,6 +2385,7 @@
       "workspace.archiveSession",
       "workspace.create",
       "workspace.delete",
+      "workspace.follow",
       "workspace.initializeDefault",
       "workspace.insertBefore",
       "workspace.insertSessionBefore",
@@ -2249,15 +2414,32 @@
       "account.signOut",
       "account.startSignIn",
       "account.watch",
+      "account.watchExpiry",
+      "actionCards.act",
       "agentPresets.list",
       "agentPresets.read",
       "agentPresets.select",
       "agentTeams.setEnabled",
       "commands.execute",
       "commands.list",
+      "credentials.describe",
+      "credentials.set",
+      "credentials.unset",
       "directoryPicker.createDirectory",
       "directoryPicker.list",
       "directoryPicker.pick",
+      "dynamicCordisRunner.getClientCode",
+      "dynamicCordisRunner.inventory",
+      "dynamicCordisRunner.invoke",
+      "dynamicCordisRunner.reportClientGuardFailure",
+      "dynamicCordisRunner.reportRenderFailure",
+      "dynamicCordisRunner.resolveInspectQuery",
+      "dynamicCordisRunner.resolveRequestRun",
+      "dynamicCordisRunner.runHostHalf",
+      "dynamicCordisRunner.settleUserRun",
+      "dynamicCordisRunner.stopFromPanel",
+      "dynamicCordisRunner.syncInspectManifest",
+      "dynamicCordisRunner.undefineFromPanel",
       "fileReferences.list",
       "goals.clear",
       "goals.complete",
@@ -2274,12 +2456,14 @@
       "llm.listProviders",
       "mcpManager.probe",
       "mcpManager.restart",
+      "mcpManager.watch",
       "messageFeedback.delete",
       "messageFeedback.list",
       "messageFeedback.put",
       "officeKit.generation",
       "officeKit.render",
       "permissionPresets.catalog",
+      "permissionPresets.set",
       "pluginInventory.list",
       "pluginManager.cancelInstall",
       "pluginManager.inspect",
@@ -2300,6 +2484,8 @@
       "pluginMarket.readEntryDetail",
       "pluginMarket.search",
       "pluginMarket.setIndexes",
+      "pluginRecommendations.describe",
+      "remoteAccess.follow",
       "schedule.catalog",
       "schedule.create",
       "schedule.deleteInactive",
@@ -2352,12 +2538,14 @@
       "terminal.rename",
       "terminal.retain",
       "terminal.shells",
+      "terminal.watch",
       "userQuestions.answer",
       "userQuestions.attachWait",
       "web.listProviders",
       "workspace.archiveSession",
       "workspace.create",
       "workspace.delete",
+      "workspace.follow",
       "workspace.initializeDefault",
       "workspace.insertBefore",
       "workspace.insertSessionBefore",
@@ -2372,28 +2560,7 @@
       "workspaceFiles.search",
       "workspaceFiles.stat"
     ],
-    "missing_in_girder": [
-      "account.watchExpiry",
-      "credentials.describe",
-      "credentials.set",
-      "credentials.unset",
-      "dynamicCordisRunner.getClientCode",
-      "dynamicCordisRunner.inventory",
-      "dynamicCordisRunner.invoke",
-      "dynamicCordisRunner.reportClientGuardFailure",
-      "dynamicCordisRunner.reportRenderFailure",
-      "dynamicCordisRunner.resolveInspectQuery",
-      "dynamicCordisRunner.resolveRequestRun",
-      "dynamicCordisRunner.runHostHalf",
-      "dynamicCordisRunner.settleUserRun",
-      "dynamicCordisRunner.stopFromPanel",
-      "dynamicCordisRunner.syncInspectManifest",
-      "dynamicCordisRunner.undefineFromPanel",
-      "mcpManager.watch",
-      "remoteAccess.follow",
-      "terminal.watch",
-      "workspace.follow"
-    ],
+    "missing_in_girder": [],
     "extra_in_girder": [
       "account.watchState",
       "extension.activate",
@@ -2412,6 +2579,8 @@
       "session.stream",
       "session.version",
       "session.workspaceDesktop",
+      "sessionStatus.follow",
+      "sessionStatus.mark",
       "settings.delete",
       "settings.get",
       "settings.list",

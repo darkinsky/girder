@@ -121,6 +121,7 @@
 //!   `CredentialsController` does not forward it over the wire, so neither does this.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use serde::Deserialize;
@@ -331,6 +332,14 @@ pub trait CredentialSource: Send + Sync {
     ///
     /// `Ok(true)` when it was there and is now gone, `Ok(false)` when nothing held it.
     fn unset(&self, reference: &str) -> Result<bool, String>;
+
+    /// Monotonic change token used by passive account watchers.
+    ///
+    /// Sources without notifications can keep the default value; the account stream still returns
+    /// its opening snapshot and remains cancellable.
+    fn revision(&self) -> u64 {
+        0
+    }
 }
 
 /// A source that keeps values in this process's memory.
@@ -347,6 +356,7 @@ pub struct MemoryCredentialSource {
     /// where a value came from, and a source that forgot it would report `configured` with no
     /// provenance — which is the one fact a "which layer is winning" bug needs.
     values: RwLock<BTreeMap<String, (String, String)>>,
+    revision: AtomicU64,
 }
 
 impl MemoryCredentialSource {
@@ -395,11 +405,20 @@ impl CredentialSource for MemoryCredentialSource {
             reference.to_owned(),
             (value.to_owned(), "memory".to_owned()),
         );
+        self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     fn unset(&self, reference: &str) -> Result<bool, String> {
-        Ok(self.write().remove(reference).is_some())
+        let removed = self.write().remove(reference).is_some();
+        if removed {
+            self.revision.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(removed)
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
     }
 }
 

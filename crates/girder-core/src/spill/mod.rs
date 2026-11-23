@@ -23,7 +23,6 @@
 //! with a hint about how to read it usefully. A struct with fields would be more precise for a program and useless
 //! to the model, which is the reader.
 
-
 pub mod policy;
 
 use std::path::{Path, PathBuf};

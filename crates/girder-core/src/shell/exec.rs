@@ -496,7 +496,8 @@ async fn run_shell_program(
     // Process mechanics live in `subprocess`; this function's job is to turn a script and a policy
     // into a spawn request and translate the outcome. Duplicating the pipe drain and the group kill
     // here is what made the earlier version need every fix twice.
-    let mut spawn = crate::shell::subprocess::SpawnOptions::new(program, args).with_timeout(options.timeout);
+    let mut spawn =
+        crate::shell::subprocess::SpawnOptions::new(program, args).with_timeout(options.timeout);
     if let Some(cwd) = &options.cwd {
         // The change is *validated* before it is used: `working_dir_gap` owns upstream's rules for
         // what a working-directory change may be (absolute after normalization, existing, a
@@ -560,7 +561,9 @@ async fn escalate_bash(
     let requested_name = args
         .get("sandbox_permissions")
         .and_then(serde_json::Value::as_str);
-    let justification = args.get("justification").and_then(serde_json::Value::as_str);
+    let justification = args
+        .get("justification")
+        .and_then(serde_json::Value::as_str);
     if requested_name.is_none() && justification.is_none() {
         return Ok(None);
     }

@@ -21,14 +21,13 @@
 //! A command's output is unbounded. The bound is decided before the run — a caller that discovered the
 //! size afterwards would already have buffered it — so it belongs here rather than at the read.
 
-
 pub mod exec;
 pub mod persistent_shell;
 pub mod process_group;
+pub mod process_identity;
 pub mod render;
 pub mod subprocess;
 pub mod subprocess_deep;
-pub mod process_identity;
 pub mod working_dir;
 
 use std::collections::BTreeMap;

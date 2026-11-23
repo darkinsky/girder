@@ -43,6 +43,7 @@ pub mod session_state_rpc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use girder_core::{
     BoxFut, ModelSelectionProjection, ProjectionRegistry, ReadOnly, RemoteCall, RemoteError,
@@ -217,6 +218,60 @@ impl LiveTurns for Only {
     fn is_running(&self, session_id: &str) -> bool {
         session_id == &*self.0
     }
+}
+
+#[tokio::test]
+async fn observe_event_stream_reports_ready_then_new_events() {
+    let dir = scratch("observe-event-stream");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let projections = projections();
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method(&mut registry, &catalog, &projections);
+
+    let request = call(json!({
+        "address": {"kind": "session", "sessionId": "s"},
+    }));
+    let handler = registry
+        .stream_method("session", "observeEvent", &request)
+        .expect("observeEvent is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/observeEvent",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let ready = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("ready")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(ready["type"], "ready");
+
+    store(&dir, "s")
+        .append(&SessionEvent::user_text("new", "new body"))
+        .expect("appended");
+    let event = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("event")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(event["type"], "event");
+    assert_eq!(event["event"]["seq"], 2);
+    assert_eq!(event["event"]["type"], "user/message");
+    assert_eq!(event["event"]["surfaceOp"], "append");
+    girder_core::session::client::assert_session_wire_event(&event["event"])
+        .expect("wire envelope");
+
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn catalog(root: &Path) -> Arc<dyn SessionCatalog> {
@@ -688,22 +743,188 @@ async fn control_baselines_each_session_from_its_own_log() {
         .append(&SessionEvent::TurnStart { turn: 7 })
         .expect("appended");
 
-    let raw = registry(&catalog(&dir), &projections())
-        .dispatch(NAMESPACE, "control", call(json!({})))
+    let registry = registry(&catalog(&dir), &projections());
+    let request = call(json!({}));
+    let handler = registry
+        .stream_method(NAMESPACE, "control", &request)
+        .expect("control is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/control",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let raw = tokio::time::timeout(Duration::from_secs(1), frames.recv())
         .await
-        .expect("baseline");
+        .expect("baseline")
+        .expect("stream")
+        .expect("frame");
 
     assert_eq!(raw["type"], "baseline");
-    assert_eq!(raw["done"], false);
     let blocks = &raw["value"]["projections"];
     assert_eq!(blocks["s1"]["asOfSeq"], 1);
     assert_eq!(blocks["s1"]["values"]["turnBoundary"]["lastTurn"], 0);
     assert_eq!(blocks["s2"]["asOfSeq"], 1);
     assert_eq!(blocks["s2"]["values"]["turnBoundary"]["lastTurn"], 7);
 
+    cancel.cancel();
+    let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn observe_projections_reports_ready_then_the_changed_key() {
+    let dir = scratch("observe-projections");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let projections = projections();
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method(&mut registry, &catalog, &projections);
+
+    let request = call(json!({
+        "address": {"kind": "session", "sessionId": "s"},
+    }));
+    let handler = registry
+        .stream_method("session", "observeProjections", &request)
+        .expect("observeProjections is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/observeProjections",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let ready = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("ready")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(ready["type"], "ready");
+
+    store(&dir, "s")
+        .append(&SessionEvent::TurnStart { turn: 7 })
+        .expect("appended");
+    let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("projection")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(frame["type"], "projection");
+    assert_eq!(frame["seq"], 2);
+    let changes = frame["changes"].as_array().expect("changes");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["key"], "turnBoundary");
+    assert_eq!(changes[0]["val"]["lastTurn"], 7);
+
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn observe_state_reports_the_passive_fields() {
+    let dir = scratch("observe-state");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let projections = projections();
+    let turns: Arc<dyn LiveTurns> = Arc::new(Only(Arc::from("s")));
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_with(&mut registry, &catalog, &projections, &turns);
+
+    let request = call(json!({"sessionId": "s"}));
+    let handler = registry
+        .stream_method("session", "observeState", &request)
+        .expect("observeState is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/observeState",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let state = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("state")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(state["cursor"], 1);
+    assert_eq!(state["active"], true);
+    assert_eq!(state["running"], true);
+    assert_eq!(state["queue"], json!([]));
+    assert_eq!(state["pendingInput"], json!([]));
+
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn control_follows_the_baseline_with_a_projection_diff() {
+    let dir = scratch("control-diff");
+    seed(&dir, "s1", 1);
+    let registry = registry(&catalog(&dir), &projections());
+    let request = call(json!({}));
+    let handler = registry
+        .stream_method(NAMESPACE, "control", &request)
+        .expect("control is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/control",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let baseline = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("baseline")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(baseline["type"], "baseline");
+
+    store(&dir, "s1")
+        .append(&SessionEvent::TurnStart { turn: 4 })
+        .expect("appended");
+    let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("projection")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(frame["type"], "projection");
+    assert_eq!(frame["sessionId"], "s1");
+    assert_eq!(frame["seq"], 2);
+    let changes = frame["changes"].as_array().expect("changes");
+    assert!(
+        changes
+            .iter()
+            .any(|change| change["key"] == "turnBoundary" && change["val"]["lastTurn"] == 4),
+        "{frame}"
+    );
+
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod session {

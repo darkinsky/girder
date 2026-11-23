@@ -1,7 +1,7 @@
-//! Tests for `session.follow`, the one method shaped for polling.
+//! Tests for `session.follow`.
 //!
-//! The property that matters is that a cursor resumes exactly: a subscription built on it must repeat nothing and miss
-//! nothing, and an off-by-one would do one of those silently.
+//! The Web client opens this as a stream. The first frame is the opening snapshot, and each later
+//! frame is one durable event that arrived after that cursor.
 
 use std::sync::Arc;
 
@@ -65,122 +65,153 @@ fn seed(dir: &std::path::Path, id: &str, count: usize) {
     }
 }
 
-async fn follow(
+async fn opened(
     registry: &girder_core::RemoteRegistry,
     args: serde_json::Value,
+) -> (
+    tokio_util::sync::CancellationToken,
+    tokio::sync::mpsc::UnboundedReceiver<Result<serde_json::Value, girder_core::RemoteError>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let call = call(args);
+    let handler = registry
+        .stream_method("session", "follow", &call)
+        .expect("follow is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, frames) = girder_core::StreamOpen::pair(
+        call,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/follow",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    (cancel, frames, running)
+}
+
+async fn next_frame(
+    frames: &mut tokio::sync::mpsc::UnboundedReceiver<
+        Result<serde_json::Value, girder_core::RemoteError>,
+    >,
 ) -> serde_json::Value {
-    registry
-        .dispatch("session", "follow", call(args))
+    tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
         .await
-        .expect("follow")
+        .expect("frame arrived")
+        .expect("stream open")
+        .expect("frame ok")
 }
 
 #[tokio::test]
-async fn a_first_poll_returns_the_beginning() {
+async fn the_opening_snapshot_contains_the_log() {
     let dir = scratch("first");
     seed(&dir, "s1", 3);
+    let registry = registry(&dir);
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({"address": {"kind": "session", "sessionId": "s1"}}),
+    )
+    .await;
 
-    let value = follow(&registry(&dir), json!({"sessionId": "s1"})).await;
-
-    let events = value["events"].as_array().expect("an array");
-    assert_eq!(events.len(), 3);
-    assert_eq!(events[0]["seq"], 1, "sequence numbers are one-based");
-    assert_eq!(value["nextSeq"], 3);
-    assert_eq!(value["done"], false, "a session never finishes");
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["cursor"], 3);
+    assert_eq!(snapshot["header"]["id"], "s1");
+    assert_eq!(snapshot["projections"]["asOfSeq"], 3);
+    assert_eq!(
+        snapshot["projections"]["values"]["turnBoundary"]["lastTurn"],
+        0
+    );
+    let records = snapshot["records"].as_array().expect("records");
+    assert_eq!(records.len(), 3);
+    let event = &records[0]["event"];
+    assert_eq!(event["type"], "user/message");
+    assert_eq!(event["seq"], 1);
+    assert_eq!(event["time"], 0);
+    assert_eq!(event["surfaceOp"], "append");
+    assert_eq!(event["data"]["role"], "user");
+    assert!(event.get("message").is_none());
+    girder_core::session::client::assert_session_wire_event(event).expect("wire envelope");
+    cancel.cancel();
+    let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn a_cursor_resumes_exactly() {
-    // The whole point: `nextSeq` from one poll is `afterSeq` for the next, with no overlap and no gap.
+async fn a_new_event_arrives_after_the_snapshot() {
     let dir = scratch("resume");
     seed(&dir, "s1", 2);
     let registry = registry(&dir);
+    let (cancel, mut frames, running) = opened(&registry, json!({"sessionId": "s1"})).await;
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["cursor"], 2);
 
-    let first = follow(&registry, json!({"sessionId": "s1"})).await;
-    assert_eq!(first["events"].as_array().map(Vec::len), Some(2));
-    let next = first["nextSeq"].as_u64().expect("a number");
-
-    // One more event, then resume from the cursor.
     SessionStore::new(dir.join("s1.jsonl.zst"))
         .append(&SessionEvent::user_text("m9", "late"))
         .expect("appended");
-    let second = follow(&registry, json!({"sessionId": "s1", "afterSeq": next})).await;
-
-    let events = second["events"].as_array().expect("an array");
-    assert_eq!(events.len(), 1, "only the new event: {events:?}");
-    assert_eq!(events[0]["seq"], 3);
+    let frame = next_frame(&mut frames).await;
+    assert_eq!(frame["type"], "event");
+    assert_eq!(frame["event"]["seq"], 3);
+    assert_eq!(frame["event"]["type"], "user/message");
+    assert_eq!(frame["event"]["data"]["content"][0]["text"], "late");
+    assert_eq!(frame["event"]["surfaceOp"], "append");
+    girder_core::session::client::assert_session_wire_event(&frame["event"])
+        .expect("wire envelope");
+    cancel.cancel();
+    let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn polling_past_the_end_returns_nothing_new() {
-    let dir = scratch("past");
-    seed(&dir, "s1", 2);
-    let registry = registry(&dir);
-
-    let value = follow(&registry, json!({"sessionId": "s1", "afterSeq": 99})).await;
-
-    assert_eq!(value["events"].as_array().map(Vec::len), Some(0));
-    assert_eq!(
-        value["nextSeq"], 99,
-        "the cursor does not move backwards: {value}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test]
-async fn a_limit_bounds_one_poll_and_the_cursor_follows_it() {
-    // A poll that returned everything would make one frame enormous and the next empty, which reads as a stall.
-    let dir = scratch("limit");
-    seed(&dir, "s1", 10);
-
-    let value = follow(&registry(&dir), json!({"sessionId": "s1", "limit": 4})).await;
-
-    assert_eq!(value["events"].as_array().map(Vec::len), Some(4));
-    assert_eq!(value["nextSeq"], 4, "the cursor stops where the page did");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[tokio::test]
-async fn an_unknown_session_ends_the_subscription() {
-    // Otherwise a client polls a session that does not exist forever.
+async fn an_unknown_session_opens_with_an_empty_snapshot() {
     let dir = scratch("unknown");
+    let registry = registry(&dir);
+    let (cancel, mut frames, running) = opened(&registry, json!({"sessionId": "absent"})).await;
 
-    let value = follow(&registry(&dir), json!({"sessionId": "absent"})).await;
-
-    assert_eq!(value["events"].as_array().map(Vec::len), Some(0));
-    assert_eq!(value["done"], true);
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["records"].as_array().map(Vec::len), Some(0));
+    assert_eq!(snapshot["cursor"], 0);
+    cancel.cancel();
+    let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn a_missing_session_id_is_refused() {
     let dir = scratch("missing");
+    let registry = registry(&dir);
+    let (_cancel, mut frames, running) = opened(&registry, json!({})).await;
 
-    let error = registry(&dir)
-        .dispatch("session", "follow", call(json!({})))
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
         .await
+        .expect("refusal arrived")
+        .expect("stream open")
         .expect_err("missing id");
-
     assert!(matches!(
         error,
         girder_core::RemoteError::InvalidArguments { .. }
     ));
+    let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn an_omitted_cursor_means_the_beginning() {
-    // Zero and absent must agree, or a caller that typed `afterSeq: 0` would get a different answer from one that
-    // omitted it.
-    let dir = scratch("zero");
-    seed(&dir, "s1", 2);
+async fn max_messages_keeps_the_newest_window() {
+    let dir = scratch("limit");
+    seed(&dir, "s1", 10);
     let registry = registry(&dir);
+    let (cancel, mut frames, running) =
+        opened(&registry, json!({"sessionId": "s1", "maxMessages": 4})).await;
 
-    let absent = follow(&registry, json!({"sessionId": "s1"})).await;
-    let zero = follow(&registry, json!({"sessionId": "s1", "afterSeq": 0})).await;
-
-    assert_eq!(absent["events"], zero["events"]);
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["records"].as_array().map(Vec::len), Some(4));
+    assert_eq!(snapshot["cursor"], 10);
+    assert_eq!(snapshot["hasMore"], true);
+    assert_eq!(snapshot["records"][0]["event"]["seq"], 7);
+    cancel.cancel();
+    let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }

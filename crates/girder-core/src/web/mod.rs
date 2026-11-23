@@ -22,7 +22,6 @@
 //! introduce a kind no consumer handles and the failure would appear at render time in front of a
 //! user. Closed means adding one breaks compilation at every consumer until each is handled.
 
-
 pub mod rpc;
 pub mod tools;
 

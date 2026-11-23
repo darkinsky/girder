@@ -19,38 +19,37 @@
 //! 1), so the token travels as an argument. An explicitly-passed token cannot be forgotten silently
 //! the way an ambient one can be ignored.
 
-
+pub mod attempt;
 pub mod block_assembler;
 pub mod cost_estimate;
+pub mod deepseek;
 pub mod deepseek_files;
 pub mod deepseek_options;
 pub mod deepseek_serialize;
 pub mod default_model;
+pub mod extra;
 pub mod image_block;
+pub mod image_tokens;
 pub mod listing_cache;
 pub mod listing_fetch;
-pub mod attempt;
-pub mod deepseek;
-pub mod extra;
 pub mod llm_final;
-pub mod image_tokens;
-pub mod openai;
-pub mod remote;
-pub mod retry_event;
-pub mod stats;
-pub mod stream;
 pub mod model_catalog_extra;
 pub mod model_fallback;
 pub mod model_memory;
+pub mod openai;
 pub mod pi_ai_apply;
 pub mod pi_ai_runtime;
 pub mod provider_catalog;
 pub mod provider_health;
 pub mod providers;
+pub mod remote;
 pub mod request_header;
 pub mod response_cache;
 pub mod retry;
+pub mod retry_event;
 pub mod retrying_provider;
+pub mod stats;
+pub mod stream;
 pub mod stream_blocks;
 pub mod stream_flow;
 pub mod stream_method;
@@ -67,8 +66,8 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::util::brand::ToolCallId;
 use crate::core::scope::BoxFut;
+use crate::util::brand::ToolCallId;
 
 /// A boxed chunk stream.
 ///

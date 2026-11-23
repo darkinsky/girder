@@ -53,10 +53,8 @@
 //! that refused them would make a validating client reject a request this server would happily
 //! answer, and it would make adding a field later a breaking change for every client that validates.
 
-// The method is not mounted yet: adding `retain` to `terminal_rpc`'s table is a separate change to
-// that module, so until the crate root registers this handler every item here is reachable from the
-// module's own tests and from nowhere else. Declared rather than removed so the file keeps compiling
-// as one unit, and so wiring it does not require deleting this attribute.
+// The parser and persistence projection remain independently testable; the Remote stream wiring
+// lives in `terminal/rpc.rs` because it also needs the live terminal registry.
 #![allow(dead_code)]
 
 use serde_json::{Value, json};

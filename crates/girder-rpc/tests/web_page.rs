@@ -1,4 +1,4 @@
-//! Tests for the probe page.
+//! Tests for frontend routing.
 //!
 //! The page is a single embedded string, so the tests check the properties a browser depends on: it
 //! is served, it is HTML, and the buttons it renders name methods the server actually has.
@@ -30,7 +30,7 @@ async fn get_with_cookie(base: &str, path: &str, cookie: Option<&str>) -> String
 
 /// Starts the server on an ephemeral port and returns its base URL.
 ///
-/// A real listener rather than an in-process test harness: the page is fetched by a browser over TCP,
+/// A real listener rather than an in-process test harness: the root response is fetched over TCP,
 /// and a harness that skipped the socket would not catch a routing mistake.
 async fn serve() -> (String, tokio_util::sync::CancellationToken) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -64,8 +64,8 @@ async fn serve_dist(
     let address = listener.local_addr().expect("address");
     let cancel = tokio_util::sync::CancellationToken::new();
     let stop = cancel.clone();
-    let config = girder_core::host::webserver::StaticConfig::from_index(index)
-        .expect("absolute dist index");
+    let config =
+        girder_core::host::webserver::StaticConfig::from_index(index).expect("absolute dist index");
 
     tokio::spawn(async move {
         let _ = girder_rpc::serve_with_options(
@@ -85,18 +85,13 @@ async fn serve_dist(
 }
 
 #[tokio::test]
-async fn the_page_is_served_at_the_root() {
+async fn the_root_is_empty_without_a_configured_frontend() {
     let (base, cancel) = serve().await;
 
     let response = get(&base, "/").await;
     cancel.cancel();
 
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert!(
-        response.to_lowercase().contains("content-type: text/html"),
-        "a browser needs HTML:\n{response}"
-    );
-    assert!(response.contains("<!doctype html>"));
+    assert!(response.starts_with("HTTP/1.1 404"), "{response}");
 }
 
 #[test]
@@ -202,7 +197,7 @@ fn the_page_does_not_claim_features_it_lacks() {
 
 #[tokio::test]
 async fn the_page_and_the_api_share_one_origin() {
-    // Serving the page from the API process means a browser has no second origin to configure.
+    // Without a configured dist, the API process serves no frontend.
     let (base, cancel) = serve().await;
 
     let page = get(&base, "/").await;
@@ -210,7 +205,7 @@ async fn the_page_and_the_api_share_one_origin() {
     let api = get(&base, "/api/remote.invoke").await;
     cancel.cancel();
 
-    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    assert!(page.starts_with("HTTP/1.1 404"), "{page}");
     assert!(
         !api.starts_with("HTTP/1.1 200"),
         "GET on a POST endpoint must not succeed:\n{api}"
@@ -219,10 +214,7 @@ async fn the_page_and_the_api_share_one_origin() {
 
 #[tokio::test]
 async fn a_configured_dist_replaces_the_probe_and_keeps_api_paths_reserved() {
-    let root = std::env::temp_dir().join(format!(
-        "girder-rpc-static-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("girder-rpc-static-{}", std::process::id()));
     let _ = tokio::fs::remove_dir_all(&root).await;
     tokio::fs::create_dir_all(&root).await.expect("create dist");
     let index = root.join("index.html");
@@ -253,10 +245,7 @@ async fn a_configured_dist_replaces_the_probe_and_keeps_api_paths_reserved() {
 
 #[tokio::test]
 async fn browser_auth_exchanges_the_launch_url_before_serving_index() {
-    let root = std::env::temp_dir().join(format!(
-        "girder-rpc-auth-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("girder-rpc-auth-{}", std::process::id()));
     let _ = tokio::fs::remove_dir_all(&root).await;
     tokio::fs::create_dir_all(&root).await.expect("create dist");
     let index = root.join("index.html");

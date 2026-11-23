@@ -24,11 +24,11 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::llm::llm_final::{ProviderInfo, Runtime};
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
 use crate::api::remote_service::{Endpoint, Handler, RemoteService, register_remote_service};
 use crate::core::scope::BoxFut;
 use crate::core::service::ServiceKey;
+use crate::llm::llm_final::{ProviderInfo, Runtime};
 
 /// The `llm` capability.
 ///

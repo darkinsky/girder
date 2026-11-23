@@ -70,7 +70,6 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-
 /// The default limit on one command, matching the one-shot shell's.
 ///
 /// A command that never returns would otherwise hold a tool call open for the session's life.
@@ -139,7 +138,8 @@ impl Config {
     /// the deployments that want bash.
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
         let parent: BTreeMap<String, String> = std::env::vars().collect();
-        let environment = crate::util::launch_environment::resolve(&parent, &BTreeMap::new()).values;
+        let environment =
+            crate::util::launch_environment::resolve(&parent, &BTreeMap::new()).values;
 
         Self {
             shell: "sh".to_owned(),

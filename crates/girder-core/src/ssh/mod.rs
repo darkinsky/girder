@@ -21,8 +21,6 @@
 //! A remote command that failed still produced output, and a caller that only saw an error would lose the
 //! diagnostic the command printed before failing. The status is data, not the transport's condition.
 
-
-
 use std::path::PathBuf;
 use std::time::Duration;
 

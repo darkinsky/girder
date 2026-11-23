@@ -17,11 +17,11 @@
 //! subscription re-invokes its method every [`DEFAULT_POLL_INTERVAL`] and forwards whatever came
 //! back. That is not the design this module wants; it is what the layers below can express today:
 //!
-//! - A Remote method is `Fn(RemoteCall) -> BoxFut<Result<Value>>` — one call in, one value out. It
-//!   has no way to hand back a series, so the host has nothing to await between values.
-//! - Nothing in the registry marks a method as streaming, so dispatch cannot tell `job.follow` from
-//!   `job.list`. [`SUBSCRIBABLE_METHODS`] is that knowledge, held here, and it is a list of names
-//!   rather than a property of the handlers.
+//! - A unary Remote method is `Fn(RemoteCall) -> BoxFut<Result<Value>>`. A method registered with
+//!   `register_stream` can push a series on the mux, and this hub does not use that path: it still
+//!   re-invokes the unary method on a timer.
+//! - [`SUBSCRIBABLE_METHODS`] is still a list of names. The mux uses `RemoteRegistry::is_streaming`
+//!   for the browser carrier; this hub has not moved onto that registry flag.
 //! - The event bus (`girder_core::EventBus`) can notify the host, and the mux already forwards emits,
 //!   but there is no mapping from a bus dispatch to "which subscription wants it": the arguments of
 //!   `agent/turn` are not the return value of `session.observeEvent`.

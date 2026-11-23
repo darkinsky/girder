@@ -358,6 +358,7 @@ fn register_terminal_surface(remote: &mut girder_core::RemoteRegistry) {
         Arc::new(girder_core::TerminalPersistStore::new(
             sessions_root().join("terminals"),
         )),
+        &terminals,
     );
 }
 
@@ -472,13 +473,11 @@ async fn serve(
         .map(girder_core::host::webserver::StaticConfig::from_index)
         .transpose()
         .map_err(|error| anyhow::anyhow!("`--dist-index`: {error}"))?;
-    let browser_auth = static_frontend
-        .as_ref()
-        .map(|_| {
-            Arc::new(girder_rpc::BrowserAuth::random(std::time::Duration::from_secs(
-                7 * 24 * 60 * 60,
-            )))
-        });
+    let browser_auth = static_frontend.as_ref().map(|_| {
+        Arc::new(girder_rpc::BrowserAuth::random(
+            std::time::Duration::from_secs(7 * 24 * 60 * 60),
+        ))
+    });
 
     // Resolved before the banner so the banner reports what is actually forwarded: printing "no events
     // forwarded" and then forwarding one would make the line lie.
@@ -679,13 +678,17 @@ async fn serve(
     // inventing one here would be guessing at the environment. `GIRDER_REQUIRE_PEER=1` turns it on,
     // and the directory's defaults then refuse rather than admit, which is the safe direction: a
     // connection that cannot prove itself is not served.
-    let directory = match std::env::var("GIRDER_REQUIRE_PEER").as_deref() {
+    let mut directory = match std::env::var("GIRDER_REQUIRE_PEER").as_deref() {
         Ok("1" | "true" | "yes") => {
             println!("peer identity: required (a connection must present a credential)");
             Some(Arc::new(girder_core::api::gateway::PeerDirectory::new()))
         }
         _ => None,
     };
+    if browser_auth.is_some() && directory.is_none() {
+        println!("peer identity: browser and /connect operators");
+        directory = Some(Arc::new(girder_core::api::gateway::PeerDirectory::new()));
+    }
     let cancel = CancellationToken::new();
     match directory {
         Some(directory) => {
@@ -1071,6 +1074,13 @@ fn register_workspace_file_surface(
     );
     // `permissionPresets.catalog`: the same built-in set the approval layer enforces, so a client
     // reading this and a rule refusing a call cannot disagree about which presets exist.
+    girder_core::register_remote_access_follow(remote);
+    girder_core::api::session_status_rpc::register_session_status_methods(remote);
+    girder_core::interaction::action_cards_rpc::register_action_card_methods(remote);
+    girder_core::extensions::plugin_recommendations_rpc::register_plugin_recommendation_methods(
+        remote,
+    );
+    girder_core::extensions::dynamic_runner_rpc::register_dynamic_runner_methods(remote);
     girder_core::credentials::permission_presets_rpc::register_permission_preset_methods(
         remote,
         &girder_core::credentials::permission_presets_rpc::default_catalogue(),
@@ -1088,14 +1098,17 @@ fn register_workspace_file_surface(
         Some(sessions_root()),
         girder_core::now_millis(),
     );
+    let preferences: Arc<dyn girder_core::WorkspacePreferences> =
+        Arc::new(girder_core::InMemoryPreferences::new());
+    let feed = Arc::new(girder_core::WorkspaceFeed::new(
+        workspaces.as_ref(),
+        preferences.as_ref(),
+    ));
+    girder_core::register_workspace_follow_allow_all(remote, workspaces, &preferences, &feed);
     girder_core::register_workspace_extra_methods(
         remote,
         workspaces,
-        &{
-            let preferences: Arc<dyn girder_core::WorkspacePreferences> =
-                Arc::new(girder_core::InMemoryPreferences::new());
-            preferences
-        },
+        &preferences,
         &session_catalog(),
     );
     girder_core::register_workspace_file_methods(remote, fs, workspaces);
@@ -2073,10 +2086,10 @@ fn register_workflow_surface(remote: &mut girder_core::RemoteRegistry) {
 
 /// Registers the `userQuestions` namespace.
 ///
-/// Upstream has two methods: `answer` and a streaming `attachWait`. This build serves `answer`, adds `list` because
+/// Upstream has two methods: `answer` and a streaming `attachWait`. This build serves both, and adds `list` because
 /// upstream discovers pending questions through a session projection this build does not have -- without it a client could
-/// answer a question it had no way to find -- and leaves `attachWait` unserved and named rather than registered as a unary
-/// method a client would discover cannot stream.
+/// answer a question it had no way to find. `attachWait` yields one remaining-time frame and stays open until that
+/// question settles.
 fn register_question_surface(remote: &mut girder_core::RemoteRegistry) {
     // Memory, not a file: a question is waited on by a live turn, so a question that outlived the process would be one
     // nobody is waiting for any more.

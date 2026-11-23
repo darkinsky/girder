@@ -69,6 +69,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use tokio::sync::Notify;
+
 use serde_json::{Map, Value};
 
 use girder_core::is_lossless;
@@ -628,6 +630,7 @@ pub struct UplinkInbox {
     max_bytes: u64,
     endpoint: String,
     state: Mutex<UplinkState>,
+    wake: Notify,
 }
 
 impl UplinkInbox {
@@ -638,6 +641,7 @@ impl UplinkInbox {
             max_bytes,
             endpoint: endpoint.into(),
             state: Mutex::new(UplinkState::default()),
+            wake: Notify::new(),
         }
     }
 
@@ -691,6 +695,8 @@ impl UplinkInbox {
                 endpoint: self.endpoint.clone(),
             };
             fail_locked(&mut state, UplinkError::Violation(violation.clone()));
+            drop(state);
+            self.wake.notify_one();
             return Err(violation);
         }
         if state.bytes.saturating_add(frame_bytes) > self.max_bytes {
@@ -699,10 +705,14 @@ impl UplinkInbox {
                 max_bytes: self.max_bytes,
             };
             fail_locked(&mut state, UplinkError::Violation(violation.clone()));
+            drop(state);
+            self.wake.notify_one();
             return Err(violation);
         }
         state.bytes = state.bytes.saturating_add(frame_bytes);
         state.queue.push_back((value, frame_bytes));
+        drop(state);
+        self.wake.notify_one();
         Ok(())
     }
 
@@ -713,6 +723,8 @@ impl UplinkInbox {
             return;
         }
         state.ended = true;
+        drop(state);
+        self.wake.notify_one();
     }
 
     /// Fails the stream for a non-violation reason, dropping everything buffered.
@@ -726,6 +738,8 @@ impl UplinkInbox {
                 reason: reason.into(),
             },
         );
+        drop(state);
+        self.wake.notify_one();
     }
 
     /// The consumer stopped reading: later items are dropped and a pending read would end.
@@ -734,6 +748,8 @@ impl UplinkInbox {
         state.closed = true;
         state.queue.clear();
         state.bytes = 0;
+        drop(state);
+        self.wake.notify_one();
     }
 
     /// Whether the Client has half-closed this stream.
@@ -771,6 +787,20 @@ impl UplinkInbox {
             return Ok(UplinkPoll::Ended);
         }
         Ok(UplinkPoll::Pending)
+    }
+
+    /// Waits for the next uplink item.
+    ///
+    /// `Ok(None)` is the client's half-close. A failure already recorded by the inbox is returned
+    /// as-is, so a host method can stop instead of spinning on [`UplinkPoll::Pending`].
+    pub async fn recv(&self) -> Result<Option<Value>, UplinkError> {
+        loop {
+            match self.poll()? {
+                UplinkPoll::Item(value) => return Ok(Some(value)),
+                UplinkPoll::Ended => return Ok(None),
+                UplinkPoll::Pending => self.wake.notified().await,
+            }
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, UplinkState> {

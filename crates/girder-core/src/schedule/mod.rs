@@ -37,7 +37,6 @@
 //! this instant", and a scheduler loop is the caller's business. That separation is what makes every
 //! rule testable without waiting or mocking a clock.
 
-
 pub mod reminder;
 pub mod rpc;
 pub mod runner;

@@ -1,4 +1,4 @@
-//! `permissionPresets.catalog`: every selectable preset, in contribution order.
+//! `permissionPresets.catalog` and `permissionPresets.set`.
 //!
 //! # What upstream has
 //!
@@ -29,13 +29,13 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::credentials::permissions::Catalogue;
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
+use crate::credentials::permissions::Catalogue;
 
 /// The namespace this method registers under, as upstream spells it.
 pub const NAMESPACE: &str = "permissionPresets";
 
-/// The one endpoint.
+/// The catalog endpoint.
 pub const CATALOG_METHOD: &str = "catalog";
 
 /// Renders one entry the way upstream's `PresetOption` is shaped.
@@ -64,6 +64,7 @@ pub fn register_permission_preset_methods(
     default_preset: &str,
 ) {
     let catalogue = Arc::clone(catalogue);
+    let selecting = Arc::clone(&catalogue);
     let default_preset = default_preset.to_owned();
     registry.register(NAMESPACE, CATALOG_METHOD, move |_call: RemoteCall| {
         let catalogue = Arc::clone(&catalogue);
@@ -89,6 +90,61 @@ pub fn register_permission_preset_methods(
         NAMESPACE,
         CATALOG_METHOD,
         crate::guard::access::Declaration::read("permissionPreset"),
+    );
+
+    let chosen = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        String,
+        String,
+    >::new()));
+    registry.register(NAMESPACE, "set", move |call: RemoteCall| {
+        let catalogue = Arc::clone(&selecting);
+        let chosen = Arc::clone(&chosen);
+        Box::pin(async move {
+            let session_id = call
+                .args
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "set".to_owned(),
+                    message: "`sessionId` is required".to_owned(),
+                })?;
+            let preset = call
+                .args
+                .get("preset")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "set".to_owned(),
+                    message: "`preset` is required".to_owned(),
+                })?;
+            let Some(entry) = catalogue.get(preset) else {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "set".to_owned(),
+                    message: format!("unknown preset `{preset}`"),
+                });
+            };
+            if !entry.available {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: "set".to_owned(),
+                    message: format!("preset `{preset}` is not available"),
+                });
+            }
+            chosen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(session_id.to_owned(), entry.preset.name.clone());
+            Ok(json!({ "currentValue": entry.preset.name }))
+        })
+    });
+    registry.declare(
+        NAMESPACE,
+        "set",
+        crate::guard::access::Declaration::write("session"),
     );
 }
 
@@ -163,5 +219,35 @@ mod tests {
         }
         // Availability always travels: a selector needs it to explain a disabled knob.
         assert!(option.get("available").is_some(), "{option}");
+    }
+
+    #[tokio::test]
+    async fn set_records_a_known_preset_and_refuses_an_unknown_one() {
+        let mut registry = RemoteRegistry::new();
+        register_permission_preset_methods(&mut registry, &default_catalogue(), "workspace-write");
+        let switched = registry
+            .dispatch(
+                NAMESPACE,
+                "set",
+                RemoteCall {
+                    args: json!({ "sessionId": "s1", "preset": "workspace-write" }),
+                    peer: "test".to_owned(),
+                },
+            )
+            .await
+            .expect("known preset");
+        assert_eq!(switched["currentValue"], "workspace-write");
+        let error = registry
+            .dispatch(
+                NAMESPACE,
+                "set",
+                RemoteCall {
+                    args: json!({ "sessionId": "s1", "preset": "no-such" }),
+                    peer: "test".to_owned(),
+                },
+            )
+            .await
+            .expect_err("unknown preset");
+        assert_eq!(error.code(), "INVALID_ARGUMENTS");
     }
 }

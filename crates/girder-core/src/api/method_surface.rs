@@ -20,7 +20,7 @@
 //!
 //! # What is deliberately absent
 //!
-//! Methods the registry only *declares* as unimplemented -- `terminal.watch`, `terminal.rename`,
+//! Methods the registry only *declares* as unimplemented -- `terminal.rename`,
 //! `terminal.retain`, `settings.describe`, `settings.openSettingsDocument` -- are not listed. They
 //! have no handler, so they are not part of the surface a client can call; [`reconcile`] compares
 //! against registered methods and would report them as noise forever.
@@ -83,6 +83,16 @@ const DECLARED: &[Declared] = &[
     Declared {
         method: "session.follow",
         registration: "register_follow",
+        capability: None,
+    },
+    Declared {
+        method: "sessionStatus.follow",
+        registration: "register_session_status_methods",
+        capability: None,
+    },
+    Declared {
+        method: "sessionStatus.mark",
+        registration: "register_session_status_methods",
         capability: None,
     },
     Declared {
@@ -245,6 +255,11 @@ const DECLARED: &[Declared] = &[
         capability: Some("ServerConfig"),
     },
     Declared {
+        method: "mcpManager.watch",
+        registration: "register_mcp_manager_methods",
+        capability: Some("MCP registry"),
+    },
+    Declared {
         // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
         method: "skills.list",
         registration: "register_skill_methods",
@@ -255,6 +270,21 @@ const DECLARED: &[Declared] = &[
         method: "fileReferences.list",
         registration: "register_file_reference_methods",
         capability: Some("PathBuf"),
+    },
+    Declared {
+        method: "credentials.describe",
+        registration: "register_credential_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "credentials.set",
+        registration: "register_credential_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "credentials.unset",
+        registration: "register_credential_methods",
+        capability: Some("CredentialSource"),
     },
     Declared {
         // Served from a file the endpoint survey missed: it scanned `src/index.ts` only.
@@ -425,6 +455,76 @@ const DECLARED: &[Declared] = &[
         capability: Some("CredentialSource"),
     },
     Declared {
+        method: "account.watchExpiry",
+        registration: "register_account_methods",
+        capability: Some("CredentialSource"),
+    },
+    Declared {
+        method: "actionCards.act",
+        registration: "register_action_card_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.getClientCode",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.inventory",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.invoke",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.reportClientGuardFailure",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.reportRenderFailure",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.resolveInspectQuery",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.resolveRequestRun",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.runHostHalf",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.settleUserRun",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.stopFromPanel",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.syncInspectManifest",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
+        method: "dynamicCordisRunner.undefineFromPanel",
+        registration: "register_dynamic_runner_methods",
+        capability: None,
+    },
+    Declared {
         // Whether a session's tree runs as a team. The root is the caller's assertion, checked
         // rather than trusted, because this build holds no subagent tree to derive it.
         method: "agentTeams.setEnabled",
@@ -494,6 +594,11 @@ const DECLARED: &[Declared] = &[
         capability: Some("WorkspaceRegistry + WorkspacePreferences"),
     },
     Declared {
+        method: "workspace.follow",
+        registration: "register_workspace_follow",
+        capability: Some("WorkspaceFeed"),
+    },
+    Declared {
         // Creates the first workspace, and only when there is none: a client calls it on every
         // start, so a version that always created would add a workspace per launch.
         method: "workspace.initializeDefault",
@@ -545,6 +650,21 @@ const DECLARED: &[Declared] = &[
         method: "permissionPresets.catalog",
         registration: "register_permission_preset_methods",
         capability: Some("Catalogue"),
+    },
+    Declared {
+        method: "permissionPresets.set",
+        registration: "register_permission_preset_methods",
+        capability: Some("Catalogue"),
+    },
+    Declared {
+        method: "pluginRecommendations.describe",
+        registration: "register_plugin_recommendation_methods",
+        capability: None,
+    },
+    Declared {
+        method: "remoteAccess.follow",
+        registration: "register_remote_access_follow",
+        capability: None,
     },
     Declared {
         // Admits a run, then reports the delivery it cannot make. Both facts travel: a client that
@@ -756,6 +876,11 @@ const DECLARED: &[Declared] = &[
     },
     Declared {
         method: "terminal.attach",
+        registration: "register_terminal_methods",
+        capability: Some("TerminalRegistry + TerminalLauncher"),
+    },
+    Declared {
+        method: "terminal.watch",
         registration: "register_terminal_methods",
         capability: Some("TerminalRegistry + TerminalLauncher"),
     },

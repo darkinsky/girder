@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::host::rpc::Opener;
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
+use crate::host::rpc::Opener;
 
 /// The namespace and method this module registers.
 pub const NAMESPACE: &str = "session";

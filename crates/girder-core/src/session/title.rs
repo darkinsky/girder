@@ -127,11 +127,8 @@ pub async fn record_opening_title(
         .iter()
         .enumerate()
         .find_map(|(index, event)| {
-            matches!(event, SessionEvent::UserMessage { .. }).then(|| {
-                u64::try_from(index)
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(1)
-            })
+            matches!(event, SessionEvent::UserMessage { .. })
+                .then(|| u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1))
         })
         .into_iter()
         .collect();

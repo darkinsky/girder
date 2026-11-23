@@ -45,10 +45,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
 use crate::core::agent::Agent;
 use crate::llm::ContentBlock;
 use crate::session::message::{Message, Role};
-use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
 
 /// The namespace these methods register under, as upstream spells it.
 pub const NAMESPACE: &str = "subagents";

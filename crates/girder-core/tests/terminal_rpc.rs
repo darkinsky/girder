@@ -28,11 +28,11 @@ use std::time::Duration;
 
 use girder_core::{
     BoxFut, RemoteCall, RemoteError, RemoteRegistry, Shell, TerminalError, TerminalLaunch,
-    TerminalLauncher, TerminalRegistry,
+    TerminalLauncher, TerminalPersistStore, TerminalRegistry,
 };
 use girder_core::{
     TERMINAL_DEFAULT_READ_WAIT_MS as DEFAULT_READ_WAIT_MS, TERMINAL_MAX_WAIT_MS as MAX_WAIT_MS,
-    register_terminal_rpc_methods as register_terminal_methods,
+    register_terminal_retain_method, register_terminal_rpc_methods as register_terminal_methods,
 };
 use serde_json::{Value, json};
 
@@ -261,6 +261,28 @@ async fn creating_a_terminal_puts_it_in_the_listing() {
     let listed = harness.ok("list", json!({})).await;
     assert_eq!(ids(&listed), vec!["t1".to_owned()]);
     assert_eq!(listed["terminals"][0]["state"], "running");
+}
+
+#[tokio::test]
+async fn session_scoped_terminal_listing_only_returns_owned_terminals() {
+    let _dir = scratch("session-list");
+    let harness = Harness::serving(Arc::new(FakeShell::new(None)));
+
+    harness
+        .ok("create", json!({"id": "s1-terminal", "sessionId": "s1"}))
+        .await;
+    harness
+        .ok("create", json!({"id": "s2-terminal", "sessionId": "s2"}))
+        .await;
+
+    assert_eq!(
+        ids(&harness.ok("list", json!({"sessionId": "s1"})).await),
+        vec!["s1-terminal".to_owned()]
+    );
+    assert_eq!(
+        ids(&harness.ok("list", json!({"sessionId": "s2"})).await),
+        vec!["s2-terminal".to_owned()]
+    );
 }
 
 // ---- create -----------------------------------------------------------------------------------
@@ -583,10 +605,163 @@ fn the_streaming_methods_are_declared_as_gaps() {
         declared.contains(&"terminal.rename".to_owned()),
         "{declared:?}"
     );
-    for name in ["list", "create", "send", "read", "close", "attach"] {
+    for name in ["list", "create", "send", "read", "close"] {
         assert!(
             harness.registry.get("terminal", name).is_some(),
             "`terminal.{name}` should be registered"
         );
     }
+    assert!(harness.registry.is_streaming("terminal", "watch"));
+    assert!(harness.registry.is_streaming("terminal", "attach"));
+}
+
+#[tokio::test]
+async fn watch_pushes_the_roster_then_the_next_change() {
+    let harness = Harness::serving(Arc::new(FakeShell::new(None)));
+    let call = RemoteCall {
+        args: json!({ "sessionId": "s1" }),
+        peer: "test".to_owned(),
+    };
+    let handler = harness
+        .registry
+        .stream_method("terminal", "watch", &call)
+        .expect("watch is a stream");
+    let inbox = Arc::new(girder_core::api::extra::UplinkInbox::new(
+        1024,
+        "terminal/watch",
+    ));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(call, inbox, cancel.clone());
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+
+    let first = frames.recv().await.expect("the roster opens").expect("ok");
+    assert_eq!(first, json!([]));
+
+    let terminal = Arc::new(girder_core::TerminalSession::new(
+        "t1",
+        Arc::new(FakeShell::new(None)),
+        girder_core::TerminalSize::new(80, 24).expect("size"),
+        1024,
+    ));
+    terminal.set_owner_session_id(Some("s1"));
+    harness.terminals.add(terminal).expect("added");
+    let second = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("the change arrives")
+        .expect("frame")
+        .expect("ok");
+    assert_eq!(second[0]["id"], "t1");
+
+    cancel.cancel();
+    let _ = running.await;
+}
+
+#[tokio::test]
+async fn attach_stream_starts_with_a_snapshot_and_pushes_output() {
+    let shell = Arc::new(FakeShell::new(Some("ready\n")));
+    let harness = Harness::serving(Arc::clone(&shell));
+    harness
+        .ok("create", json!({"id": "t1", "sessionId": "s1"}))
+        .await;
+
+    let call = RemoteCall {
+        args: json!({"id": "t1", "sessionId": "s1"}),
+        peer: "test".to_owned(),
+    };
+    let handler = harness
+        .registry
+        .stream_method("terminal", "attach", &call)
+        .expect("attach is a stream");
+    let inbox = Arc::new(girder_core::api::extra::UplinkInbox::new(
+        1024,
+        "terminal/attach",
+    ));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) =
+        girder_core::StreamOpen::pair(call, Arc::clone(&inbox), cancel.clone());
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+
+    let snapshot = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("snapshot")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["info"]["id"], "t1");
+    assert_eq!(snapshot["screen"], "");
+
+    let output = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("output")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(output["type"], "output");
+    assert_eq!(output["sequence"], 1);
+    assert_eq!(output["data"], "ready\n");
+
+    inbox
+        .push(json!({"type": "write", "sequence": 4, "data": "pwd\n"}), 64)
+        .expect("uplink");
+    let ack = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("ack")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(ack, json!({"type": "ack", "sequence": 4}));
+    assert_eq!(shell.written(), vec!["pwd\n".to_owned()]);
+
+    cancel.cancel();
+    let _ = running.await;
+}
+
+#[tokio::test]
+async fn retain_stream_persists_the_transcript_then_stays_open() {
+    let _dir = scratch("retain-stream");
+    let shell = Arc::new(FakeShell::new(Some("persist me\n")));
+    let mut harness = Harness::serving(Arc::clone(&shell));
+    harness
+        .ok("create", json!({"id": "t1", "sessionId": "s1"}))
+        .await;
+    harness.ok("read", json!({"id": "t1"})).await;
+
+    let store = Arc::new(TerminalPersistStore::new(_dir.join("retained")));
+    register_terminal_retain_method(&mut harness.registry, store.clone(), &harness.terminals);
+    let call = RemoteCall {
+        args: json!({"id": "t1", "sessionId": "s1"}),
+        peer: "test".to_owned(),
+    };
+    let handler = harness
+        .registry
+        .stream_method("terminal", "retain", &call)
+        .expect("retain is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        call,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "terminal/retain",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("retained")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(frame, json!({"type": "retained"}));
+    assert_eq!(
+        store.load("t1").expect("stored").as_deref(),
+        Some("persist me\n")
+    );
+
+    cancel.cancel();
+    let _ = running.await;
 }

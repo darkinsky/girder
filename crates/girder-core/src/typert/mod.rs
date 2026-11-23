@@ -24,9 +24,8 @@
 //! arrived in a later revision must be optional from the client's point of view, even when it is
 //! required on the server. That distinction cannot live in the schema and is recorded beside it.
 
-
-pub mod registry;
 pub mod json;
+pub mod registry;
 
 use std::collections::BTreeMap;
 

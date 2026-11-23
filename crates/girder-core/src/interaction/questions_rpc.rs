@@ -15,7 +15,7 @@
 //! | upstream method | upstream shape | here |
 //! |---|---|---|
 //! | `userQuestions.answer(agentId, callId, answer)` | `boolean` | [`ANSWER_METHOD`] — serves an answer, returns the recorded reply |
-//! | `userQuestions.attachWait(agentId, callId, signal)` | `stream` of `{remainingMs}` | **not served** — see [`UNSERVED_METHODS`] |
+//! | `userQuestions.attachWait(sessionId, callId, signal)` | `stream` of `{remainingMs}` | [`ATTACH_WAIT_METHOD`] — one remaining-time frame, then open until the question settles |
 //!
 //! Upstream *lists* pending questions not through a method but through a Session projection
 //! (`faceOf('userQuestions')` → `{active, settled}`, see `AskUserQuestionItem` and
@@ -23,12 +23,9 @@
 //! is added: without it a client could answer a question it had no way to discover. [`CANCEL_METHOD`]
 //! is added for the same reason from the other side — see below.
 //!
-//! `attachWait` is the one upstream method with no counterpart here. It is a *stream* that reports
-//! the remaining time on a foreground wait so the client can end a countdown when the Host closes
-//! it. This crate's registry dispatches unary calls only (`RemoteMethod` returns one `Value`), so
-//! serving it would need a streaming dispatch this build does not have. Declaring it implemented
-//! with a unary handler would be a lie a client discovers when it tries to iterate the result, so
-//! it stays unserved and is named in [`UNSERVED_METHODS`] instead.
+//! `attachWait` is the foreground countdown. The client reads one `{remainingMs}` frame and then
+//! waits for the stream to end. No matching open question produces no frames, which the client
+//! reads as "this call is not a timed wait".
 //!
 //! # Why `cancel` exists when upstream has no such method
 //!
@@ -178,8 +175,7 @@ pub const ATTACH_WAIT_METHOD: &str = "attachWait";
 
 /// Upstream methods in this namespace that this build does not serve.
 ///
-/// Empty: `attachWait` is served as one frame of `{remainingMs, done}`. A client that wants the
-/// stream subscribes, and the hub polls this method. A one-shot call is the current frame.
+/// Empty: every upstream method in this namespace is registered.
 pub const UNSERVED_METHODS: &[&str] = &[];
 
 /// The resource kind these methods touch, as reported to an access policy.
@@ -933,31 +929,63 @@ pub fn register_question_methods(registry: &mut RemoteRegistry, questions: Arc<Q
         Declaration::read(RESOURCE_KIND),
     );
     let wait_queue = Arc::clone(&questions);
-    registry.register(NAMESPACE, ATTACH_WAIT_METHOD, move |call: RemoteCall| {
+    registry.register_stream(NAMESPACE, ATTACH_WAIT_METHOD, move |open| {
         let queue = Arc::clone(&wait_queue);
-        Box::pin(async move { attach_wait(&call.args, &queue) })
+        Box::pin(async move { follow_attach_wait(open, queue).await })
     });
 }
 
-/// One frame of `attachWait`: how long the named question still has, and whether the wait is over.
-fn attach_wait(args: &Value, queue: &Arc<QuestionQueue>) -> Result<Value, RemoteError> {
-    let agent = args.get("agentId").and_then(Value::as_str);
-    let call = args.get("callId").and_then(Value::as_str);
-    let now = now_millis();
-    let pending = queue.pending().into_iter().find(|record| {
-        record.state.is_open()
-            && agent.is_none_or(|id| record.session_id.as_deref() == Some(id))
-            && call.is_none_or(|id| record.call_id.as_deref() == Some(id))
-    });
-    let Some(record) = pending else {
-        return Ok(json!({ "remainingMs": 0, "done": true }));
+async fn follow_attach_wait(open: girder_core::StreamOpen, queue: Arc<QuestionQueue>) {
+    let Some(call_id) = argument(&open.call.args, "callId") else {
+        let _ = open.fail(invalid(ATTACH_WAIT_METHOD, "`callId` is required"));
+        return;
     };
+    let session =
+        argument(&open.call.args, "sessionId").or_else(|| argument(&open.call.args, "agentId"));
+    let Some(record) = matching_open(&queue, call_id, session) else {
+        return;
+    };
+    if !open.push(json!({ "remainingMs": remaining_ms(&record) })) {
+        return;
+    }
+    loop {
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                if matching_open(&queue, call_id, session).is_none() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn argument<'a>(args: &'a Value, field: &str) -> Option<&'a str> {
+    args.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn matching_open(
+    queue: &QuestionQueue,
+    call_id: &str,
+    session: Option<&str>,
+) -> Option<PendingQuestion> {
+    queue.pending().into_iter().find(|record| {
+        record.state.is_open()
+            && record.call_id.as_deref() == Some(call_id)
+            && session.is_none_or(|id| record.session_id.as_deref() == Some(id))
+    })
+}
+
+fn remaining_ms(record: &PendingQuestion) -> u64 {
     let budget = u64::try_from(record.question.timeout.as_millis()).unwrap_or(u64::MAX);
-    let remaining = budget.saturating_sub(now.saturating_sub(record.created_at));
-    Ok(json!({
-        "remainingMs": remaining,
-        "done": remaining == 0,
-    }))
+    budget.saturating_sub(now_millis().saturating_sub(record.created_at))
 }
 
 // ---- requests ---------------------------------------------------------------------------------

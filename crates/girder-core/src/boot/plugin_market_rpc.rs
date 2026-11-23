@@ -32,10 +32,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
 use crate::boot::plugin_market::{
     MarketIndex, MarketQuery, MarketSort, QueryError, SearchIndex, validate_page,
 };
-use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
 use crate::core::scope::BoxFut;
 
 /// The namespace these methods register under, as upstream spells it.

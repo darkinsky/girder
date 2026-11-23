@@ -17,10 +17,9 @@
 //! The precedence is by layer order, and the winner is recorded so a consumer can report which source
 //! answered — a user who expected their project's skill and got the built-in one needs to see why.
 
-
 pub mod catalog;
-pub mod skill_final;
 pub mod policy;
+pub mod skill_final;
 pub mod tool;
 
 use std::collections::BTreeMap;

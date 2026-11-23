@@ -214,7 +214,13 @@ fn finish(outcome: Result<String, String>) -> ToolResult {
 async fn do_move(args: &Value, workspace: &Path, ctx: &ToolRunContext) -> Result<String, String> {
     refuse_readonly(ctx)?;
     let source = confine(workspace, required_str(args, "source")?, "source", ctx).await?;
-    let destination = confine(workspace, required_str(args, "destination")?, "destination", ctx).await?;
+    let destination = confine(
+        workspace,
+        required_str(args, "destination")?,
+        "destination",
+        ctx,
+    )
+    .await?;
     let overwrite = flag(args, "overwrite");
 
     if source == destination {
@@ -305,7 +311,13 @@ async fn do_move(args: &Value, workspace: &Path, ctx: &ToolRunContext) -> Result
 async fn do_copy(args: &Value, workspace: &Path, ctx: &ToolRunContext) -> Result<String, String> {
     refuse_readonly(ctx)?;
     let source = confine(workspace, required_str(args, "source")?, "source", ctx).await?;
-    let destination = confine(workspace, required_str(args, "destination")?, "destination", ctx).await?;
+    let destination = confine(
+        workspace,
+        required_str(args, "destination")?,
+        "destination",
+        ctx,
+    )
+    .await?;
     let overwrite = flag(args, "overwrite");
 
     if source == destination {
@@ -610,8 +622,7 @@ async fn confine(
         return Err(format!("`{field}` contains a NUL byte"));
     }
 
-    let lexical =
-        normalize_path(&resolve_in_workspace(Some(ctx.path_base(workspace)), raw));
+    let lexical = normalize_path(&resolve_in_workspace(Some(ctx.path_base(workspace)), raw));
     let allow_outside = ctx.allows_outside_workspace();
     if allow_outside {
         return Ok(lexical);

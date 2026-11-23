@@ -16,7 +16,7 @@ use girder_core::api::extra::{
     parse_client_message,
 };
 use girder_core::api::gateway::Peer;
-use girder_core::{EventBus, ForwardDelivery, RemoteCall, RemoteError, RemoteRegistry};
+use girder_core::{EventBus, ForwardDelivery, RemoteCall, RemoteError, RemoteRegistry, StreamOpen};
 use tokio::sync::mpsc;
 
 use girder_core::api::gateway::Connection;
@@ -33,6 +33,11 @@ enum Outbound {
 
 enum Done {
     Stream(String),
+}
+
+struct Running {
+    task: tokio::task::JoinHandle<()>,
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 /// One waterfall the `$events` stream has handed to the client and not yet settled.
@@ -80,7 +85,7 @@ pub async fn serve(
 
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<Done>();
     let mut table = StreamTable::new(STREAM_INBOX_BYTES);
-    let mut tasks = BTreeMap::new();
+    let mut tasks: BTreeMap<String, Running> = BTreeMap::new();
     let mut heartbeat = Heartbeat::new();
     let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
     ticker.tick().await;
@@ -171,8 +176,9 @@ pub async fn serve(
         }
     }
 
-    for (_, task) in tasks {
-        task.abort();
+    for (_, running) in tasks {
+        running.cancel.cancel();
+        running.task.abort();
     }
     if let Some(connection) = connection {
         connection.release();
@@ -182,7 +188,7 @@ pub async fn serve(
 
 async fn receive(
     table: &mut StreamTable,
-    tasks: &mut BTreeMap<String, tokio::task::JoinHandle<()>>,
+    tasks: &mut BTreeMap<String, Running>,
     out_tx: &mpsc::Sender<Outbound>,
     done_tx: &mpsc::UnboundedSender<Done>,
     message: ClientMessage,
@@ -277,7 +283,13 @@ async fn receive(
                 drop_client(&pending, &client_id);
                 let _ = done_tx.send(Done::Stream(wire_stream_id));
             });
-            tasks.insert(stream_id, task);
+            tasks.insert(
+                stream_id,
+                Running {
+                    task,
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                },
+            );
             return true;
         }
         if endpoint == "$events/result" {
@@ -338,40 +350,113 @@ async fn receive(
         let stream_id_for_task = stream_id.clone();
         let out_tx = out_tx.clone();
         let done_tx = done_tx.clone();
-        let peer = peer.map_or_else(String::new, |peer| peer.id().as_str().to_owned());
-        let task = tokio::spawn(async move {
-            match remote
-                .dispatch(
-                    &namespace,
-                    &method,
-                    RemoteCall {
-                        args: payload,
-                        peer,
-                    },
+        let call = RemoteCall {
+            args: business_args(payload),
+            peer: peer.map_or_else(String::new, |peer| peer.id().as_str().to_owned()),
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task = if remote.is_streaming(&namespace, &method) {
+            let Some(uplink) = table.inbox(&stream_id) else {
+                send_failure(
+                    &out_tx,
+                    &stream_id,
+                    "NOT_IMPLEMENTED",
+                    "Remote stream inbox is unavailable",
+                    &endpoint,
                 )
-                .await
-            {
-                Ok(value) => {
-                    let _ = out_tx
-                        .send(Outbound::Frame(ServerMessage::Item {
-                            stream_id: stream_id_for_task.clone(),
-                            value: Some(value),
-                        }))
-                        .await;
-                    let _ = out_tx
-                        .send(Outbound::Frame(ServerMessage::End {
-                            stream_id: stream_id_for_task.clone(),
-                        }))
-                        .await;
+                .await;
+                let _ = done_tx.send(Done::Stream(stream_id));
+                return true;
+            };
+            match remote.stream_method(&namespace, &method, &call) {
+                Ok(handler) => {
+                    let cancel_for_open = cancel.clone();
+                    tokio::spawn(async move {
+                        let (open, mut items) =
+                            StreamOpen::pair(call, uplink, cancel_for_open.clone());
+                        let producer = tokio::spawn(async move {
+                            handler(open).await;
+                        });
+                        loop {
+                            tokio::select! {
+                                () = cancel_for_open.cancelled() => {
+                                    producer.abort();
+                                    return;
+                                }
+                                item = items.recv() => {
+                                    match item {
+                                        Some(Ok(value)) => {
+                                            if out_tx
+                                                .send(Outbound::Frame(ServerMessage::Item {
+                                                    stream_id: stream_id_for_task.clone(),
+                                                    value: Some(value),
+                                                }))
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                        Some(Err(error)) => {
+                                            send_remote_error(
+                                                &out_tx,
+                                                &stream_id_for_task,
+                                                error,
+                                                &namespace,
+                                                &method,
+                                            )
+                                            .await;
+                                            producer.abort();
+                                            let _ = done_tx.send(Done::Stream(stream_id_for_task));
+                                            return;
+                                        }
+                                        None => {
+                                            let _ = out_tx
+                                                .send(Outbound::Frame(ServerMessage::End {
+                                                    stream_id: stream_id_for_task.clone(),
+                                                }))
+                                                .await;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        producer.abort();
+                        let _ = done_tx.send(Done::Stream(stream_id_for_task));
+                    })
                 }
                 Err(error) => {
-                    send_remote_error(&out_tx, &stream_id_for_task, error, &namespace, &method)
-                        .await;
+                    send_remote_error(&out_tx, &stream_id, error, &namespace, &method).await;
+                    let _ = done_tx.send(Done::Stream(stream_id));
+                    return true;
                 }
             }
-            let _ = done_tx.send(Done::Stream(stream_id_for_task));
-        });
-        tasks.insert(stream_id, task);
+        } else {
+            tokio::spawn(async move {
+                match remote.dispatch(&namespace, &method, call).await {
+                    Ok(value) => {
+                        let _ = out_tx
+                            .send(Outbound::Frame(ServerMessage::Item {
+                                stream_id: stream_id_for_task.clone(),
+                                value: Some(value),
+                            }))
+                            .await;
+                        let _ = out_tx
+                            .send(Outbound::Frame(ServerMessage::End {
+                                stream_id: stream_id_for_task.clone(),
+                            }))
+                            .await;
+                    }
+                    Err(error) => {
+                        send_remote_error(&out_tx, &stream_id_for_task, error, &namespace, &method)
+                            .await;
+                    }
+                }
+                let _ = done_tx.send(Done::Stream(stream_id_for_task));
+            })
+        };
+        tasks.insert(stream_id, Running { task, cancel });
         return true;
     }
 
@@ -380,8 +465,9 @@ async fn receive(
         serde_json::to_string(&message_to_value(&message)).map_or(0, |text| text.len() as u64),
     );
     if matches!(message, ClientMessage::Cancel { .. }) {
-        if let Some(task) = tasks.remove(&stream_id) {
-            task.abort();
+        if let Some(running) = tasks.remove(&stream_id) {
+            running.cancel.cancel();
+            running.task.abort();
         }
         let _ = table.finish(&stream_id, false);
         return true;
@@ -394,8 +480,9 @@ async fn receive(
         }
     });
     if let Some(error) = violation {
-        if let Some(task) = tasks.remove(&stream_id) {
-            task.abort();
+        if let Some(running) = tasks.remove(&stream_id) {
+            running.cancel.cancel();
+            running.task.abort();
         }
         let _ = out_tx
             .send(Outbound::Frame(ServerMessage::Error {
@@ -412,6 +499,23 @@ async fn receive(
         girder_core::api::extra::Reception::Duplicate
         | girder_core::api::extra::Reception::Opened => true,
     }
+}
+
+/// The method arguments inside a Gateway Remote payload.
+///
+/// The browser sends `{ args: { ...fields } }` and the host reads the inner object. A payload that
+/// is already the argument object stays as it is, so an older caller that opened a stream with the
+/// fields at the top level still reaches the method.
+pub(crate) fn business_args(payload: serde_json::Value) -> serde_json::Value {
+    let Some(object) = payload.as_object() else {
+        return payload;
+    };
+    if object.len() == 1
+        && let Some(args) = object.get("args").filter(|value| value.is_object())
+    {
+        return args.clone();
+    }
+    payload
 }
 
 fn event_names(watch: &[&'static str]) -> Vec<&'static str> {

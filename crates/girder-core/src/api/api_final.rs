@@ -1,18 +1,13 @@
-//! The `session.observe*` Remote family: the three stream-shaped session reads nobody produces.
+//! The `session.observe*` Remote family: passive session subscriptions.
 //!
 //! Upstream `packages/api/session-controller` declares twenty-six `@Remote` methods and ten of them
 //! are `{ mode: 'stream' }`. This crate serves most of the unary ones — `list`, `create`, `page`,
 //! `events`, `rename`, `fork`, `prompt`, `cancel`, `projections`, `state`, `search`, `selectModel`,
 //! `updateQueue`, `attachment`, `openWorkspacePath`, `canOpenWorkspacePath`,
-//! `workspacePathApplications`, `workspaceDesktop`, `follow`, `modelCatalog` — but of the streaming
-//! ones it serves exactly one: `follow`.
+//! `workspacePathApplications`, `workspaceDesktop`, `follow`, `modelCatalog` — and the three
+//! `observe*` methods have compatibility poll handlers plus live stream handlers.
 //!
-//! # The gap, and how it was found
-//!
-//! Found by looking for a *consumer with no producer*, the pattern that has found every real hole in
-//! this port so far (`sessionListMetadata`, `conversationContinuation`, `file_id`,
-//! `terminal.readScreen`). The consumer here is the transport itself: `girder_rpc::stream`'s
-//! `SUBSCRIBABLE_METHODS` advertises three methods to every client —
+//! The legacy subscription transport still advertises these names for compatibility:
 //!
 //! ```text
 //! crates/girder-rpc/src/stream.rs:353:    "session.observeEvent",
@@ -20,28 +15,11 @@
 //! crates/girder-rpc/src/stream.rs:355:    "session.observeState",
 //! ```
 //!
-//! — and `is_subscribable` in the same file admits a `subscribe` request *only* for a name on that
-//! list. So a client is told these three exist, is allowed to open a subscription to them, and then
-//! receives `UNKNOWN_METHOD` on the first poll, because nothing in `crates/*/src` ever registers them.
-//! Measured: **5 consumer references** (three in the allowlist, two in module prose) and **0
-//! producers**. `session.observeEvent` additionally has a handler in `girder-rpc`'s own *test*
-//! registry, which is why the transport's end-to-end tests pass while a real server cannot answer the
-//! call — the most misleading shape a gap can take.
+//! Standard Remote mux calls use the live stream registrations directly. The unary handlers remain
+//! available to older in-process callers and the legacy subscription hub.
 //!
-//! # Why the answer is a poll and not a socket
-//!
-//! `RemoteRegistry` has no stream mode: a handler is `Fn(RemoteCall) -> BoxFut<Result<Value>>`, one
-//! call in and one value out. `girder_rpc::stream::SubscriptionHub` already bridges that to a real
-//! stream by re-invoking the method on an interval and forwarding changed values, which is exactly how
-//! `crate::jobs::job_follow_rpc` serves `job.follow` and how `session.follow` is served. So these three use
-//! the same convention and the transport needs no change: **each call returns the frames produced
-//! since the cursor the caller names, plus the cursor for the next call.** A caller that repeats
-//! `afterSeq` repeats nothing and misses nothing.
-//!
-//! Every reply carries `"done": false`. That is deliberate and load-bearing: the transport reads a
-//! `"done": true` member as "stop polling me", and a session never ends. A build that reported `done`
-//! on the quiet polls between turns would silently unsubscribe every client at the first idle moment —
-//! the same hazard `crate::session::stream` documents under "Why exhaustion is not a latch".
+//! Standard Remote mux calls use the live stream registrations directly. The compatibility handlers
+//! retain the older cursor-based polling shape for callers that still use unary dispatch.
 //!
 //! # What each method answers, and why the three stay apart
 //!

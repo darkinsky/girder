@@ -121,13 +121,16 @@ pub fn register_workspace_file_methods(
     fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
 ) {
-    let tree_fs = Arc::clone(fs);
-    let tree_workspaces = Arc::clone(workspaces);
-    registry.register(NAMESPACE, "changes", move |call: RemoteCall| {
-        let fs = Arc::clone(&tree_fs);
-        let workspaces = Arc::clone(&tree_workspaces);
-        Box::pin(async move { tree(&call, fs.as_ref(), workspaces.as_ref()).await })
+    let changes_workspaces = Arc::clone(workspaces);
+    registry.register_stream(NAMESPACE, "changes", move |open| {
+        let workspaces = Arc::clone(&changes_workspaces);
+        Box::pin(async move { follow_changes(open, workspaces.as_ref()).await })
     });
+    registry.declare(
+        NAMESPACE,
+        "changes",
+        girder_core::Declaration::read("workspace"),
+    );
 
     let read_fs = Arc::clone(fs);
     let read_workspaces = Arc::clone(workspaces);
@@ -311,13 +314,13 @@ async fn walk(
     walked
 }
 
-/// Implements `workspace.tree`.
-async fn tree(
+/// Implements the bounded directory walk used by Girder's workspace browser.
+pub async fn tree(
     call: &RemoteCall,
     fs: &dyn FileSystem,
     workspaces: &WorkspaceRegistry,
 ) -> Result<Value, RemoteError> {
-    const METHOD: &str = "changes";
+    const METHOD: &str = "tree";
 
     let workspace_id = required_str(&call.args, "workspaceId", METHOD)?;
     let workspace = registered(workspaces, workspace_id, METHOD)?;
@@ -595,6 +598,126 @@ fn read_cap(args: &Value) -> Result<u64, RemoteError> {
     }
 }
 
+async fn follow_changes(open: girder_core::StreamOpen, workspaces: &WorkspaceRegistry) {
+    let workspace_id = open
+        .call
+        .args
+        .get("workspaceId")
+        .or_else(|| open.call.args.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let Some(workspace_id) = workspace_id else {
+        let _ = open.fail(invalid("changes", "`workspaceId` is required"));
+        return;
+    };
+    let Ok(workspace) = registered(workspaces, workspace_id, "changes") else {
+        let _ = open.fail(invalid(
+            "changes",
+            format!("unknown workspace `{workspace_id}`; it is not registered"),
+        ));
+        return;
+    };
+    let requested = optional_str(&open.call.args, "path").unwrap_or(".");
+    let initial = target_info(&workspace.path.join(requested));
+    let Ok(plan) = girder_core::workspace::watch::plan_watch(
+        Some(&workspace.path),
+        requested,
+        initial.as_ref(),
+    ) else {
+        let _ = open.fail(invalid(
+            "changes",
+            format!("`{requested}` is outside the workspace"),
+        ));
+        return;
+    };
+    if !open.push(json!({ "kind": "ready" })) {
+        return;
+    }
+    let mut previous = fingerprint(&plan.process_path);
+    loop {
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                let next = fingerprint(&plan.process_path);
+                if next == previous {
+                    continue;
+                }
+                let frame = match &next {
+                    Some(version) => json!({
+                        "kind": "change",
+                        "change": {
+                            "absolutePath": plan.process_path,
+                            "version": version,
+                        },
+                    }),
+                    None => json!({
+                        "kind": "change",
+                        "change": {
+                            "absolutePath": plan.process_path,
+                            "absent": true,
+                        },
+                    }),
+                };
+                previous = next;
+                if !open.push(frame) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn target_info(path: &Path) -> Option<girder_core::FsInfo> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let file_type = if metadata.is_dir() {
+        girder_core::FsType::Directory
+    } else if metadata.is_file() {
+        girder_core::FsType::File
+    } else {
+        girder_core::FsType::Other
+    };
+    Some(girder_core::FsInfo {
+        version: girder_core::FsVersion(metadata.len().to_string()),
+        file_type,
+        size: metadata.len(),
+    })
+}
+
+fn fingerprint(path: &str) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_nanos());
+    if metadata.is_dir() {
+        let mut children = std::fs::read_dir(path)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let child = entry.metadata().ok();
+                format!(
+                    "{}:{}:{}",
+                    entry.file_name().to_string_lossy(),
+                    child.as_ref().map_or(0, std::fs::Metadata::len),
+                    child
+                        .and_then(|metadata| metadata.modified().ok())
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |time| time.as_nanos())
+                )
+            })
+            .collect::<Vec<_>>();
+        children.sort();
+        return Some(children.join("\n"));
+    }
+    Some(format!("{}:{modified}", metadata.len()))
+}
+
 /// One poll of `workspaceFiles.watch`: the paths that appeared, changed, or vanished since the last poll.
 ///
 /// The first poll of a path is the baseline and reports nothing. Later polls scan again. This is a
@@ -619,12 +742,9 @@ async fn watch(call: &RemoteCall, workspaces: &WorkspaceRegistry) -> Result<Valu
             size: metadata.len(),
         }
     });
-    let plan = girder_core::workspace::watch::plan_watch(
-        Some(&workspace.path),
-        requested,
-        info.as_ref(),
-    )
-    .map_err(|error| invalid("watch", error.to_string()))?;
+    let plan =
+        girder_core::workspace::watch::plan_watch(Some(&workspace.path), requested, info.as_ref())
+            .map_err(|error| invalid("watch", error.to_string()))?;
     // A file is not a directory. The scan walks its parent and keeps the one name, so a save of
     // that file is reported and a sibling edit is not.
     let target_path = std::path::PathBuf::from(&plan.process_path);

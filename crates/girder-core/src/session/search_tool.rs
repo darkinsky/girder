@@ -26,8 +26,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::session::query::{Kind, Query, Results};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::session::query::{Kind, Query, Results};
 
 /// How many hits one call returns before it stops and says so.
 pub const DEFAULT_HITS: usize = 50;

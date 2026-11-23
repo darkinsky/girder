@@ -29,9 +29,10 @@
 //! An extension declares what it needs. Starting one without them would let it fail at the first call
 //! instead of at start, and the failure would surface in whatever the extension was in the middle of.
 
-
+pub mod dynamic_runner_rpc;
 pub mod extension_run_rpc;
 pub mod extension_runtime;
+pub mod plugin_recommendations_rpc;
 
 use std::collections::BTreeMap;
 

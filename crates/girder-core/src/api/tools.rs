@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | `settings.describe` | declared gap, **not missing** | `settings_rpc` registers it through `RemoteRegistry::declare_unimplemented`, and `crate::settings::config_edit::SchemaRegistry::describe` already renders the answer it needs |
 //! | `terminal.rename` | declared gap, **not missing** | `terminal_rpc`'s `UNIMPLEMENTED` names it; `crate::terminal::meta::Store::rename` already validates and stores the title |
-//! | `terminal.watch` | declared gap, **not missing** | `terminal_rpc_extra` declares it and a test asserts the declaration |
+//! | `terminal.watch` | served as a stream | `register_terminal_methods` pushes the roster, then another frame after add, remove, or rename |
 //! | `settings.openSettingsDocument` | declared gap, **not missing** | `crate::settings::rpc::UNIMPLEMENTED` names it; unportable (native text editor) |
 //! | `session.control`, `session.wait` | absent, and correctly so | both are `stream` methods, and [`RemoteRegistry`](girder_core::RemoteRegistry) has no stream mode; `session_state_rpc` implements the single-shot `state` half that `wait` would settle against |
 //! | `remoteAccess.follow` | absent, and deliberately so | a `stream` method, **and** its semantics are already ported: [`remote_access_gap`](crate::api::remote_access) covers per-call resolution and names `AccessFollower` in its own coverage table |

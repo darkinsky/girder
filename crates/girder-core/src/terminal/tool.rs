@@ -51,9 +51,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::core::scope::BoxFut;
+use crate::core::tools::{ToolDefinition, ToolRegistry, ToolResult, ToolRunContext};
 use crate::shell::SandboxMode;
 use crate::terminal::{Launch, Registry as TerminalRegistry, Session, Shell, Size, TerminalError};
-use crate::core::tools::{ToolDefinition, ToolRegistry, ToolResult, ToolRunContext};
 
 /// How long `terminal_read` waits by default.
 ///

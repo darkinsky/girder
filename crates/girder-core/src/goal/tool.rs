@@ -24,8 +24,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use crate::goal::{Activation, BlockReason, GoalId, GoalRef, GoalState};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::goal::{Activation, BlockReason, GoalId, GoalRef, GoalState};
 
 /// Builds the `goal` tool.
 ///
@@ -97,8 +97,10 @@ fn goal(args: &serde_json::Value, state: &Arc<Mutex<GoalState>>) -> ToolResult {
 
             // The id is derived from the objective's digest rather than a counter: a goal restored after a restart
             // keeps the id a client already knows, and two goals with one objective are the same intent.
-            let Some(id) = GoalId::new(format!("goal-{}", crate::context::instructions::digest(objective)))
-            else {
+            let Some(id) = GoalId::new(format!(
+                "goal-{}",
+                crate::context::instructions::digest(objective)
+            )) else {
                 return ToolResult::error("the goal id could not be built");
             };
 

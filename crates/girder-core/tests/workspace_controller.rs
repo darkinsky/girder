@@ -654,7 +654,7 @@ fn a_picker_with_a_pinned_home_lists_it_by_default() {
 #[tokio::test]
 async fn the_follow_method_refreshes_before_it_answers() {
     // Answered from a stale feed, a client would be told it is caught up while the registry had
-    // already moved, and the next poll would look like a skipped change.
+    // already moved, and the next frame would look like a skipped change.
     let harness = Harness::new(&["a"]);
     let mut registry = RemoteRegistry::new();
     register_workspace_follow_allow_all(
@@ -664,21 +664,20 @@ async fn the_follow_method_refreshes_before_it_answers() {
         &harness.feed,
     );
 
-    let first = call(&registry, &json!({})).await;
-    let cursor = first["next_seq"].as_u64().expect("a cursor");
+    let mut follow = Follow::open(&registry, &json!({})).await;
+    let first = follow.next().await;
+    assert_eq!(first["type"], "baseline");
     harness
         .workspaces
         .register("b", "/projects/b", None, 2_000)
         .expect("registers");
 
-    // No explicit refresh: the handler must do it.
-    let second = call(&registry, &json!({ "afterSeq": cursor })).await;
-
-    assert!(types(&second).contains(&"upsert".to_owned()), "{second}");
+    let second = follow.next().await;
+    assert_eq!(second["type"], "upsert", "{second}");
 }
 
 #[tokio::test]
-async fn the_follow_method_honours_after_seq_and_limit() {
+async fn the_follow_method_resumes_after_a_cursor() {
     let harness = Harness::new(&["a"]);
     let mut registry = RemoteRegistry::new();
     register_workspace_follow_allow_all(
@@ -687,9 +686,7 @@ async fn the_follow_method_honours_after_seq_and_limit() {
         &harness.preferences,
         &harness.feed,
     );
-    let cursor = call(&registry, &json!({})).await["next_seq"]
-        .as_u64()
-        .expect("a cursor");
+    let cursor = harness.feed.head();
     harness
         .workspaces
         .register("b", "/projects/b", None, 2_000)
@@ -699,13 +696,14 @@ async fn the_follow_method_honours_after_seq_and_limit() {
         .register("c", "/projects/c", None, 2_000)
         .expect("registers");
 
-    let page = call(&registry, &json!({ "afterSeq": cursor, "limit": 1 })).await;
-
-    assert_eq!(
-        page["frames"].as_array().expect("frames").len(),
-        1,
-        "{page}"
-    );
+    let mut follow = Follow::open(&registry, &json!({ "afterSeq": cursor })).await;
+    let first = follow.next().await;
+    let second = follow.next().await;
+    let kinds = vec![
+        first["type"].as_str().unwrap().to_owned(),
+        second["type"].as_str().unwrap().to_owned(),
+    ];
+    assert!(kinds.iter().all(|kind| kind == "upsert"), "{kinds:?}");
 }
 
 #[tokio::test]
@@ -720,9 +718,8 @@ async fn a_read_only_policy_still_permits_follow() {
         &harness.feed,
     );
 
-    let page = call(&registry, &json!({})).await;
-
-    assert_eq!(types(&page), vec!["baseline"]);
+    let mut follow = Follow::open(&registry, &json!({})).await;
+    assert_eq!(follow.next().await["type"], "baseline");
 }
 
 #[tokio::test]
@@ -739,9 +736,50 @@ async fn a_custom_access_seam_filters_the_registered_stream() {
         access,
     );
 
-    let page = call(&registry, &json!({})).await;
+    let mut follow = Follow::open(&registry, &json!({})).await;
+    let baseline = follow.next().await;
+    assert_eq!(baseline_ids(&baseline["value"]), vec!["a"]);
+}
 
-    assert_eq!(baseline_ids(&page["frames"][0]["value"]), vec!["a"]);
+struct Follow {
+    frames: tokio::sync::mpsc::UnboundedReceiver<Result<Value, RemoteError>>,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl Follow {
+    async fn open(registry: &RemoteRegistry, args: &Value) -> Self {
+        let call = RemoteCall {
+            args: args.clone(),
+            peer: "test".to_owned(),
+        };
+        let handler = registry
+            .stream_method(NAMESPACE, FOLLOW_METHOD, &call)
+            .expect("follow is a stream");
+        let inbox = Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "workspace/follow",
+        ));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (open, frames) = girder_core::StreamOpen::pair(call, inbox, cancel.clone());
+        tokio::spawn(async move {
+            handler(open).await;
+        });
+        Self { frames, cancel }
+    }
+
+    async fn next(&mut self) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(1), self.frames.recv())
+            .await
+            .expect("a frame arrives")
+            .expect("the stream stays open")
+            .expect("the frame is a value")
+    }
+}
+
+impl Drop for Follow {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 #[tokio::test]
@@ -769,20 +807,6 @@ async fn a_read_only_policy_refuses_initialize_default() {
 
     assert!(matches!(error, RemoteError::Refused { .. }), "{error}");
     assert!(workspaces.list().is_empty(), "nothing was written");
-}
-
-async fn call(registry: &RemoteRegistry, args: &Value) -> Value {
-    registry
-        .dispatch(
-            NAMESPACE,
-            FOLLOW_METHOD,
-            RemoteCall {
-                args: args.clone(),
-                peer: "test".to_owned(),
-            },
-        )
-        .await
-        .expect("the follow call succeeds")
 }
 
 // ---- first-use directory policy ----------------------------------------------------------------
@@ -1224,7 +1248,6 @@ fn the_entry_cap_is_a_positive_bound() {
     // run time that a later edit could quietly stop being the same constant.
     const { assert!(MAX_DIRECTORY_ENTRIES > 0) };
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod workspace {

@@ -123,20 +123,22 @@ pub use api::openapi_full::{
     document_from_names as openapi_document_from_names, operations as openapi_operations,
 };
 pub use api::remote::{
-    DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, SessionAddress,
-    SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
+    DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, RemoteStreamMethod,
+    SessionAddress, SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
-    SessionPromptValue, SessionRecord, SessionSummary, declared_gaps, default_registry,
-    register_attachment_method, register_command_methods, register_extension_methods,
-    register_job_methods, register_model_catalog, register_projection_methods,
-    register_select_model, register_session_methods, register_workspace_methods,
-    registered_method_names, registry_with_routes, registry_with_runtime,
+    SessionPromptValue, SessionRecord, SessionSummary, StreamOpen, StreamYield, declared_gaps,
+    default_registry, register_attachment_method, register_command_methods,
+    register_extension_methods, register_job_methods, register_model_catalog,
+    register_projection_methods, register_select_model, register_session_methods,
+    register_workspace_methods, registered_method_names, registry_with_routes,
+    registry_with_runtime,
 };
 pub use api::remote_access::{
     CallRequest as AccessCallRequest, MethodAccessResolver, NO_ALLOW, RESOURCE_INVALID,
     Refused as AccessRefused, Resolved, ResolvedResource, ResourceIds, all_allowed, declaration,
     kinds_of, reader, resolve_event_resources,
 };
+pub use api::remote_follow::register_remote_access_follow;
 pub use api::remote_service::{
     Endpoint, Handler as RemoteHandler, RemoteService, endpoint_names, register_remote_service,
 };

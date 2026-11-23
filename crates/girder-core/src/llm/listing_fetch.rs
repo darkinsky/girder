@@ -50,10 +50,7 @@ pub async fn fetch_models(
         .await
         .map_err(|error| error.to_string())?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| error.to_string())?;
+    let body = response.text().await.map_err(|error| error.to_string())?;
     let outcome = if !status.is_success() {
         Err(format!("GET {} returned {status}: {body}", load.url))
     } else {

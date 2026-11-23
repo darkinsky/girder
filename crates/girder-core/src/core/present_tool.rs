@@ -26,8 +26,10 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::deliverables::deliverable::{Deliverable, Kind as DeliverableKind, Set as DeliverableSet};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::deliverables::deliverable::{
+    Deliverable, Kind as DeliverableKind, Set as DeliverableSet,
+};
 
 /// Builds the `present` tool.
 ///

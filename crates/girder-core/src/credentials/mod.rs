@@ -24,7 +24,6 @@
 //! Most lookups ask "is this configured". An error would force every caller to branch on a condition
 //! that is normal, and the branch is where a missed check becomes a request with no credential.
 
-
 pub mod account;
 pub mod account_rpc;
 pub mod credential_ref;

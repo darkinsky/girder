@@ -438,43 +438,15 @@ fn discover_reports_nothing_when_nothing_resolves() {
 // ---- the declared surface ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_streaming_method_is_a_declared_gap_not_an_unknown_name() {
-    // `watch` is upstream's roster stream. This registry has no stream mode, so the honest answer is
-    // NOT_IMPLEMENTED — "this build cannot" — rather than UNKNOWN_METHOD, which would read as the
-    // client's typo and send it looking for a bug in its own method table.
+async fn watch_is_a_stream_and_a_unary_call_says_so() {
     let harness = Harness::local();
+    assert!(harness.registry.is_streaming("terminal", "watch"));
     let error = harness
         .call(WATCH_METHOD, json!({"sessionId": "s1"}))
         .await
-        .expect_err("`watch` is a stream and is not served");
-    assert_eq!(error.code(), "NOT_IMPLEMENTED", "{error}");
-
-    let error = harness
-        .call("definitelyNotAMethod", json!({}))
-        .await
-        .expect_err("an invented name is still unknown");
-    assert_eq!(error.code(), "UNKNOWN_METHOD", "{error}");
-
-    let declared: Vec<String> = harness
-        .registry
-        .unimplemented()
-        .into_iter()
-        .map(|(namespace, method)| format!("{namespace}.{method}"))
-        .collect();
-    assert!(
-        declared.contains(&"terminal.watch".to_owned()),
-        "{declared:?}"
-    );
-    // Declared once: `attach`, `retain`, and `rename` belong to the module that already declares
-    // them, and a duplicate entry would make a list builder report one gap twice.
-    assert_eq!(
-        declared
-            .iter()
-            .filter(|name| *name == "terminal.watch")
-            .count(),
-        1,
-        "{declared:?}"
-    );
+        .expect_err("a unary call cannot open the roster stream");
+    assert_eq!(error.code(), "FAILED", "{error}");
+    assert!(error.to_string().contains("stream"), "{error}");
 }
 
 #[tokio::test]
@@ -541,7 +513,6 @@ async fn both_queries_declare_a_read_to_a_policy() {
         "{seen:?}"
     );
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod terminal {

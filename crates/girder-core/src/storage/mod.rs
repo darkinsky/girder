@@ -31,10 +31,9 @@
 //! write ordering is the caller's responsibility, and the domain layer runs one write chain per
 //! unit. Adding a lock here would hide that requirement rather than satisfy it.
 
-
+pub mod per_record;
 pub mod persistence_lease;
 pub mod persistence_win32;
-pub mod per_record;
 pub mod quota;
 
 use std::collections::BTreeMap;

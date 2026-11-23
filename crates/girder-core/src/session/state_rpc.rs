@@ -52,6 +52,7 @@
 //! must stay callable under a read-only policy — a mirror that can show a session but not prompt into
 //! it is a supported deployment, and declaring a write would refuse it the one call it exists for.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -291,13 +292,18 @@ pub fn register_session_state_method_with(
     // and one call of this endpoint is one observation. A client that wants to keep waiting calls
     // again -- which is what a stream carrier does on its side, and it keeps this transport free of
     // a long-lived request.
-    // The three `observe*` endpoints, each one observation. `girder_rpc::stream` already names all
-    // three as subscribable and polls them; what was missing was the method behind the name.
+    // The three `observe*` endpoints keep unary compatibility handlers and also register live
+    // stream openers below, so both transport generations can reach the same state source.
     registry.register(NAMESPACE, "observeEvent", move |call: RemoteCall| {
         let catalog = Arc::clone(&event_catalog);
         Box::pin(
             async move { girder_core::session::observe::observe_event(&call.args, &catalog).await },
         )
+    });
+    let event_stream_catalog = Arc::clone(catalog);
+    registry.register_stream(NAMESPACE, "observeEvent", move |open| {
+        let catalog = Arc::clone(&event_stream_catalog);
+        Box::pin(async move { observe_event_stream(open, catalog).await })
     });
 
     registry.register(NAMESPACE, "observeProjections", move |call: RemoteCall| {
@@ -308,6 +314,13 @@ pub fn register_session_state_method_with(
                 .await
         })
     });
+    let projection_stream_catalog = Arc::clone(catalog);
+    let projection_stream_registry = Arc::clone(projections);
+    registry.register_stream(NAMESPACE, "observeProjections", move |open| {
+        let catalog = Arc::clone(&projection_stream_catalog);
+        let projections = Arc::clone(&projection_stream_registry);
+        Box::pin(async move { observe_projections_stream(open, catalog, projections).await })
+    });
 
     registry.register(NAMESPACE, "observeState", move |call: RemoteCall| {
         let catalog = Arc::clone(&observe_state_catalog);
@@ -317,6 +330,13 @@ pub fn register_session_state_method_with(
             let state = state(&call.args, &catalog, &projections, &turns, None).await?;
             Ok(girder_core::session::observe::observe_state(&state))
         })
+    });
+    let state_stream_catalog = Arc::clone(catalog);
+    let state_stream_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
+    registry.register_stream(NAMESPACE, "observeState", move |open| {
+        let catalog = Arc::clone(&state_stream_catalog);
+        let turns = Arc::clone(&state_stream_turns);
+        Box::pin(async move { observe_state_stream(open, catalog, turns).await })
     });
 
     registry.register(NAMESPACE, "wait", move |call: RemoteCall| {
@@ -353,10 +373,10 @@ pub fn register_session_state_method_with(
         })
     });
 
-    // `session.control`: the host baseline upstream's client applies first.
-    // `{ type: "baseline", value: { projections: { [sessionId]: { asOfSeq, values } } } }`.
-    // `list` does not carry events, so each row is read. `done` stays false because a subscription
-    // polls this and the host does not finish.
+    // `session.control`: one baseline, then one projection frame per session whose keys changed.
+    // `{ type: "baseline", value: { projections: { [sessionId]: { asOfSeq, values } } } }`
+    // `{ type: "projection", sessionId, seq, changes: [{ key, val }] }`.
+    // A burst between polls collapses to the net diff at the later seq.
     let control_catalog = Arc::clone(catalog);
     let control_projections = Arc::clone(projections);
     registry.register(NAMESPACE, "control", move |_call: RemoteCall| {
@@ -385,6 +405,311 @@ pub fn register_session_state_method_with(
             }))
         })
     });
+    let control_stream_catalog = Arc::clone(catalog);
+    let control_stream_projections = Arc::clone(projections);
+    registry.register_stream(NAMESPACE, "control", move |open| {
+        let catalog = Arc::clone(&control_stream_catalog);
+        let projections = Arc::clone(&control_stream_projections);
+        Box::pin(async move {
+            let mut previous: Option<serde_json::Map<String, Value>> = None;
+            loop {
+                let snapshot = control_snapshot(&catalog, &projections).await;
+                let current = snapshot.as_object().cloned().unwrap_or_default();
+                if previous.is_none() {
+                    if !open.push(serde_json::json!({
+                        "type": "baseline",
+                        "value": { "projections": snapshot },
+                    })) {
+                        return;
+                    }
+                    previous = Some(current);
+                } else if previous.as_ref() != Some(&current) {
+                    let before = previous.clone().unwrap_or_default();
+                    if let Some(blocks) = snapshot.as_object() {
+                        for (session_id, block) in blocks {
+                            let before_values = before
+                                .get(session_id)
+                                .and_then(|row| row.get("values"))
+                                .and_then(Value::as_object);
+                            let Some(after_values) = block.get("values").and_then(Value::as_object)
+                            else {
+                                continue;
+                            };
+                            let changes = changed_object_keys(before_values, after_values);
+                            if changes.is_empty() {
+                                continue;
+                            }
+                            let seq = block.get("asOfSeq").cloned().unwrap_or(Value::from(0));
+                            if !open.push(serde_json::json!({
+                                "type": "projection",
+                                "sessionId": session_id,
+                                "seq": seq,
+                                "changes": changes,
+                            })) {
+                                return;
+                            }
+                        }
+                    }
+                    previous = Some(current);
+                }
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                }
+            }
+        })
+    });
+}
+
+async fn control_snapshot(
+    catalog: &Arc<dyn SessionCatalog>,
+    projections: &Arc<ProjectionRegistry>,
+) -> serde_json::Value {
+    let listed = catalog.list().await;
+    let mut blocks = serde_json::Map::new();
+    for record in listed.into_iter().take(CONTROL_SESSION_LIMIT) {
+        let Some(full) = catalog.read(&record.id).await else {
+            continue;
+        };
+        let projected = projections.project(&full.events);
+        blocks.insert(
+            full.id,
+            serde_json::json!({
+                "asOfSeq": projected.as_of,
+                "values": projected.values,
+            }),
+        );
+    }
+    serde_json::Value::Object(blocks)
+}
+
+async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn SessionCatalog>) {
+    let method = "observeEvent";
+    let session_id = match girder_core::api::api_final::session_id_of(&open.call.args, method) {
+        Ok(id) => id,
+        Err(error) => {
+            let _ = open.fail(error);
+            return;
+        }
+    };
+    let mut cursor = match catalog.read(&session_id).await {
+        Some(record) => u64::try_from(record.events.len()).unwrap_or(u64::MAX),
+        None => {
+            let _ = open.fail(RemoteError::Failed(format!(
+                "no session `{session_id}` is known to this deployment"
+            )));
+            return;
+        }
+    };
+    if !open.push(serde_json::json!({ "type": "ready" })) {
+        return;
+    }
+    loop {
+        let Some(record) = catalog.read(&session_id).await else {
+            return;
+        };
+        let start = usize::try_from(cursor).unwrap_or(usize::MAX);
+        if start < record.events.len() {
+            for (offset, event) in record.events[start..].iter().enumerate() {
+                let seq = cursor
+                    .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX))
+                    .saturating_add(1);
+                let Some(frame) = girder_core::api::remote::session_wire_record(event, seq) else {
+                    continue;
+                };
+                if !open.push(frame) {
+                    return;
+                }
+            }
+            cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
+            continue;
+        }
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+    }
+}
+
+async fn observe_projections_stream(
+    open: girder_core::StreamOpen,
+    catalog: Arc<dyn SessionCatalog>,
+    projections: Arc<ProjectionRegistry>,
+) {
+    let method = "observeProjections";
+    let session_id = match girder_core::api::api_final::session_id_of(&open.call.args, method) {
+        Ok(id) => id,
+        Err(error) => {
+            let _ = open.fail(error);
+            return;
+        }
+    };
+    let mut cursor = match catalog.read(&session_id).await {
+        Some(record) => u64::try_from(record.events.len()).unwrap_or(u64::MAX),
+        None => {
+            let _ = open.fail(RemoteError::Failed(format!(
+                "no session `{session_id}` is known to this deployment"
+            )));
+            return;
+        }
+    };
+    if !open.push(serde_json::json!({ "type": "ready" })) {
+        return;
+    }
+    loop {
+        let Some(record) = catalog.read(&session_id).await else {
+            return;
+        };
+        let start = usize::try_from(cursor).unwrap_or(usize::MAX);
+        if start < record.events.len() {
+            for index in start..record.events.len() {
+                let seq = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+                let before = projections.project(&record.events[..index]);
+                let after = projections.project(&record.events[..=index]);
+                let changes = changed_projection_keys(&before.values, &after.values);
+                if changes.is_empty() {
+                    continue;
+                }
+                if !open.push(serde_json::json!({
+                    "type": "projection",
+                    "seq": seq,
+                    "changes": changes,
+                })) {
+                    return;
+                }
+            }
+            cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
+            continue;
+        }
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+    }
+}
+
+async fn observe_state_stream(
+    open: girder_core::StreamOpen,
+    catalog: Arc<dyn SessionCatalog>,
+    turns: Arc<dyn LiveTurns>,
+) {
+    let method = "observeState";
+    let session_id = match girder_core::api::api_final::session_id_of(&open.call.args, method) {
+        Ok(id) => id,
+        Err(error) => {
+            let _ = open.fail(error);
+            return;
+        }
+    };
+    let mut last = match passive_state(&session_id, &catalog, &turns).await {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = open.fail(error);
+            return;
+        }
+    };
+    if !open.push(last.clone()) {
+        return;
+    }
+    loop {
+        tokio::select! {
+            () = open.cancel.cancelled() => return,
+            incoming = open.uplink.recv() => {
+                if !matches!(incoming, Ok(Some(_))) {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                let current = match passive_state(&session_id, &catalog, &turns).await {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                if current != last {
+                    last = current.clone();
+                    if !open.push(current) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The passive state a client reads from `session.observeState`.
+///
+/// `cursor` is the same 1-based last seq `session.follow` reports, and an empty log is `0`.
+/// `active` is true only while a turn is running: this process has no separate "agent attached"
+/// table. `queue` is an empty list while a turn is running and null otherwise. `pendingInput`
+/// stays empty because pending Remote events are not tracked on this path.
+async fn passive_state(
+    session_id: &str,
+    catalog: &Arc<dyn SessionCatalog>,
+    turns: &Arc<dyn LiveTurns>,
+) -> Result<Value, RemoteError> {
+    let Some(record) = catalog.read(session_id).await else {
+        return Err(RemoteError::Failed(format!(
+            "no session `{session_id}` is known to this deployment"
+        )));
+    };
+    let cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
+    let running = turns.is_running(session_id);
+    Ok(serde_json::json!({
+        "cursor": cursor,
+        "active": running,
+        "running": running,
+        "queue": if running { Value::Array(Vec::new()) } else { Value::Null },
+        "pendingInput": [],
+    }))
+}
+
+/// Keys whose folded value changed, in key order.
+fn changed_projection_keys(
+    before: &BTreeMap<String, Value>,
+    after: &BTreeMap<String, Value>,
+) -> Vec<Value> {
+    after
+        .iter()
+        .filter_map(|(key, val)| {
+            if before.get(key) == Some(val) {
+                None
+            } else {
+                Some(serde_json::json!({ "key": key, "val": val }))
+            }
+        })
+        .collect()
+}
+
+/// Keys whose JSON object value changed. A missing `before` treats every key as new.
+fn changed_object_keys(
+    before: Option<&serde_json::Map<String, Value>>,
+    after: &serde_json::Map<String, Value>,
+) -> Vec<Value> {
+    after
+        .iter()
+        .filter_map(|(key, val)| {
+            let unchanged = before.is_some_and(|map| map.get(key) == Some(val));
+            if unchanged {
+                None
+            } else {
+                Some(serde_json::json!({ "key": key, "val": val }))
+            }
+        })
+        .collect()
 }
 
 /// Runs one `session.state` call.

@@ -25,9 +25,9 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::{ChunkStream, LlmError, LlmProvider, LlmRequest};
-use crate::llm::retry::{FailureCode, RetryError, RetryPolicy, run_with_retry};
 use crate::core::scope::BoxFut;
+use crate::llm::retry::{FailureCode, RetryError, RetryPolicy, run_with_retry};
+use crate::llm::{ChunkStream, LlmError, LlmProvider, LlmRequest};
 
 /// A provider that retries the failures a second attempt could fix.
 pub struct RetryingProvider {

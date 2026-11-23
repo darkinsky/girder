@@ -29,8 +29,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::util::brand::SessionId;
 use crate::core::scope::BoxFut;
+use crate::util::brand::SessionId;
 
 /// What a backend can do.
 ///

@@ -20,8 +20,8 @@
 //!   reported success would claim it stopped something already over.
 //! - **the declarations match what each method does** — `list` is a read, `answer` a write, `cancel`
 //!   destructive, so a read-only peer can list and cannot answer or cancel.
-//! - **upstream's unserved method is named** — `attachWait` is a stream and this registry is unary, so
-//!   it must be reported rather than silently absent.
+//! - **`attachWait` is a stream** — a call with no open question ends without a frame, and an open
+//!   question yields one remaining-time frame that stays open until the question is answered.
 //!
 //! Isolation: every test builds its own queue and registry, and ids carry a process-wide counter, so
 //! tests in one binary cannot see each other's questions.
@@ -51,8 +51,8 @@ use girder_core::{
 use serde_json::{Value, json};
 
 use questions_rpc::{
-    ANSWER_METHOD, ATTACH_WAIT_METHOD, AskError, AskRequest, CANCEL_METHOD, CONFIRM_NO, CONFIRM_YES,
-    DEFAULT_LIST_LIMIT, LIST_METHOD, MAX_LIST_LIMIT, MemoryQuestionStore, NAMESPACE,
+    ANSWER_METHOD, ATTACH_WAIT_METHOD, AskError, AskRequest, CANCEL_METHOD, CONFIRM_NO,
+    CONFIRM_YES, DEFAULT_LIST_LIMIT, LIST_METHOD, MAX_LIST_LIMIT, MemoryQuestionStore, NAMESPACE,
     PendingQuestion, QuestionQueue, QuestionState, QuestionStore, QuestionStoreError,
     UNSERVED_METHODS, UnavailableQuestionStore, register_question_methods,
 };
@@ -989,18 +989,77 @@ async fn upstreams_unserved_method_is_named_rather_than_silently_absent() {
 
     assert!(UNSERVED_METHODS.is_empty());
     assert!(
-        registry.get(NAMESPACE, ATTACH_WAIT_METHOD).is_some(),
-        "`{NAMESPACE}.{ATTACH_WAIT_METHOD}` must be served"
+        registry.is_streaming(NAMESPACE, ATTACH_WAIT_METHOD),
+        "`{NAMESPACE}.{ATTACH_WAIT_METHOD}` must be a stream"
     );
-    let frame = dispatch(
+    let mut ended = open_wait(
         &registry,
-        ATTACH_WAIT_METHOD,
-        json!({"agentId": "missing", "callId": "missing"}),
+        json!({"sessionId": "missing", "callId": "missing"}),
+    )
+    .await;
+    assert!(
+        ended.frames.recv().await.is_none(),
+        "a call with no open question ends without a frame"
+    );
+    ended.running.abort();
+}
+
+#[tokio::test]
+async fn attach_wait_reports_the_remaining_time_until_the_question_is_answered() {
+    let (registry, queue) = registry();
+    let record = PendingQuestion::new(questions_rpc_id(), text_question("name"))
+        .attributed_to(Some("session-1".to_owned()), Some("call-1".to_owned()));
+    let id = record.id.clone();
+    queue.store().insert(record).expect("seeded");
+
+    let mut opened = open_wait(
+        &registry,
+        json!({"sessionId": "session-1", "callId": "call-1"}),
+    )
+    .await;
+    let frame = tokio::time::timeout(Duration::from_secs(1), opened.frames.recv())
+        .await
+        .expect("frame arrived")
+        .expect("stream open")
+        .expect("frame ok");
+    assert!(frame["remainingMs"].as_u64().unwrap_or(0) > 0);
+
+    dispatch(
+        &registry,
+        ANSWER_METHOD,
+        json!({"id": id, "answer": {"custom": "Ada"}}),
     )
     .await
-    .expect("a countdown with nobody waiting is a finished frame");
-    assert_eq!(frame["done"], json!(true));
-    assert_eq!(frame["remainingMs"], json!(0));
+    .expect("answered");
+    let ended = tokio::time::timeout(Duration::from_secs(1), opened.frames.recv())
+        .await
+        .expect("stream ended");
+    assert!(ended.is_none());
+    opened.running.abort();
+}
+
+struct OpenedWait {
+    frames: tokio::sync::mpsc::UnboundedReceiver<Result<Value, RemoteError>>,
+    running: tokio::task::JoinHandle<()>,
+}
+
+async fn open_wait(registry: &RemoteRegistry, args: Value) -> OpenedWait {
+    let request = call(args);
+    let handler = registry
+        .stream_method(NAMESPACE, ATTACH_WAIT_METHOD, &request)
+        .expect("attachWait is a stream");
+    let (open, frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "userQuestions/attachWait",
+        )),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    OpenedWait { frames, running }
 }
 
 #[test]
@@ -1138,8 +1197,7 @@ fn a_second_settle_on_a_store_reports_the_state_that_won() {
     );
 }
 
-
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod interaction {
-    pub use super::questions_rpc as questions_rpc;
+    pub use super::questions_rpc;
 }

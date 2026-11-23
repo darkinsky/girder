@@ -363,11 +363,6 @@ impl RpcServer {
     /// upstream's unary calls are, and because a method result is not a stream.
     pub fn router(self) -> Router {
         let mut router = Router::new().route(REMOTE_STREAM_MUX_PATH, get(upgrade));
-        if self.static_frontend.is_none() {
-            // The probe page. Served from the same process as the API so a browser has no second
-            // origin to configure, and so opening it proves the server is running.
-            router = router.route(crate::WEB_INDEX_PATH, get(web_index));
-        }
         if self.remote.is_some() {
             router = router
                 .route(INVOKE_PATH, axum::routing::post(invoke))
@@ -379,6 +374,9 @@ impl RpcServer {
         router = router
             .route("/api/{*endpoint}", axum::routing::post(rpc_call))
             .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES));
+        if self.browser_auth.is_some() {
+            router = router.route("/connect", get(connect_operator));
+        }
         if self.static_frontend.is_some() {
             router = router.fallback(static_frontend);
         }
@@ -498,9 +496,10 @@ async fn rpc_call(
             );
         }
     };
+    let args = crate::mux::business_args(payload);
     let call = match &server.directory {
         None => girder_core::RemoteCall {
-            args: payload,
+            args,
             peer: String::new(),
         },
         Some(directory) => {
@@ -514,7 +513,7 @@ async fn rpc_call(
                     );
                 }
             };
-            match girder_core::api::gateway::admitted_call(&peer, payload) {
+            match girder_core::api::gateway::admitted_call(&peer, args) {
                 Ok(call) => call,
                 Err(error) => {
                     return rpc_error_response(rpc_id, "gateway/access-denied", &error.to_string());
@@ -547,17 +546,6 @@ fn rpc_error_response(rpc_id: &str, code: &str, message: &str) -> Response {
         },
     }))
     .into_response()
-}
-
-/// Serves the embedded probe page.
-///
-/// A literal HTML response rather than a file: no build step, no path traversal check, and nothing
-/// to keep in sync with a bundler.
-async fn web_index() -> impl axum::response::IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        crate::INDEX_HTML,
-    )
 }
 
 /// Answers a frontend fallback request through the same static-serving contract used by the host
@@ -657,6 +645,138 @@ fn is_static_index_path(config: &girder_core::host::webserver::StaticConfig, pat
     };
     let relative = relative.to_string_lossy().replace('\\', "/");
     format!("/{relative}") == path
+}
+
+async fn connect_operator(
+    State(server): State<RpcServer>,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(auth) = server.browser_auth.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !connect_is_trusted(request.headers(), &server.trusted_origins) {
+        return plain(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(directory) = server.directory.as_ref() else {
+        return plain(StatusCode::UNAUTHORIZED, "unauthorized");
+    };
+    if directory.is_disposed() {
+        return plain(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let target = request
+        .uri()
+        .path_and_query()
+        .map_or("/connect", axum::http::uri::PathAndQuery::as_str);
+    match auth.authorize_connect(
+        request.method(),
+        target,
+        request.headers(),
+        false,
+        now_millis(),
+        |interactions| {
+            directory
+                .publish(girder_core::api::gateway::Principal::owner(), interactions)
+                .id()
+                .as_str()
+                .to_owned()
+        },
+    ) {
+        crate::ConnectAuth::Redirect {
+            location,
+            set_cookie,
+            ..
+        } => {
+            let mut response = Response::new(axum::body::Body::empty());
+            *response.status_mut() = StatusCode::FOUND;
+            let headers = response.headers_mut();
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            );
+            headers.insert(
+                axum::http::header::LOCATION,
+                axum::http::HeaderValue::from_static(location),
+            );
+            headers.insert(
+                axum::http::header::REFERRER_POLICY,
+                axum::http::HeaderValue::from_static("no-referrer"),
+            );
+            if let Ok(value) = set_cookie.parse() {
+                headers.insert(axum::http::header::SET_COOKIE, value);
+            }
+            response
+        }
+        crate::ConnectAuth::BadRequest { body } => plain(StatusCode::BAD_REQUEST, body),
+        crate::ConnectAuth::Unauthorized { body } => plain(StatusCode::UNAUTHORIZED, body),
+    }
+}
+
+fn plain(status: StatusCode, body: impl Into<axum::body::Body>) -> Response {
+    let mut response = Response::new(body.into());
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response
+}
+
+fn connect_is_trusted(headers: &HeaderMap, trusted_origins: &[String]) -> bool {
+    let Some(host) = headers.get("host").and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        == Some("cross-site")
+    {
+        return false;
+    }
+    let hostname = hostname_of(host);
+    let named = trusted_origins.iter().any(|allowed| {
+        allowed.eq_ignore_ascii_case(host) || allowed.eq_ignore_ascii_case(hostname)
+    });
+    if !hostname.eq_ignore_ascii_case("localhost")
+        && !girder_core::is_loopback_host(hostname)
+        && !named
+    {
+        return false;
+    }
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return true;
+    };
+    let Ok(origin_url) = url::Url::parse(origin) else {
+        return false;
+    };
+    if origin_url.scheme() != "http" && origin_url.scheme() != "https" {
+        return false;
+    }
+    let Some(origin_host) = origin_url.host_str() else {
+        return false;
+    };
+    let origin_authority = match origin_url.port() {
+        Some(port) => format!("{origin_host}:{port}"),
+        None => origin_host.to_owned(),
+    };
+    origin_authority.eq_ignore_ascii_case(host)
+        || origin_host.eq_ignore_ascii_case(hostname_of(host))
+}
+
+fn hostname_of(authority: &str) -> &str {
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split_once(']').map_or(authority, |(host, _)| host);
+    }
+    authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host)
 }
 
 fn now_millis() -> u64 {
@@ -836,19 +956,50 @@ fn admit(
     headers: &HeaderMap,
 ) -> Result<Peer, Rejection> {
     let trusted = origin_is_trusted(headers, &server.trusted_origins);
-    let credential = match headers
+    let presented = presented_credential(server, headers);
+    let credential = match &presented {
+        PresentedCredential::Browser => Credential::Browser,
+        PresentedCredential::Api(id) => Credential::Api(id),
+        PresentedCredential::None => Credential::None,
+    };
+    directory.admit(trusted, credential).into()
+}
+
+enum PresentedCredential {
+    Browser,
+    Api(String),
+    None,
+}
+
+/// The credential this request actually carries.
+///
+/// A mounted browser authenticator reads the signed cookie and ignores `x-girder-peer`: that header
+/// is a claim, and accepting it beside a cookie would let a caller pick an operator it does not
+/// hold. Without the authenticator, the header remains the deployment credential the existing
+/// clients send.
+fn presented_credential(server: &RpcServer, headers: &HeaderMap) -> PresentedCredential {
+    if let Some(auth) = &server.browser_auth {
+        let now = now_millis();
+        if auth.is_authenticated(headers, false, now) {
+            return PresentedCredential::Browser;
+        }
+        if let Some(id) = auth.authenticate_api(headers, false, now) {
+            return PresentedCredential::Api(id);
+        }
+        if server.local_owner {
+            return PresentedCredential::Browser;
+        }
+        return PresentedCredential::None;
+    }
+    match headers
         .get(PEER_HEADER)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
     {
-        Some(id) => Credential::Api(id),
-        // A credential-less request is the browser case. It is only allowed to be the owner when the
-        // deployment said so; otherwise `Credential::None` makes the directory answer 401 rather
-        // than guessing.
-        None if server.local_owner => Credential::Browser,
-        None => Credential::None,
-    };
-    directory.admit(trusted, credential).into()
+        Some(id) => PresentedCredential::Api(id.to_owned()),
+        None if server.local_owner => PresentedCredential::Browser,
+        None => PresentedCredential::None,
+    }
 }
 
 /// Whether the request passed the Host/Origin fence.
@@ -942,14 +1093,11 @@ fn admit_socket(
         return Ok(None);
     };
     let trusted = origin_is_trusted(headers, &server.trusted_origins);
-    let credential = match headers
-        .get(PEER_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-    {
-        Some(id) => Credential::Api(id),
-        None if server.local_owner => Credential::Browser,
-        None => Credential::None,
+    let presented = presented_credential(server, headers);
+    let credential = match &presented {
+        PresentedCredential::Browser => Credential::Browser,
+        PresentedCredential::Api(id) => Credential::Api(id),
+        PresentedCredential::None => Credential::None,
     };
     match ConnectionOutcome::into(directory.admit_connection(trusted, credential)) {
         Ok(connection) => Ok(Some(connection)),

@@ -86,7 +86,9 @@ fn preview(canonical: &str) -> String {
 /// Key order does not make two objects different calls.
 fn canonicalize(arguments: &str) -> String {
     match serde_json::from_str::<Value>(arguments) {
-        Ok(value) => serde_json::to_string(&sort_json(value)).unwrap_or_else(|_| arguments.to_owned()),
+        Ok(value) => {
+            serde_json::to_string(&sort_json(value)).unwrap_or_else(|_| arguments.to_owned())
+        }
         Err(_) => arguments.to_owned(),
     }
 }
@@ -118,7 +120,9 @@ mod tests {
         let mut chain = Chain::new();
         assert!(chain.observe("read", r#"{"path":"a"}"#).is_none());
         assert!(chain.observe("read", r#"{"path":"a"}"#).is_none());
-        let reminder = chain.observe("read", r#"{"path":"a"}"#).expect("threshold 3");
+        let reminder = chain
+            .observe("read", r#"{"path":"a"}"#)
+            .expect("threshold 3");
         assert!(reminder.contains("repeating the exact same tool call"));
     }
 

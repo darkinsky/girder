@@ -9,12 +9,12 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::{ContentBlock, FinishReason, LlmProvider, LlmRequest, Message, Role, StreamChunk};
-use crate::session::title_llm::{
-    check_input, frame_messages, system_prompt, title_from_response, Response, Targets, UserMessage,
-};
-use crate::session::SessionEvent;
 use crate::Session;
+use crate::llm::{ContentBlock, FinishReason, LlmProvider, LlmRequest, Message, Role, StreamChunk};
+use crate::session::SessionEvent;
+use crate::session::title_llm::{
+    Response, Targets, UserMessage, check_input, frame_messages, system_prompt, title_from_response,
+};
 
 /// Length targets from the upstream first-prompt provider: about five words, or ten CJK characters.
 const TARGETS: Targets = Targets {
@@ -135,8 +135,8 @@ pub async fn write_provider_title(
         blocks.push(ContentBlock::Text { text });
     }
     let response = Response::from_content(&blocks, &finish);
-    let title = title_from_response(&response, MAX_TITLE_BYTES)
-        .map_err(|error| format!("{error:?}"))?;
+    let title =
+        title_from_response(&response, MAX_TITLE_BYTES).map_err(|error| format!("{error:?}"))?;
     let events = session.replay().await.map_err(|error| error.to_string())?;
     if events.iter().any(|event| {
         matches!(
@@ -158,7 +158,7 @@ pub async fn write_provider_title(
 
 #[cfg(test)]
 mod tests {
-    use super::{opening_subject, SessionEvent};
+    use super::{SessionEvent, opening_subject};
 
     #[test]
     fn the_first_message_is_the_subject_while_only_a_fallback_stands() {

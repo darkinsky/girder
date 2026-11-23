@@ -193,10 +193,7 @@ impl ProjectionRegistry {
     }
 
     /// Subscribes to per-key projection changes. The token cancels it.
-    pub fn on_projection_changed<F>(
-        &self,
-        listener: F,
-    ) -> crate::session::change_feed::Subscription
+    pub fn on_projection_changed<F>(&self, listener: F) -> crate::session::change_feed::Subscription
     where
         F: FnMut(&crate::session::change_feed::Change, Seq) + Send + 'static,
     {

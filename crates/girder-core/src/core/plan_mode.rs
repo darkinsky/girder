@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
+use crate::Session;
 use crate::interaction::approval::{Approver, Decision, Request};
 use crate::session::SessionEvent;
-use crate::Session;
 
 /// Guidance included in the system prompt while plan mode is active.
 ///
@@ -32,8 +32,10 @@ When ready, call exit_plan_mode with the complete plan markdown, starting with a
 /// The model-facing tool.
 pub const EXIT_TOOL: &str = "exit_plan_mode";
 
-const APPROVED: &str = "Plan approved — plan mode exited; carry out the plan starting with your next step.";
-const KEEP_PLANNING: &str = "The user chose to keep planning; revise the plan and present it again.";
+const APPROVED: &str =
+    "Plan approved — plan mode exited; carry out the plan starting with your next step.";
+const KEEP_PLANNING: &str =
+    "The user chose to keep planning; revise the plan and present it again.";
 
 /// What a `/plan` line asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,7 +114,12 @@ pub fn has_plan_heading(plan: &str) -> bool {
     let Some(first) = rest.chars().next() else {
         return false;
     };
-    first.is_whitespace() && rest.trim_start().chars().next().is_some_and(|char| !char.is_whitespace())
+    first.is_whitespace()
+        && rest
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|char| !char.is_whitespace())
 }
 
 /// Live sessions a turn can hand to `exit_plan_mode`, keyed by agent id.
@@ -203,70 +210,77 @@ pub fn exit_plan_mode_tool(
             },
             "required": ["plan"]
         }),
-        Arc::new(move |args: Value, ctx: crate::core::tools::ToolRunContext| {
-            let gate = Arc::clone(&gate);
-            let approver = Arc::clone(&approver);
-            Box::pin(async move {
-                let Some(plan) = args.get("plan").and_then(Value::as_str) else {
-                    return Ok(crate::core::tools::ToolResult::error(
-                        "`plan` is required and must be markdown starting with a # heading",
-                    ));
-                };
-                if !has_plan_heading(plan) {
-                    return Ok(crate::core::tools::ToolResult::error(
-                        "exit_plan_mode requires a non-empty markdown plan starting with a # heading",
-                    ));
-                }
-                let Some(session) = gate.get(ctx.execution.agent_id.as_str()) else {
-                    return Ok(crate::core::tools::ToolResult::error(
-                        "exit_plan_mode is only available in plan mode",
-                    ));
-                };
-                if !session_is_planning(session.as_ref()).await {
-                    return Ok(crate::core::tools::ToolResult::error(
-                        "exit_plan_mode is only available in plan mode",
-                    ));
-                }
-                let Some(mut request) = Request::new(EXIT_TOOL, "Approve this plan and leave plan mode?") else {
-                    return Ok(crate::core::tools::ToolResult::error(
-                        "exit_plan_mode could not ask for review",
-                    ));
-                };
-                request = request.with_detail(plan);
-                let decision = match approver.ask(request).await {
-                    Ok(decision) => decision,
-                    Err(_) => {
+        Arc::new(
+            move |args: Value, ctx: crate::core::tools::ToolRunContext| {
+                let gate = Arc::clone(&gate);
+                let approver = Arc::clone(&approver);
+                Box::pin(async move {
+                    let Some(plan) = args.get("plan").and_then(Value::as_str) else {
                         return Ok(crate::core::tools::ToolResult::error(
-                            "no user-questions channel is available to review the plan; ask the user to switch the session mode instead",
+                            "`plan` is required and must be markdown starting with a # heading",
+                        ));
+                    };
+                    if !has_plan_heading(plan) {
+                        return Ok(crate::core::tools::ToolResult::error(
+                            "exit_plan_mode requires a non-empty markdown plan starting with a # heading",
                         ));
                     }
-                };
-                if !decision.is_approved() {
-                    let feedback = match &decision {
-                        Decision::Denied { reason: Some(reason), .. } if !reason.trim().is_empty() => {
-                            format!("The user chose to keep planning; their feedback: {reason}")
-                        }
-                        _ => KEEP_PLANNING.to_owned(),
+                    let Some(session) = gate.get(ctx.execution.agent_id.as_str()) else {
+                        return Ok(crate::core::tools::ToolResult::error(
+                            "exit_plan_mode is only available in plan mode",
+                        ));
                     };
-                    return Ok(crate::core::tools::ToolResult::error(feedback));
-                }
-                if let Err(error) = session
-                    .append(SessionEvent::PlanMode { active: false })
-                    .await
-                {
-                    return Ok(crate::core::tools::ToolResult::error(format!(
-                        "the plan was approved but the session could not record it: {error}"
-                    )));
-                }
-                Ok(crate::core::tools::ToolResult::text(APPROVED))
-            })
-        }),
+                    if !session_is_planning(session.as_ref()).await {
+                        return Ok(crate::core::tools::ToolResult::error(
+                            "exit_plan_mode is only available in plan mode",
+                        ));
+                    }
+                    let Some(mut request) =
+                        Request::new(EXIT_TOOL, "Approve this plan and leave plan mode?")
+                    else {
+                        return Ok(crate::core::tools::ToolResult::error(
+                            "exit_plan_mode could not ask for review",
+                        ));
+                    };
+                    request = request.with_detail(plan);
+                    let decision = match approver.ask(request).await {
+                        Ok(decision) => decision,
+                        Err(_) => {
+                            return Ok(crate::core::tools::ToolResult::error(
+                                "no user-questions channel is available to review the plan; ask the user to switch the session mode instead",
+                            ));
+                        }
+                    };
+                    if !decision.is_approved() {
+                        let feedback = match &decision {
+                            Decision::Denied {
+                                reason: Some(reason),
+                                ..
+                            } if !reason.trim().is_empty() => {
+                                format!("The user chose to keep planning; their feedback: {reason}")
+                            }
+                            _ => KEEP_PLANNING.to_owned(),
+                        };
+                        return Ok(crate::core::tools::ToolResult::error(feedback));
+                    }
+                    if let Err(error) = session
+                        .append(SessionEvent::PlanMode { active: false })
+                        .await
+                    {
+                        return Ok(crate::core::tools::ToolResult::error(format!(
+                            "the plan was approved but the session could not record it: {error}"
+                        )));
+                    }
+                    Ok(crate::core::tools::ToolResult::text(APPROVED))
+                })
+            },
+        ),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{active_from, has_plan_heading, plan_command, PlanCommand};
+    use super::{PlanCommand, active_from, has_plan_heading, plan_command};
     use crate::session::SessionEvent;
 
     #[test]

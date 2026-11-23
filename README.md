@@ -26,6 +26,9 @@ cargo run -p girder-cli -- serve --bind 127.0.0.1:8787 --dist-index /path/to/web
 cargo run -p girder-cli -- schema
 ```
 
+`serve` 只提供后端 API；根路径不会启动 Girder 自带页面。配合原仓库 WebUI 时使用
+`--dist-index` 指向原仓库构建出的 `index.html`。
+
 `girder "…"` talks to a DeepSeek-format endpoint when `DEEPSEEK_API_KEY` (or `ANTHROPIC_API_KEY`)
 is set, and falls back to a scripted provider otherwise. The live path is tested against a mock
 server. No key is stored in this repository.

@@ -222,10 +222,79 @@ pub struct RemoteCall {
 /// callable must be object-safe. That is migration-plan §1.3 constraint one again.
 pub type RemoteMethod = Arc<dyn Fn(RemoteCall) -> BoxFut<Result<Value, RemoteError>> + Send + Sync>;
 
+/// The sink a streaming Remote method pushes values through.
+///
+/// Dropping it ends the stream. A push that returns `false` means the mux stopped reading, which
+/// is the host method's signal to return.
+pub struct StreamYield {
+    tx: tokio::sync::mpsc::UnboundedSender<Result<Value, RemoteError>>,
+}
+
+impl StreamYield {
+    /// Pushes one value. `false` means the reader is gone.
+    pub fn push(&self, value: Value) -> bool {
+        self.tx.send(Ok(value)).is_ok()
+    }
+
+    /// Ends the stream with a Remote error instead of a normal end.
+    pub fn fail(&self, error: RemoteError) -> bool {
+        self.tx.send(Err(error)).is_ok()
+    }
+}
+
+/// What a streaming Remote method receives when the mux opens it.
+pub struct StreamOpen {
+    /// The client's open payload and peer name.
+    pub call: RemoteCall,
+    /// Items the client sends after `open`, until it sends `end`.
+    pub uplink: Arc<crate::api::extra::UplinkInbox>,
+    /// Set when the client sends `cancel` or the socket closes.
+    pub cancel: tokio_util::sync::CancellationToken,
+    yield_to: StreamYield,
+}
+
+impl StreamOpen {
+    /// Pairs the host method with the receiver the mux drains onto the socket.
+    #[must_use]
+    pub fn pair(
+        call: RemoteCall,
+        uplink: Arc<crate::api::extra::UplinkInbox>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> (
+        Self,
+        tokio::sync::mpsc::UnboundedReceiver<Result<Value, RemoteError>>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                call,
+                uplink,
+                cancel,
+                yield_to: StreamYield { tx },
+            },
+            rx,
+        )
+    }
+
+    /// Pushes one item toward the client.
+    pub fn push(&self, value: Value) -> bool {
+        self.yield_to.push(value)
+    }
+
+    /// Ends the stream with a Remote error.
+    pub fn fail(&self, error: RemoteError) -> bool {
+        self.yield_to.fail(error)
+    }
+}
+
+/// A method that yields a series of values rather than one.
+pub type RemoteStreamMethod = Arc<dyn Fn(StreamOpen) -> BoxFut<()> + Send + Sync>;
+
 /// The method registry.
 #[derive(Default)]
 pub struct RemoteRegistry {
     methods: BTreeMap<(String, String), RemoteMethod>,
+    streams: BTreeMap<(String, String), RemoteStreamMethod>,
     /// Methods the upstream API defines that this build does not implement.
     ///
     /// Recorded explicitly so dispatch can distinguish "not implemented" from "typo". A hardcoded
@@ -317,6 +386,45 @@ impl RemoteRegistry {
             .insert((namespace.to_owned(), method.to_owned()), Arc::new(handler));
     }
 
+    /// Registers a method whose result is a series of items on the stream mux.
+    pub fn register_stream<F>(&mut self, namespace: &str, method: &str, handler: F)
+    where
+        F: Fn(StreamOpen) -> BoxFut<()> + Send + Sync + 'static,
+    {
+        self.streams
+            .insert((namespace.to_owned(), method.to_owned()), Arc::new(handler));
+    }
+
+    /// Whether `namespace.method` was registered with [`Self::register_stream`].
+    #[must_use]
+    pub fn is_streaming(&self, namespace: &str, method: &str) -> bool {
+        self.streams
+            .contains_key(&(namespace.to_owned(), method.to_owned()))
+    }
+
+    /// Returns the streaming handler after the same access check unary dispatch uses.
+    ///
+    /// # Errors
+    ///
+    /// [`RemoteError::UnknownMethod`] when the name is not a stream, and [`RemoteError::Refused`]
+    /// when the mounted policy refuses the caller.
+    pub fn stream_method(
+        &self,
+        namespace: &str,
+        method: &str,
+        call: &RemoteCall,
+    ) -> Result<RemoteStreamMethod, RemoteError> {
+        self.authorise(namespace, method, call)?;
+        let key = (namespace.to_owned(), method.to_owned());
+        self.streams
+            .get(&key)
+            .cloned()
+            .ok_or(RemoteError::UnknownMethod {
+                namespace: namespace.to_owned(),
+                method: method.to_owned(),
+            })
+    }
+
     /// Declares a method the upstream API has but this build does not implement.
     pub fn declare_unimplemented(&mut self, namespace: &str, methods: &[&str]) {
         for method in methods {
@@ -347,19 +455,27 @@ impl RemoteRegistry {
     }
 
     pub fn names(&self) -> Vec<(String, String)> {
-        self.methods.keys().cloned().collect()
+        let mut names: Vec<(String, String)> = self
+            .methods
+            .keys()
+            .cloned()
+            .chain(self.streams.keys().cloned())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
-    /// Number of registered methods.
+    /// Number of registered methods, including streams.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.methods.len()
+        self.names().len()
     }
 
     /// Whether nothing is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.methods.is_empty()
+        self.methods.is_empty() && self.streams.is_empty()
     }
 
     /// Dispatches one call.
@@ -381,6 +497,11 @@ impl RemoteRegistry {
         // somebody forgot would be the hole.
         self.authorise(namespace, method, &call)?;
 
+        if self.streams.contains_key(&key) {
+            return Err(RemoteError::Failed(format!(
+                "{namespace}.{method} is a stream and must be opened on the mux"
+            )));
+        }
         if let Some(handler) = self.methods.get(&key) {
             return handler(call).await;
         }
@@ -1213,14 +1334,10 @@ fn register_history(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCata
     }
 }
 
-/// Registers `session.follow`.
+/// Registers `session.follow` as the live stream the Web client opens.
 ///
-/// The one method shaped for polling: a client names the sequence it has already seen and receives what came after, so a
-/// subscription built on it repeats nothing and misses nothing. `session.page` cannot serve that role -- its arguments
-/// are a window, not a cursor, so a poller would either re-read overlap or guess where it left off.
-///
-/// `done` is what ends the subscription: the poller stops when a poll returns it, which is the contract the streaming
-/// layer documents. A session never finishes, so this stays false and the client ends the subscription instead.
+/// The first frame is the opening snapshot. Later frames are durable events that land after that
+/// cursor. The stream stays open until the client cancels it.
 /// Registers `session.stream`, which answers with frames rather than one value.
 ///
 /// The transport has no stream mode, so this is a bounded batch of frames the client can ask for again from the last seq
@@ -1286,76 +1403,171 @@ fn register_stream(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
 
 fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
     let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
-    registry.register("session", "follow", move |call| {
+    let projections = crate::session::projection_setup::assemble()
+        .expect("built-in session projections have unique keys");
+    registry.register_stream("session", "follow", move |open| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        let projections = Arc::clone(&projections);
         Box::pin(async move {
-            let session_id = call
-                .args
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| RemoteError::InvalidArguments {
+            let Some(session_id) = follow_session_id(&open.call.args) else {
+                let _ = open.fail(RemoteError::InvalidArguments {
                     namespace: "session".to_owned(),
                     method: "follow".to_owned(),
-                    message: "`sessionId` is required".to_owned(),
-                })?
-                .to_owned();
-            // Absent means "from the beginning", which is what a client that just opened a session means. Zero would do
-            // the same thing, but a caller that typed `afterSeq: 0` should get the same answer as one that omitted it.
-            let after = call
-                .args
-                .get("afterSeq")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let limit = usize::try_from(
-                call.args
-                    .get("limit")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(FOLLOW_LIMIT as u64),
-            )
-            .unwrap_or(FOLLOW_LIMIT)
-            .max(1);
-
-            let Some(record) = catalog.read(&session_id).await else {
-                // An unknown session is an empty result with `done`: the client's subscription ends quietly rather than
-                // polling a session that does not exist forever.
-                return Ok(serde_json::json!({
-                    "events": [],
-                    "nextSeq": after,
-                    "done": true,
-                }));
+                    message: "`address.sessionId` is required".to_owned(),
+                });
+                return;
             };
-
-            // Sequence numbers are one-based, so an event at index `i` has seq `i + 1`. Taking `after` to mean "the last
-            // seq I saw" makes `skip(after)` the exact continuation, which is the arithmetic a cursor needs and the
-            // place an off-by-one would silently duplicate or drop an event.
-            let skip = usize::try_from(after).unwrap_or(usize::MAX);
-            let events: Vec<serde_json::Value> = record
-                .events
-                .iter()
-                .skip(skip)
-                .take(limit)
-                .enumerate()
-                .filter_map(|(offset, event)| {
-                    serde_json::to_value(event).ok().map(|value| {
-                        serde_json::json!({
-                            "seq": skip + offset + 1,
-                            "event": value,
-                        })
-                    })
-                })
-                .collect();
-
-            let next = skip
-                .saturating_add(events.len())
-                .try_into()
-                .unwrap_or(u64::MAX);
-            Ok(serde_json::json!({
-                "events": events,
-                "nextSeq": next,
-                "done": false,
-            }))
+            let max_messages = open
+                .call
+                .args
+                .get("maxMessages")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value > 0);
+            let mut cursor = 0_u64;
+            let mut opened = false;
+            loop {
+                if open.cancel.is_cancelled() {
+                    return;
+                }
+                if let Some(record) = catalog.read(&session_id).await {
+                    if !opened {
+                        let page = page_of(
+                            &record.events,
+                            &SessionPageRequest {
+                                address: SessionAddress {
+                                    kind: "session".to_owned(),
+                                    session_id: session_id.clone(),
+                                },
+                                max_messages,
+                                ..SessionPageRequest::default()
+                            },
+                        );
+                        cursor = page.cursor;
+                        let records = page
+                            .records
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, record)| {
+                                let seq = page
+                                    .cursor
+                                    .saturating_sub(page.records.len() as u64)
+                                    .saturating_add(index as u64)
+                                    .saturating_add(1);
+                                session_wire_record(&record.event, seq)
+                            })
+                            .collect::<Vec<_>>();
+                        let projected = projections.project(&record.events);
+                        if !open.push(serde_json::json!({
+                            "type": "snapshot",
+                            "header": {
+                                "version": 1,
+                                "id": session_id,
+                                "createdAt": record.updated_at,
+                                "isSeeded": false,
+                            },
+                            "cursor": cursor,
+                            "records": records,
+                            "hasMore": page.has_more,
+                            "projections": {
+                                "asOfSeq": projected.as_of,
+                                "values": projected.values,
+                            },
+                        })) {
+                            return;
+                        }
+                        opened = true;
+                    } else {
+                        let len = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
+                        let start = usize::try_from(cursor).unwrap_or(usize::MAX);
+                        for (offset, event) in record.events.iter().enumerate().skip(start) {
+                            let seq = u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1);
+                            let Some(frame) = session_wire_record(event, seq) else {
+                                continue;
+                            };
+                            if !open.push(frame) {
+                                return;
+                            }
+                        }
+                        cursor = len;
+                    }
+                } else if !opened {
+                    if !open.push(serde_json::json!({
+                        "type": "snapshot",
+                        "header": {
+                            "version": 1,
+                            "id": session_id,
+                            "createdAt": 0,
+                            "isSeeded": false,
+                        },
+                        "cursor": 0,
+                        "records": [],
+                        "hasMore": false,
+                        "projections": {},
+                    })) {
+                        return;
+                    }
+                    opened = true;
+                }
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+                }
+            }
         })
     });
+}
+
+fn follow_session_id(args: &Value) -> Option<String> {
+    args.get("address")
+        .and_then(|address| address.get("sessionId"))
+        .and_then(Value::as_str)
+        .or_else(|| args.get("sessionId").and_then(Value::as_str))
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+/// One `{ type: "event", event }` record whose event is a `SessionWireEvent`.
+///
+/// Surface events carry `surfaceOp: "append"`. `user/message` puts the message itself in `data`;
+/// every other type keeps its typed fields there. Returns `None` when the event cannot be serialized.
+pub fn session_wire_record(event: &SessionEvent, seq: u64) -> Option<Value> {
+    let mut value = serde_json::to_value(event).ok()?;
+    let object = value.as_object_mut()?;
+    let event_type = object.remove("type")?.as_str()?.to_owned();
+    // `user/message` carries the message itself as `data`. The other surface events keep their
+    // typed fields, including `message`, inside `data`.
+    let data = if event_type == "user/message" {
+        object
+            .remove("message")
+            .unwrap_or_else(|| Value::Object(std::mem::take(object)))
+    } else {
+        Value::Object(std::mem::take(object))
+    };
+    let mut wire = serde_json::Map::new();
+    wire.insert("type".to_owned(), Value::String(event_type.clone()));
+    wire.insert("seq".to_owned(), Value::from(seq));
+    wire.insert("time".to_owned(), Value::from(0));
+    wire.insert("data".to_owned(), data);
+    if matches!(
+        event_type.as_str(),
+        "system/message"
+            | "developer/message"
+            | "user/message"
+            | "assistant/message"
+            | "tool/result"
+    ) {
+        wire.insert("surfaceOp".to_owned(), Value::String("append".to_owned()));
+    }
+    Some(serde_json::json!({
+        "type": "event",
+        "event": Value::Object(wire),
+    }))
 }
 
 /// How many events one `session.follow` poll returns.
@@ -1623,24 +1835,36 @@ pub fn register_job_methods(
         let jobs = std::sync::Arc::clone(&jobs);
         move |_call: RemoteCall| {
             let jobs = std::sync::Arc::clone(&jobs);
-            Box::pin(async move {
-                // The whole set, not a delta: a reconnecting client's first frame is already correct.
-                let mut views = Vec::new();
-                for id in jobs.ids() {
-                    if let Ok(job) = jobs.get(&id) {
-                        let view = crate::api::job::project(&job);
-                        views.push(serde_json::json!({
-                            "id": view.id,
-                            "kind": view.kind,
-                            "label": view.label,
-                            "status": view.status,
-                            "code": view.code,
-                        }));
-                    }
-                }
-                Ok(serde_json::json!({ "jobs": views }))
-            })
+            Box::pin(async move { Ok(job_list_value(&jobs)) })
         }
+    });
+    let stream_jobs = std::sync::Arc::clone(&jobs);
+    registry.register_stream("job", "list", move |open| {
+        let jobs = std::sync::Arc::clone(&stream_jobs);
+        Box::pin(async move {
+            let mut previous = serde_json::Value::Null;
+            loop {
+                let rows = job_list_value(&jobs);
+                if rows != previous {
+                    if !open.push(serde_json::json!({
+                        "type": "rows",
+                        "jobs": rows["jobs"],
+                    })) {
+                        return;
+                    }
+                    previous = rows;
+                }
+                tokio::select! {
+                    () = open.cancel.cancelled() => return,
+                    incoming = open.uplink.recv() => {
+                        if !matches!(incoming, Ok(Some(_))) {
+                            return;
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                }
+            }
+        })
     });
 
     registry.register("job", "kill", {
@@ -1677,6 +1901,24 @@ pub fn register_job_methods(
             })
         }
     });
+}
+
+fn job_list_value(jobs: &std::sync::Arc<crate::jobs::JobRegistry>) -> serde_json::Value {
+    // The whole set, not a delta: a reconnecting client's first frame is already correct.
+    let mut views = Vec::new();
+    for id in jobs.ids() {
+        if let Ok(job) = jobs.get(&id) {
+            let view = crate::api::job::project(&job);
+            views.push(serde_json::json!({
+                "id": view.id,
+                "kind": view.kind,
+                "label": view.label,
+                "status": view.status,
+                "code": view.code,
+            }));
+        }
+    }
+    serde_json::json!({ "jobs": views })
 }
 
 /// Every method name this build can register, as `namespace.method`.

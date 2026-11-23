@@ -239,7 +239,10 @@ impl Scripted {
 }
 
 impl Approver for Scripted {
-    fn ask(&self, _request: Request) -> crate::core::scope::BoxFut<Result<Decision, ApprovalError>> {
+    fn ask(
+        &self,
+        _request: Request,
+    ) -> crate::core::scope::BoxFut<Result<Decision, ApprovalError>> {
         let decision = self.decision.clone();
         Box::pin(async move { Ok(decision) })
     }
@@ -253,7 +256,10 @@ impl Approver for Scripted {
 pub struct Unavailable;
 
 impl Approver for Unavailable {
-    fn ask(&self, _request: Request) -> crate::core::scope::BoxFut<Result<Decision, ApprovalError>> {
+    fn ask(
+        &self,
+        _request: Request,
+    ) -> crate::core::scope::BoxFut<Result<Decision, ApprovalError>> {
         Box::pin(async { Err(ApprovalError::NoApprover) })
     }
 }

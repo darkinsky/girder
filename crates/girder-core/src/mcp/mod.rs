@@ -286,6 +286,7 @@ struct Server {
 #[derive(Default)]
 pub struct Registry {
     servers: std::sync::Mutex<BTreeMap<String, Server>>,
+    changed: tokio::sync::Notify,
 }
 
 impl std::fmt::Debug for Registry {
@@ -327,7 +328,19 @@ impl Registry {
                 catalogue: Catalogue::default(),
             },
         );
+        drop(servers);
+        self.changed.notify_waiters();
         Ok(())
+    }
+
+    /// Wakes every `mcpManager.watch` stream.
+    pub fn poke(&self) {
+        self.changed.notify_waiters();
+    }
+
+    /// Resolves when a server is added or its status changes.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
     }
 
     /// The configured server names, sorted.
@@ -364,6 +377,7 @@ impl Registry {
                     server.status = Status::Ready;
                     server.catalogue = catalogue.clone();
                 }
+                self.changed.notify_waiters();
                 Ok(catalogue)
             }
             Err(error) => {
@@ -372,6 +386,7 @@ impl Registry {
                         reason: error.to_string(),
                     };
                 }
+                self.changed.notify_waiters();
                 Err(error)
             }
         }
@@ -568,6 +583,7 @@ impl Registry {
                 }
             };
         }
+        self.changed.notify_waiters();
         result
     }
 

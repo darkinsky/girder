@@ -24,8 +24,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::util::brand::MessageId;
 use crate::llm::ContentBlock;
+use crate::util::brand::MessageId;
 
 /// The bound on a one-line context summary.
 ///

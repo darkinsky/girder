@@ -597,36 +597,13 @@ async fn concurrent_invokes_keep_their_own_responses() {
 // ---- the page, and the route that only exists with a registry ------------------------------------
 
 #[tokio::test]
-async fn the_root_path_serves_the_probe_page() {
-    // The page is served by the same process as the API so a browser has no second origin to configure. Asserted over
-    // the socket, and against the same HTML the crate exports: a routing mistake that served something else with a
-    // 200 would pass a status-only check.
+async fn the_root_path_is_empty_without_a_configured_frontend() {
+    // The backend only serves the original WebUI when a dist index is configured.
     let server = start(Some(Arc::new(test_registry()))).await;
 
     let response = send(server.address, "GET", WEB_INDEX_PATH, &[], b"").await;
 
-    assert_eq!(response.status, 200, "body: {}", response.body);
-    let content_type = response.header("content-type").unwrap_or_else(|| {
-        panic!(
-            "the page must declare a content type: {:?}",
-            response.headers
-        )
-    });
-    assert!(
-        content_type.starts_with("text/html"),
-        "a browser needs HTML, got {content_type:?}"
-    );
-    assert!(
-        response
-            .body
-            .to_ascii_lowercase()
-            .starts_with("<!doctype html>"),
-        "the body must be the page, got {:?}",
-        &response.body[..response.body.len().min(80)]
-    );
-    // The page's buttons post to the same path this suite posts to; if the two drifted, every button would 404.
-    assert!(response.body.contains(INVOKE_PATH));
-    assert_eq!(response.body, girder_rpc::INDEX_HTML);
+    assert_eq!(response.status, 404, "body: {}", response.body);
 }
 
 #[tokio::test]
@@ -657,10 +634,9 @@ async fn the_invoke_route_is_absent_without_a_remote_registry() {
         response.body
     );
 
-    // The probe page, by contrast, is mounted unconditionally: it is how an operator checks the process is up before
-    // any registry exists.
+    // The frontend route is also absent until a dist index is configured.
     let page = send(server.address, "GET", WEB_INDEX_PATH, &[], b"").await;
-    assert_eq!(page.status, 200, "body: {}", page.body);
+    assert_eq!(page.status, 404, "body: {}", page.body);
 }
 
 // ---- what the wire does not check ---------------------------------------------------------------

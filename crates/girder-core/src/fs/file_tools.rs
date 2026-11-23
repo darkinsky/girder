@@ -79,7 +79,9 @@ async fn read(
         let shown = path.display().to_string();
         if let Some(format) = crate::document::office_document::detect(&head) {
             if !crate::document::office_document::is_readable(format) {
-                return Ok(ToolResult::error(crate::document::office_document::explain(format)));
+                return Ok(ToolResult::error(
+                    crate::document::office_document::explain(format),
+                ));
             }
         } else if head.starts_with(b"PK\x03\x04") {
             // A zip the format table could not name: an archive is still not text, and its local file headers decoded as
@@ -88,7 +90,8 @@ async fn read(
             return Ok(ToolResult::error(format!(
                 "`{shown}` is a zip archive, so it has no text to read; list its entries to find the document inside"
             )));
-        } else if crate::document::office_document::is_document(&shown, &head) && head.contains(&0) {
+        } else if crate::document::office_document::is_document(&shown, &head) && head.contains(&0)
+        {
             // A binary file the format table does not know: still not text, and reading it would produce replacement
             // characters a model would treat as content.
             return Ok(ToolResult::error(format!(
@@ -137,7 +140,10 @@ async fn read(
 
     // The observation is recorded even for a partial read: what the model saw is what a later write must not
     // contradict, and a range still establishes that this session has looked at the file.
-    ctx.observe(&path, Observation::Present(crate::core::observation::version_of(&text)));
+    ctx.observe(
+        &path,
+        Observation::Present(crate::core::observation::version_of(&text)),
+    );
 
     // The language is named in the result because a client that renders the lines wants to highlight them, and the
     // alternative is every consumer re-deriving it from the extension with its own table. One shared table is what
@@ -321,7 +327,9 @@ async fn edit(
         let shown = path.display().to_string();
         if let Some(format) = crate::document::office_document::detect(&head) {
             if !crate::document::office_document::is_readable(format) {
-                return Ok(ToolResult::error(crate::document::office_document::explain(format)));
+                return Ok(ToolResult::error(
+                    crate::document::office_document::explain(format),
+                ));
             }
         } else if head.starts_with(b"PK\x03\x04") {
             // A zip the format table could not name: an archive is still not text, and its local file headers decoded as
@@ -330,7 +338,8 @@ async fn edit(
             return Ok(ToolResult::error(format!(
                 "`{shown}` is a zip archive, so it has no text to read; list its entries to find the document inside"
             )));
-        } else if crate::document::office_document::is_document(&shown, &head) && head.contains(&0) {
+        } else if crate::document::office_document::is_document(&shown, &head) && head.contains(&0)
+        {
             // A binary file the format table does not know: still not text, and reading it would produce replacement
             // characters a model would treat as content.
             return Ok(ToolResult::error(format!(
@@ -447,7 +456,9 @@ async fn apply(
             operation.path(),
         ));
         match operation {
-            crate::fs::patch::Operation::Add { content, .. } => planned.push((path, Some(content.clone()))),
+            crate::fs::patch::Operation::Add { content, .. } => {
+                planned.push((path, Some(content.clone())))
+            }
             crate::fs::patch::Operation::Delete { .. } => planned.push((path, None)),
             crate::fs::patch::Operation::Update { hunks, move_to, .. } => {
                 let existing = match tokio::fs::read_to_string(&path).await {
@@ -515,7 +526,10 @@ async fn apply(
                     path.display()
                 )));
             }
-            ctx.observe(path, Observation::Present(crate::core::observation::version_of(content)));
+            ctx.observe(
+                path,
+                Observation::Present(crate::core::observation::version_of(content)),
+            );
         } else {
             let _ = tokio::fs::remove_file(path).await;
             ctx.forget(path);
@@ -598,7 +612,9 @@ fn resolve(
 /// A person declining to answer is information: the model can proceed differently. An error would make the turn look
 /// broken and the model would retry the same question.
 #[must_use]
-pub fn ask_tool(responder: std::sync::Arc<dyn crate::interaction::questions::Responder>) -> ToolDefinition {
+pub fn ask_tool(
+    responder: std::sync::Arc<dyn crate::interaction::questions::Responder>,
+) -> ToolDefinition {
     ToolDefinition::new(
         "ask_user",
         "Asks the person a question and waits for the answer",

@@ -35,8 +35,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::session::projection::ProjectionRegistry;
 use crate::api::remote::SessionCatalog;
+use crate::session::projection::ProjectionRegistry;
 
 /// How many frames one observation returns by default.
 ///

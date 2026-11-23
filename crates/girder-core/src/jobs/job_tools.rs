@@ -53,10 +53,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
+use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
 use crate::jobs::{JobError, JobId, JobRegistry, spawn_job};
 use crate::shell::SandboxMode;
 use crate::shell::subprocess::SpawnOptions;
-use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
 
 /// The producer kind recorded for a job started by these tools.
 ///

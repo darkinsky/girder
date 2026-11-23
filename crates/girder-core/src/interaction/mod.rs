@@ -1,5 +1,6 @@
 //! Upstream `packages/interaction`.
 
+pub mod action_cards_rpc;
 pub mod approval;
 pub mod approval_rules;
 pub mod builtin_commands;

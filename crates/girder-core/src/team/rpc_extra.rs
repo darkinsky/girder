@@ -162,7 +162,11 @@ pub fn register_team_extra_methods(registry: &mut RemoteRegistry) {
             Ok(json!({ "ok": true }))
         })
     });
-    registry.declare(NAMESPACE, METHOD, crate::guard::access::Declaration::read("team"));
+    registry.declare(
+        NAMESPACE,
+        METHOD,
+        crate::guard::access::Declaration::read("team"),
+    );
 }
 
 /// The task ids a graph names, in the order they first appear.

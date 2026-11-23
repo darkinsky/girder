@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::skill::{Definition, Registry, SkillError};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::skill::{Definition, Registry, SkillError};
 
 /// Builds the `skill` tool over a registry.
 ///

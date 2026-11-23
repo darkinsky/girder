@@ -23,19 +23,18 @@
 //! way nobody can trace back. Naming each part and its outcome makes "it started but tools do not
 //! work" a single line in the log rather than an investigation.
 
-
 pub mod app;
 pub mod check;
+pub mod hmr;
 pub mod install;
 pub mod loader;
-pub mod stages;
-pub mod hmr;
 pub mod market_compat;
 pub mod plugin_entries;
 pub mod plugin_lifecycle;
 pub mod plugin_manager_rpc;
 pub mod plugin_market;
 pub mod plugin_market_rpc;
+pub mod stages;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

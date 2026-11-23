@@ -34,8 +34,36 @@ pub struct BrowserAuth {
 struct CookiePayload {
     version: u8,
     authority: String,
+    #[serde(rename = "issuedAt")]
     issued_at: u64,
+    #[serde(rename = "expiresAt")]
     expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+}
+
+/// What a `/connect` request should do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectAuth {
+    /// The launch token was exchanged for an API operator cookie.
+    Redirect {
+        /// Relative redirect target.
+        location: &'static str,
+        /// Signed cookie to set.
+        set_cookie: String,
+        /// The published operator identity carried by the cookie.
+        peer_id: String,
+    },
+    /// `interactions` was repeated or not one of the two legal values.
+    BadRequest {
+        /// Plain-text explanation.
+        body: String,
+    },
+    /// The launch token, method, or authority did not authenticate.
+    Unauthorized {
+        /// The response body; empty for HEAD.
+        body: String,
+    },
 }
 
 /// What an authenticated index request should do.
@@ -72,7 +100,10 @@ impl BrowserAuth {
         secret: [u8; SECRET_BYTES],
         max_age: Duration,
     ) -> Self {
-        assert!(!max_age.is_zero(), "browser auth cookie lifetime must be non-zero");
+        assert!(
+            !max_age.is_zero(),
+            "browser auth cookie lifetime must be non-zero"
+        );
         Self {
             launch_token: launch_token.into(),
             secret,
@@ -141,25 +172,21 @@ impl BrowserAuth {
             {
                 let authority = authority.expect("checked above");
                 let expires_at = now_ms.saturating_add(self.max_age.as_millis() as u64);
-                let body = serde_json::to_string(&CookiePayload {
+                let value = self.encode_cookie(&CookiePayload {
                     version: COOKIE_VERSION,
                     authority: authority.clone(),
                     issued_at: now_ms,
                     expires_at,
-                })
-                .expect("cookie payload is serializable");
-                let encoded_body = encode(body.as_bytes());
-                let signature = self.sign(&encoded_body);
+                    id: None,
+                });
                 return IndexAuth::Redirect {
                     location: "./",
-                    set_cookie: format!(
-                        "{}=v{COOKIE_VERSION}.{encoded_body}.{}; Max-Age={}; Path=/; \
-                         Expires={}; HttpOnly; SameSite=Strict{}",
-                        cookie_name(&authority),
-                        encode(&signature),
-                        self.max_age.as_secs(),
-                        http_date(expires_at),
-                        if secure { "; Secure" } else { "" },
+                    set_cookie: session_cookie(
+                        &cookie_name(&authority),
+                        &value,
+                        expires_at,
+                        self.max_age,
+                        secure,
                     ),
                 };
             }
@@ -172,27 +199,127 @@ impl BrowserAuth {
         }
     }
 
+    /// Exchanges the launch token for an independent API operator.
+    ///
+    /// Omitted `interactions` means `none`. `publish` runs only after the token, method, path, and
+    /// authority have all checked out, and it runs before the cookie is returned.
+    pub fn authorize_connect<F>(
+        &self,
+        method: &Method,
+        target: &str,
+        headers: &HeaderMap,
+        secure: bool,
+        now_ms: u64,
+        publish: F,
+    ) -> ConnectAuth
+    where
+        F: FnOnce(girder_core::api::gateway::Interactions) -> String,
+    {
+        let url = Url::parse(&format!("http://dsh.invalid{target}"))
+            .unwrap_or_else(|_| Url::parse("http://dsh.invalid/").expect("static URL"));
+        let declarations: Vec<String> = url
+            .query_pairs()
+            .filter(|(name, _)| name == "interactions")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        let interactions = match declarations.as_slice() {
+            [] => girder_core::api::gateway::Interactions::None,
+            [only] => match girder_core::api::gateway::Interactions::parse(only) {
+                Some(interactions) => interactions,
+                None => {
+                    return ConnectAuth::BadRequest {
+                        body: "interactions must be declared once as answer or none\n".to_owned(),
+                    };
+                }
+            },
+            _ => {
+                return ConnectAuth::BadRequest {
+                    body: "interactions must be declared once as answer or none\n".to_owned(),
+                };
+            }
+        };
+        let tokens: Vec<String> = url
+            .query_pairs()
+            .filter(|(name, _)| name == TOKEN_QUERY)
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        let authority = request_audience(headers, secure);
+        if *method != Method::GET
+            || url.path() != "/connect"
+            || tokens.len() != 1
+            || authority.is_none()
+            || !bool::from(tokens[0].as_bytes().ct_eq(self.launch_token.as_bytes()))
+        {
+            return ConnectAuth::Unauthorized {
+                body: unauthorized(method).body(),
+            };
+        }
+        let authority = authority.expect("checked above");
+        let peer_id = publish(interactions);
+        let expires_at = now_ms.saturating_add(self.max_age.as_millis() as u64);
+        let value = self.encode_cookie(&CookiePayload {
+            version: 2,
+            authority: authority.clone(),
+            issued_at: now_ms,
+            expires_at,
+            id: Some(peer_id.clone()),
+        });
+        ConnectAuth::Redirect {
+            location: "./api/remote.mux",
+            set_cookie: session_cookie(
+                &cookie_name(&authority),
+                &value,
+                expires_at,
+                self.max_age,
+                secure,
+            ),
+            peer_id,
+        }
+    }
+
     /// Checks an authority-bound browser cookie without changing any state.
+    ///
+    /// An API operator cookie is not a browser session: it must not open the index.
     #[must_use]
     pub fn is_authenticated(&self, headers: &HeaderMap, secure: bool, now_ms: u64) -> bool {
-        let Some(authority) = request_audience(headers, secure) else {
-            return false;
-        };
-        let Some(raw_cookie) = headers.get("cookie").and_then(|value| value.to_str().ok()) else {
-            return false;
-        };
-        let Some(value) = cookie_value(raw_cookie, &cookie_name(&authority)) else {
-            return false;
-        };
-        let Some(payload) = self.decode_cookie(value) else {
-            return false;
-        };
+        self.payload(headers, secure, now_ms)
+            .is_some_and(|payload| payload.version == COOKIE_VERSION)
+    }
+
+    /// Returns the operator id from a version-2 cookie, when the cookie is still valid.
+    #[must_use]
+    pub fn authenticate_api(
+        &self,
+        headers: &HeaderMap,
+        secure: bool,
+        now_ms: u64,
+    ) -> Option<String> {
+        let payload = self.payload(headers, secure, now_ms)?;
+        (payload.version == 2).then_some(payload.id).flatten()
+    }
+
+    fn payload(&self, headers: &HeaderMap, secure: bool, now_ms: u64) -> Option<CookiePayload> {
+        let authority = request_audience(headers, secure)?;
+        let raw_cookie = headers.get("cookie")?.to_str().ok()?;
+        let value = cookie_value(raw_cookie, &cookie_name(&authority))?;
+        let payload = self.decode_cookie(value)?;
+        self.fresh(&payload, &authority, now_ms).then_some(payload)
+    }
+
+    fn fresh(&self, payload: &CookiePayload, authority: &str, now_ms: u64) -> bool {
         payload.authority == authority
             && payload.issued_at <= now_ms
             && payload.expires_at > now_ms
             && payload.expires_at > payload.issued_at
             && payload.expires_at.saturating_sub(payload.issued_at)
                 <= self.max_age.as_millis() as u64
+    }
+
+    fn encode_cookie(&self, payload: &CookiePayload) -> String {
+        let body = serde_json::to_string(payload).expect("cookie payload is serializable");
+        let encoded_body = encode(body.as_bytes());
+        let signature = self.sign(&encoded_body);
+        format!("v{}.{encoded_body}.{}", payload.version, encode(&signature))
     }
 
     fn sign(&self, body: &str) -> Vec<u8> {
@@ -206,7 +333,12 @@ impl BrowserAuth {
         let version = parts.next()?;
         let body = parts.next()?;
         let signature = parts.next()?;
-        if parts.next().is_some() || version != "v1" {
+        let payload_version = match version {
+            "v1" => 1,
+            "v2" => 2,
+            _ => return None,
+        };
+        if parts.next().is_some() {
             return None;
         }
         let signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
@@ -215,7 +347,14 @@ impl BrowserAuth {
         mac.verify_slice(&signature).ok()?;
         let body = URL_SAFE_NO_PAD.decode(body).ok()?;
         let payload: CookiePayload = serde_json::from_slice(&body).ok()?;
-        (payload.version == COOKIE_VERSION).then_some(payload)
+        if payload.version != payload_version {
+            return None;
+        }
+        match payload.version {
+            1 if payload.id.is_none() => Some(payload),
+            2 if payload.id.as_deref().is_some_and(|id| !id.is_empty()) => Some(payload),
+            _ => None,
+        }
     }
 }
 
@@ -237,7 +376,11 @@ fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
 
 fn request_audience(headers: &HeaderMap, secure: bool) -> Option<String> {
     let host = headers.get("host")?.to_str().ok()?;
-    let url = Url::parse(&format!("{}//{host}", if secure { "https:" } else { "http:" })).ok()?;
+    let url = Url::parse(&format!(
+        "{}//{host}",
+        if secure { "https:" } else { "http:" }
+    ))
+    .ok()?;
     let host = url.host_str()?;
     let host = if host.contains(':') {
         format!("[{host}]")
@@ -257,12 +400,40 @@ fn request_audience(headers: &HeaderMap, secure: bool) -> Option<String> {
 
 fn unauthorized(method: &Method) -> IndexAuth {
     IndexAuth::Unauthorized {
-        body: if *method == Method::HEAD {
-            String::new()
-        } else {
-            "dsh web authentication required; reopen the URL printed by dsh web.\n".to_owned()
-        },
+        body: unauthorized_body(method),
     }
+}
+
+fn unauthorized_body(method: &Method) -> String {
+    if *method == Method::HEAD {
+        String::new()
+    } else {
+        "dsh web authentication required; reopen the URL printed by dsh web.\n".to_owned()
+    }
+}
+
+impl IndexAuth {
+    fn body(self) -> String {
+        match self {
+            Self::Unauthorized { body } => body,
+            Self::Serve | Self::Redirect { .. } => String::new(),
+        }
+    }
+}
+
+fn session_cookie(
+    name: &str,
+    value: &str,
+    expires_at: u64,
+    max_age: Duration,
+    secure: bool,
+) -> String {
+    format!(
+        "{name}={value}; Max-Age={}; Path=/; Expires={}; HttpOnly; SameSite=Strict{}",
+        max_age.as_secs(),
+        http_date(expires_at),
+        if secure { "; Secure" } else { "" },
+    )
 }
 
 fn http_date(epoch_ms: u64) -> String {
@@ -337,7 +508,11 @@ mod tests {
     #[test]
     fn invalid_or_repeated_launch_tokens_are_unauthorized() {
         let auth = BrowserAuth::new("launch-token", [7; 32], Duration::from_secs(60));
-        for target in ["/", "/?token=wrong", "/?token=launch-token&token=launch-token"] {
+        for target in [
+            "/",
+            "/?token=wrong",
+            "/?token=launch-token&token=launch-token",
+        ] {
             assert!(matches!(
                 auth.authorize_index(&Method::GET, target, &headers(None), false, 1_000),
                 IndexAuth::Unauthorized { .. }
@@ -352,6 +527,47 @@ mod tests {
                 1_000
             ),
             IndexAuth::Unauthorized { .. }
+        ));
+    }
+
+    #[test]
+    fn connect_defaults_to_none_and_an_api_cookie_does_not_open_the_index() {
+        let auth = BrowserAuth::new("launch-token", [7; 32], Duration::from_secs(60));
+        let exchange = auth.authorize_connect(
+            &Method::GET,
+            "/connect?token=launch-token",
+            &headers(None),
+            false,
+            1_000,
+            |_| "peer-1".to_owned(),
+        );
+        let super::ConnectAuth::Redirect {
+            location,
+            set_cookie,
+            peer_id,
+        } = exchange
+        else {
+            panic!("a launch token must exchange for an operator");
+        };
+        assert_eq!(location, "./api/remote.mux");
+        assert_eq!(peer_id, "peer-1");
+        let cookie = set_cookie.split(';').next().expect("cookie pair");
+        assert_eq!(
+            auth.authenticate_api(&headers(Some(cookie)), false, 1_001)
+                .as_deref(),
+            Some("peer-1")
+        );
+        assert!(!auth.is_authenticated(&headers(Some(cookie)), false, 1_001));
+        assert!(matches!(
+            auth.authorize_connect(
+                &Method::GET,
+                "/connect?token=launch-token&interactions=observe",
+                &headers(None),
+                false,
+                1_000,
+                |_| panic!("an illegal declaration must not publish"),
+            ),
+            super::ConnectAuth::BadRequest { .. }
         ));
     }
 }

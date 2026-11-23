@@ -46,8 +46,8 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::lsp::{Answer, Location, LspError, Operation, Position, Registry, Request};
 use crate::core::tools::{ToolDefinition, ToolResult, ToolRunContext};
+use crate::lsp::{Answer, Location, LspError, Operation, Position, Registry, Request};
 use crate::workspace::path::{display, resolve};
 
 /// Builds the `lsp` tool over a registry.

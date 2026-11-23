@@ -98,13 +98,13 @@ fn call(args: serde_json::Value) -> RemoteCall {
     }
 }
 
-async fn tree(
-    registry: &RemoteRegistry,
-    args: serde_json::Value,
-) -> Result<serde_json::Value, RemoteError> {
-    registry
-        .dispatch("workspaceFiles", "changes", call(args))
-        .await
+async fn tree(root: &Path, args: serde_json::Value) -> Result<serde_json::Value, RemoteError> {
+    let fs: Arc<dyn girder_core::FileSystem> = Arc::new(LocalFileSystem);
+    let workspaces = Arc::new(WorkspaceRegistry::new());
+    workspaces
+        .register(WORKSPACE, root, None, 0)
+        .expect("registered workspace");
+    workspace_files_rpc::tree(&call(args), fs.as_ref(), workspaces.as_ref()).await
 }
 
 async fn read_file(
@@ -136,9 +136,8 @@ fn refusal(error: &RemoteError) -> String {
 #[tokio::test]
 async fn tree_lists_the_direct_children_of_the_root() {
     let (base, root) = fixture("tree-root");
-    let registry = registry(&root);
 
-    let value = tree(&registry, serde_json::json!({ "workspaceId": WORKSPACE }))
+    let value = tree(&root, serde_json::json!({ "workspaceId": WORKSPACE }))
         .await
         .expect("tree");
 
@@ -159,10 +158,9 @@ async fn tree_lists_the_direct_children_of_the_root() {
 #[tokio::test]
 async fn tree_returns_a_subdirectory_with_workspace_relative_paths() {
     let (base, root) = fixture("tree-sub");
-    let registry = registry(&root);
 
     let value = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": "src" }),
     )
     .await
@@ -177,13 +175,12 @@ async fn tree_returns_a_subdirectory_with_workspace_relative_paths() {
 #[tokio::test]
 async fn tree_descends_to_the_requested_depth() {
     let (base, root) = fixture("tree-depth");
-    let registry = registry(&root);
 
-    let shallow = tree(&registry, serde_json::json!({ "workspaceId": WORKSPACE }))
+    let shallow = tree(&root, serde_json::json!({ "workspaceId": WORKSPACE }))
         .await
         .expect("tree");
     let deep = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "depth": 2 }),
     )
     .await
@@ -203,10 +200,9 @@ async fn tree_descends_to_the_requested_depth() {
 #[tokio::test]
 async fn tree_reports_a_cut_listing_rather_than_returning_a_full_page() {
     let (base, root) = fixture("tree-limit");
-    let registry = registry(&root);
 
     let value = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "limit": 2 }),
     )
     .await
@@ -231,11 +227,10 @@ async fn tree_defaults_are_the_documented_bounds() {
 #[tokio::test]
 async fn tree_refuses_a_depth_outside_the_bound_instead_of_clamping() {
     let (base, root) = fixture("tree-depth-bound");
-    let registry = registry(&root);
 
     // A clamp would answer a different question than the one asked, silently.
     let error = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "depth": MAX_TREE_DEPTH + 1 }),
     )
     .await
@@ -243,7 +238,7 @@ async fn tree_refuses_a_depth_outside_the_bound_instead_of_clamping() {
     assert!(refusal(&error).contains("depth"));
 
     let zero = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "depth": 0 }),
     )
     .await
@@ -255,10 +250,9 @@ async fn tree_refuses_a_depth_outside_the_bound_instead_of_clamping() {
 #[tokio::test]
 async fn tree_refuses_a_path_that_names_a_file() {
     let (base, root) = fixture("tree-notdir");
-    let registry = registry(&root);
 
     let error = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": "README.md" }),
     )
     .await
@@ -521,10 +515,9 @@ async fn read_file_refuses_an_absolute_path_outside_the_workspace() {
 #[tokio::test]
 async fn tree_refuses_a_relative_escape() {
     let (base, root) = fixture("escape-tree");
-    let registry = registry(&root);
 
     let error = tree(
-        &registry,
+        &root,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": ".." }),
     )
     .await
@@ -584,7 +577,7 @@ async fn an_unknown_workspace_is_refused_by_both_methods() {
     let (base, root) = fixture("unknown-ws");
     let registry = registry(&root);
 
-    let tree_error = tree(&registry, serde_json::json!({ "workspaceId": "nope" }))
+    let tree_error = tree(&root, serde_json::json!({ "workspaceId": "nope" }))
         .await
         .expect_err("unknown workspace");
     let read_error = read_file(
@@ -608,11 +601,8 @@ async fn an_unknown_workspace_is_refused_by_both_methods() {
 #[tokio::test]
 async fn a_missing_workspace_id_is_an_argument_error() {
     let (base, root) = fixture("no-ws-id");
-    let registry = registry(&root);
 
-    let error = tree(&registry, serde_json::json!({}))
-        .await
-        .expect_err("no id");
+    let error = tree(&root, serde_json::json!({})).await.expect_err("no id");
     assert_eq!(error.code(), "INVALID_ARGUMENTS");
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -634,6 +624,46 @@ async fn a_watch_starts_with_an_empty_baseline() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+#[tokio::test]
+async fn changes_opens_ready_then_reports_a_written_file() {
+    let (base, root) = fixture("changes-stream");
+    let registry = registry(&root);
+    let request = call(serde_json::json!({
+        "workspaceId": WORKSPACE,
+        "path": "README.md",
+    }));
+    let handler = registry
+        .stream_method("workspaceFiles", "changes", &request)
+        .expect("changes is a stream");
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "workspaceFiles/changes",
+        )),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+        .await
+        .expect("ready arrived")
+        .expect("open")
+        .expect("frame");
+    assert_eq!(ready["kind"], "ready");
+
+    std::fs::write(root.join("README.md"), "# changed\n").expect("rewrote");
+    let change = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+        .await
+        .expect("change arrived")
+        .expect("frame")
+        .expect("change ok");
+    assert_eq!(change["kind"], "change");
+    assert!(change["change"]["version"].is_string());
+    running.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod workspace {

@@ -18,7 +18,6 @@
 //! An agent's output is what it said. Its result is what the script asked for, in the shape the script
 //! declared. A run that recorded only output would need the script to re-parse prose to find what it wanted.
 
-
 pub mod rpc;
 pub mod tool;
 

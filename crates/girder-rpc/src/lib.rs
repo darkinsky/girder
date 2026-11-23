@@ -30,11 +30,11 @@ pub mod server;
 mod stream;
 mod web;
 
+pub use browser_auth::{BrowserAuth, ConnectAuth, IndexAuth};
 pub use server::{
     ClientAnswer, ClientHandle, INVOKE_PATH, RpcServer, TransportError, forward_events, serve,
     serve_on, serve_with, serve_with_options, serve_with_peers,
 };
-pub use browser_auth::{BrowserAuth, IndexAuth};
 
 use std::collections::HashMap;
 use std::sync::Arc;

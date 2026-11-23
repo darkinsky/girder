@@ -52,7 +52,10 @@ pub fn fetch_tool(web: Arc<Web>) -> ToolDefinition {
     )
 }
 
-async fn fetch(args: &serde_json::Value, web: &Web) -> Result<ToolResult, crate::core::tools::ToolError> {
+async fn fetch(
+    args: &serde_json::Value,
+    web: &Web,
+) -> Result<ToolResult, crate::core::tools::ToolError> {
     let url = args
         .get("url")
         .and_then(serde_json::Value::as_str)
