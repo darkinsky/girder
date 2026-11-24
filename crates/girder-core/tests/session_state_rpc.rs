@@ -922,6 +922,81 @@ async fn observe_state_reports_the_passive_fields() {
 }
 
 #[tokio::test]
+async fn observe_state_reports_the_live_inbox() {
+    let dir = scratch("observe-queue");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(TitledCatalog { root: dir.clone() });
+    let turns: Arc<dyn LiveTurns> = Arc::new(Only(Arc::from("s")));
+    let pending: Arc<dyn PendingInputs> = Arc::new(|_: &str| Vec::new());
+    let agent = Arc::new(girder_core::Agent::new(girder_core::AgentSpec::root(
+        girder_core::SessionId::new("s").expect("session id"),
+        girder_core::AgentOptions::new("test-provider", "test-model"),
+    )));
+    agent
+        .splice_inbox(&girder_core::Splice::append(
+            girder_core::InboxTarget::NextTurn,
+            vec![girder_core::ChatMessage::user(
+                girder_core::MessageId::new("q1").expect("message id"),
+                "later",
+            )],
+        ))
+        .expect("queued");
+    agent
+        .splice_inbox(&girder_core::Splice::append(
+            girder_core::InboxTarget::NextStep,
+            vec![girder_core::ChatMessage::user(
+                girder_core::MessageId::new("s1").expect("message id"),
+                "now",
+            )],
+        ))
+        .expect("steering");
+    let held = Arc::clone(&agent);
+    let queues: Arc<dyn girder_core::QueueAgentSource> =
+        Arc::new(move |session_id: &str| (session_id == "s").then(|| Arc::clone(&held)));
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_observing(
+        &mut registry,
+        &catalog,
+        &projections(),
+        &turns,
+        &pending,
+        &queues,
+    );
+
+    let request = call(json!({"sessionId": "s"}));
+    let handler = registry
+        .stream_method("session", "observeState", &request)
+        .expect("observeState is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/observeState",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let state = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("state")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(state["queue"][0]["id"], "q1");
+    assert_eq!(state["queue"][0]["placement"], "queued");
+    assert_eq!(state["queue"][0]["content"][0]["text"], "later");
+    assert_eq!(state["queue"][1]["id"], "s1");
+    assert_eq!(state["queue"][1]["placement"], "steering");
+    assert_eq!(state["queue"][1]["content"][0]["text"], "now");
+
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn control_follows_the_baseline_with_a_projection_diff() {
     let dir = scratch("control-diff");
     seed(&dir, "s1", 1);
@@ -1088,12 +1163,14 @@ async fn wait_stops_when_a_question_is_still_open() {
         }
     });
     let mut registry = RemoteRegistry::new();
+    let queues: Arc<dyn girder_core::QueueAgentSource> = Arc::new(|_: &str| None);
     register_session_state_method_observing(
         &mut registry,
         &catalog,
         &projections(),
         &turns,
         &pending,
+        &queues,
     );
 
     let value = registry
@@ -1109,6 +1186,173 @@ async fn wait_stops_when_a_question_is_still_open() {
     assert_eq!(value["state"]["pendingInput"], json!(["question"]));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn observe_state_waits_for_a_live_turn_signal() {
+    let dir = scratch("observe-wake");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(girder_core::DirectoryCatalog::new(&dir));
+    if catalog.changes().is_none() {
+        drop(catalog);
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    let running_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let turns: Arc<dyn LiveTurns> = Arc::new(SignaledTurns {
+        running: Arc::clone(&running_flag),
+        wake: Arc::clone(&wake),
+    });
+    let pending: Arc<dyn PendingInputs> = Arc::new(SignaledPending {
+        wake: Arc::clone(&wake),
+    });
+    let queues: Arc<dyn girder_core::QueueAgentSource> = Arc::new(SignaledQueues {
+        wake: Arc::clone(&wake),
+    });
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_observing(
+        &mut registry,
+        &catalog,
+        &projections(),
+        &turns,
+        &pending,
+        &queues,
+    );
+    let request = call(json!({"sessionId": "s"}));
+    let handler = registry
+        .stream_method("session", "observeState", &request)
+        .expect("observeState is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "session/observeState",
+        )),
+        cancel.clone(),
+    );
+    let task = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let first = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("first state")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(first["running"], false);
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    running_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    let quiet = tokio::time::timeout(Duration::from_millis(120), frames.recv()).await;
+    assert!(quiet.is_err(), "a live change arrived without a signal");
+
+    wake.notify_waiters();
+    let next = tokio::time::timeout(Duration::from_millis(500), frames.recv())
+        .await
+        .expect("signaled state")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(next["running"], true);
+
+    cancel.cancel();
+    let _ = task.await;
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn wait_returns_when_the_live_turn_signal_fires() {
+    let dir = scratch("wait-wake");
+    seed(&dir, "s", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(girder_core::DirectoryCatalog::new(&dir));
+    if catalog.changes().is_none() {
+        drop(catalog);
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    let running_flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let turns: Arc<dyn LiveTurns> = Arc::new(SignaledTurns {
+        running: Arc::clone(&running_flag),
+        wake: Arc::clone(&wake),
+    });
+    let pending: Arc<dyn PendingInputs> = Arc::new(SignaledPending {
+        wake: Arc::clone(&wake),
+    });
+    let queues: Arc<dyn girder_core::QueueAgentSource> = Arc::new(SignaledQueues {
+        wake: Arc::clone(&wake),
+    });
+    let mut registry = RemoteRegistry::new();
+    register_session_state_method_observing(
+        &mut registry,
+        &catalog,
+        &projections(),
+        &turns,
+        &pending,
+        &queues,
+    );
+    let call = call(json!({ "sessionId": "s", "timeoutMs": 5_000 }));
+    let waiting = tokio::spawn(async move { registry.dispatch(NAMESPACE, "wait", call).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !waiting.is_finished(),
+        "wait returned while the turn was still running"
+    );
+    running_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+    wake.notify_waiters();
+    let value = tokio::time::timeout(Duration::from_millis(500), waiting)
+        .await
+        .expect("wait woke")
+        .expect("task")
+        .expect("idle");
+    assert_eq!(value["reason"], "idle");
+    assert_eq!(value["state"]["running"], false);
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct SignaledTurns {
+    running: Arc<std::sync::atomic::AtomicBool>,
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl LiveTurns for SignaledTurns {
+    fn is_running(&self, _session_id: &str) -> bool {
+        self.running.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn changes(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.wake))
+    }
+}
+
+struct SignaledPending {
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl PendingInputs for SignaledPending {
+    fn kinds(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn changes(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.wake))
+    }
+}
+
+struct SignaledQueues {
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl girder_core::QueueAgentSource for SignaledQueues {
+    fn agent(&self, _session_id: &str) -> Option<Arc<girder_core::Agent>> {
+        None
+    }
+
+    fn changes(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.wake))
+    }
 }
 
 struct NoTurns;

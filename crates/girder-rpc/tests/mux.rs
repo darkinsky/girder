@@ -324,16 +324,25 @@ async fn the_events_stream_starts_with_ready_and_forwards_allowlisted_events() {
         ))
         .await
         .unwrap();
+    let ready = next_server_message(&mut socket).await;
+    let ServerMessage::Item {
+        stream_id,
+        value: Some(ready_value),
+    } = &ready
+    else {
+        panic!("events stream opens with ready, got {ready:?}");
+    };
+    assert_eq!(stream_id, "events");
+    assert_eq!(ready_value["type"], "ready");
+    assert!(
+        ready_value["clientId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "{ready_value}"
+    );
     assert_eq!(
-        next_server_message(&mut socket).await,
-        ServerMessage::Item {
-            stream_id: "events".to_owned(),
-            value: Some(serde_json::json!({
-                "type": "ready",
-                "clientId": "events",
-                "host": {"home": std::env::var("HOME").unwrap_or_default()},
-            })),
-        }
+        ready_value["host"]["home"],
+        std::env::var("HOME").unwrap_or_default()
     );
 
     bus.on::<Ping, _>("test", girder_core::Order::Append, |_| {});
@@ -381,29 +390,46 @@ async fn a_waterfall_event_is_settled_by_events_result() {
         ))
         .await
         .unwrap();
-    let _ = next_server_message(&mut socket).await;
+    let ready = next_server_message(&mut socket).await;
+    let ServerMessage::Item {
+        value: Some(ready_value),
+        ..
+    } = &ready
+    else {
+        panic!("events stream opens with ready, got {ready:?}");
+    };
+    let client_id = ready_value["clientId"]
+        .as_str()
+        .expect("generation id")
+        .to_owned();
     bus.emit::<Approval>(serde_json::json!({"agent": "agent-1", "prompt": "ship?"}));
+    let waterfall = next_server_message(&mut socket).await;
+    let ServerMessage::Item {
+        value: Some(waterfall_value),
+        ..
+    } = &waterfall
+    else {
+        panic!("approval arrives as a waterfall, got {waterfall:?}");
+    };
+    assert_eq!(waterfall_value["type"], "waterfall");
+    assert_eq!(waterfall_value["event"], "approval/request");
+    assert_eq!(waterfall_value["agentId"], "agent-1");
     assert_eq!(
-        next_server_message(&mut socket).await,
-        ServerMessage::Item {
-            stream_id: "events".to_owned(),
-            value: Some(serde_json::json!({
-                "type": "waterfall",
-                "event": "approval/request",
-                "eventId": "events-1",
-                "agentId": "agent-1",
-                "request": {"prompt": "ship?"},
-            })),
-        }
+        waterfall_value["request"],
+        serde_json::json!({"prompt": "ship?"})
     );
+    let event_id = waterfall_value["eventId"]
+        .as_str()
+        .expect("event id")
+        .to_owned();
     let body = serde_json::json!({
         "type": "client-request",
         "rpcId": "rpc-events-1",
         "method": "$events/result",
         "payload": {
             "args": {
-                "clientId": "events",
-                "eventId": "events-1",
+                "clientId": client_id,
+                "eventId": event_id,
                 "outcome": {"kind": "next"},
             },
         },
@@ -510,7 +536,24 @@ async fn connect_publishes_an_operator_and_gates_events_on_interactions() {
         next_server_message(&mut socket).await,
         ServerMessage::Error { .. }
     ));
-    let _ = socket.close(None).await;
+    peer.dispose();
+    socket
+        .send(Message::Text(
+            r#"{"type":"end","streamId":"events"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+        .await
+        .expect("the disposed peer closes the socket")
+        .expect("the socket yields a close")
+        .expect("the close frame arrives");
+    match closed {
+        Message::Close(frame) => {
+            assert_eq!(frame.expect("close code").code, 1001.into());
+        }
+        other => panic!("expected a peer-left close, got {other:?}"),
+    }
 
     let answering = http_get(addr, "/connect?token=launch-token&interactions=answer").await;
     let answering_cookie = set_cookie_pair(&answering);

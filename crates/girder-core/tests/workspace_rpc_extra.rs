@@ -43,11 +43,11 @@ use girder_core::{
 };
 
 use workspace_rpc_extra::{
-    ARCHIVE_SESSION_METHOD, DECLARED_ACCESS, INSERT_BEFORE_METHOD, INSERT_SESSION_BEFORE_METHOD,
-    InMemoryPreferences, NAMESPACE, PIN_SESSION_METHOD, PreferenceError, RENAME_METHOD,
-    UNARCHIVE_SESSION_METHOD, UNPIN_SESSION_METHOD, UnavailablePreferences, WorkspacePreferences,
-    register_workspace_extra_methods, register_workspace_extra_methods_without_preferences,
-    retain_visible,
+    ARCHIVE_SESSION_METHOD, DECLARED_ACCESS, FilePreferences, INSERT_BEFORE_METHOD,
+    INSERT_SESSION_BEFORE_METHOD, InMemoryPreferences, NAMESPACE, PIN_SESSION_METHOD,
+    PreferenceError, RENAME_METHOD, UNARCHIVE_SESSION_METHOD, UNPIN_SESSION_METHOD,
+    UnavailablePreferences, WorkspacePreferences, register_workspace_extra_methods,
+    register_workspace_extra_methods_without_preferences, retain_visible,
 };
 
 // ---- fixtures ---------------------------------------------------------------------------------
@@ -887,6 +887,31 @@ fn the_in_memory_store_does_not_survive_its_process_state() {
 }
 
 #[test]
+fn the_file_store_survives_reopening_and_keeps_sets_disjoint() {
+    let root = std::env::temp_dir().join(format!(
+        "girder-workspace-preferences-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch directory");
+    let path = root.join("preferences.json");
+
+    {
+        let store = FilePreferences::open(&path);
+        store.pin_session("s1").expect("pin is recorded");
+        store
+            .archive_session("s1")
+            .expect("archive removes the pin");
+        store.pin_session("s2").expect("second pin is recorded");
+    }
+
+    let reopened = FilePreferences::open(&path);
+    assert_eq!(reopened.pinned_session_ids(), vec!["s2"]);
+    assert_eq!(reopened.archived_session_ids(), vec!["s1"]);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn the_unavailable_store_refuses_writes_and_reads_empty() {
     let store = UnavailablePreferences::default_reason();
 
@@ -1049,7 +1074,6 @@ async fn every_method_declares_a_write_so_a_read_only_policy_refuses_it() {
 fn the_declared_access_is_a_write() {
     assert_eq!(DECLARED_ACCESS, girder_core::Access::Write);
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod workspace {

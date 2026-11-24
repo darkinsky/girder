@@ -100,8 +100,8 @@ pub use credentials::account::{
     CredentialSource, MemoryCredentialSource, register_credential_methods,
 };
 pub use host::webserver::{
-    BindAddress, bind_url_host, is_loopback_host, is_wildcard_host, normalize_bind_address,
-    parse_bind_address,
+    BindAddress, bind_url_host, is_loopback_host, is_wildcard_host, listen_endpoint,
+    normalize_bind_address, parse_bind_address,
 };
 pub use schedule::reminder::{Admission as ScheduleAdmission, render as render_schedule_reminder};
 pub use team::rpc_extra::{
@@ -126,12 +126,12 @@ pub use api::remote::{
     DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, RemoteStreamMethod,
     SessionAddress, SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
     SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
-    SessionPromptValue, SessionRecord, SessionSummary, StreamOpen, StreamYield, declared_gaps,
-    default_registry, register_attachment_method, register_command_methods,
-    register_extension_methods, register_job_methods, register_model_catalog,
-    register_projection_methods, register_select_model, register_session_methods,
-    register_workspace_methods, registered_method_names, registry_with_routes,
-    registry_with_runtime,
+    SessionPromptValue, SessionRecord, SessionSummary, StreamOpen, StreamYield,
+    bind_session_places, declared_gaps, default_registry, register_attachment_method,
+    register_command_methods, register_extension_methods, register_job_methods,
+    register_model_catalog, register_projection_methods, register_select_model,
+    register_session_methods, register_workspace_methods, registered_method_names,
+    registry_with_routes, registry_with_runtime,
 };
 pub use api::remote_access::{
     CallRequest as AccessCallRequest, MethodAccessResolver, NO_ALLOW, RESOURCE_INVALID,
@@ -139,7 +139,8 @@ pub use api::remote_access::{
     kinds_of, reader, resolve_event_resources,
 };
 pub use api::remote_follow::{
-    RemoteAccessSnapshot, register_remote_access_follow, register_remote_access_follow_with,
+    DirectoryPolicy, RemoteAccessSnapshot, register_remote_access_follow,
+    register_remote_access_follow_with, snapshot_for_directory,
 };
 pub use api::remote_service::{
     Endpoint, Handler as RemoteHandler, RemoteService, endpoint_names, register_remote_service,
@@ -434,6 +435,9 @@ pub use guard::text_safety::{
 };
 pub use host::rpc::{
     Opener, SystemOpener, UnavailableOpener, register_host_methods, register_host_methods_with,
+};
+pub use interaction::action_cards_rpc::{
+    ActionCards, register_action_card_methods, register_action_card_methods_with,
 };
 pub use interaction::approval::{
     ApprovalError, Approver, DEFAULT_TIMEOUT as DEFAULT_APPROVAL_TIMEOUT, DecidedBy, Decision,
@@ -753,7 +757,7 @@ pub use session::workspace::{
 };
 pub use session::{
     MemorySession, Session, SessionError, SessionEvent, SessionKey, SessionStore, TurnEndReason,
-    read_session_file,
+    read_session_file, read_session_header,
 };
 pub use settings::call_config::{CallConfig, ConfigError as CallConfigError, ConfigTable};
 pub use settings::config::{
@@ -989,7 +993,7 @@ pub use workspace::path::{
     is_unc, normalize as normalize_path, relative_to, resolve as resolve_in_workspace,
 };
 pub use workspace::rpc_extra::{
-    InMemoryPreferences, UnavailablePreferences, WorkspacePreferences,
+    FilePreferences, InMemoryPreferences, UnavailablePreferences, WorkspacePreferences,
     register_workspace_extra_methods, register_workspace_extra_methods_without_preferences,
     register_workspace_initialize_default,
 };

@@ -7,8 +7,9 @@
 //!
 //! # What the platform gives and what it does not
 //!
-//! There is no pty here, so nothing prints a prompt and nothing echoes input. Every assertion is
-//! therefore about output a program *printed*, and the transcripts are matched by substring rather
+//! On Unix the child has a pty, so a prompt and echoed input may appear beside the program's
+//! output. Every assertion is about output a program *printed*, and the transcripts are matched by
+//! substring rather
 //! than by exact bytes: chunks arrive split wherever the kernel happened to cut them, and pinning an
 //! exact chunk boundary would make the tests fail on a machine with a different pipe buffer.
 
@@ -84,6 +85,20 @@ fn process_exists(pid: i32) -> bool {
     matches!(kill(Pid::from_raw(pid), None), Ok(()) | Err(Errno::EPERM))
 }
 
+#[tokio::test]
+async fn a_resize_changes_the_terminal_window() {
+    let dir = std::env::temp_dir();
+    let shell = ProcessShell::start(&launch("t-resize", &dir)).expect("started");
+    shell.resize(40, 10).await.expect("resized");
+    shell.write("stty size\n").await.expect("wrote");
+
+    let collected = read_until(&shell, "10 40").await;
+    assert!(
+        collected.contains("10 40"),
+        "the pty must report the resized window: {collected:?}"
+    );
+}
+
 // ---- running commands -------------------------------------------------------------------------
 
 #[tokio::test]
@@ -112,9 +127,19 @@ async fn a_shell_keeps_its_state_between_commands() {
     shell.write("cd /\n").await.expect("wrote cd");
     shell.write("pwd\n").await.expect("wrote pwd");
 
-    let collected = read_until(&shell, "/").await;
+    // The echoed command also contains `/`, and a prompt may redraw with a carriage return.
+    // A segment that is only `/` is the `pwd` result.
+    let mut collected = String::new();
+    for _ in 0..MAX_READS {
+        if let Some(chunk) = shell.read(WAIT).await.expect("read must not fail") {
+            collected.push_str(&chunk);
+            if collected.split(['\r', '\n']).any(|line| line == "/") {
+                break;
+            }
+        }
+    }
     assert!(
-        collected.lines().any(|line| line.trim() == "/"),
+        collected.split(['\r', '\n']).any(|line| line == "/"),
         "the shell must still be in `/`, which only a surviving process can report: {collected:?}"
     );
     assert!(

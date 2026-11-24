@@ -28,8 +28,9 @@
 //! # The three largest gaps, in order
 //!
 //! 1. **The browser carrier** (862 lines, and the base every other host feature is reached through).
-//!    There is no bind-address classification, no TLS material loading, no route/upgrade/fallback
-//!    table, no index injection renderer, and no compression negotiation anywhere in this crate.
+//!    Bind-address classification, TLS material checks, the route table, index injection, and gzip
+//!    negotiation live in this module. The listener applies gzip only when a deployment turns it on,
+//!    and terminates TLS when a certificate and key are configured.
 //! 2. **Static frontend serving** (167 lines, but it is the only way a browser build reaches a
 //!    user). No MIME table, no `ETag`, no 304, no traversal fence.
 //! 3. **Open in app** (1,670 lines). `workspace_desktop_rpc.rs` covers the Linux *listing* half, so
@@ -110,6 +111,8 @@ pub enum BindAddressError {
     ///
     /// Upstream `getOrigin`.
     ZoneNotExpressible(String),
+    /// The port is not a number in `0..=65535`.
+    Port(String),
 }
 
 impl fmt::Display for BindAddressError {
@@ -130,6 +133,7 @@ impl fmt::Display for BindAddressError {
                 "webserver: bind address {host:?} carries an interface zone id, which no URL can \
                  express"
             ),
+            Self::Port(bind) => write!(f, "webserver: bind {bind:?} has no port in 0..=65535"),
         }
     }
 }
@@ -467,6 +471,78 @@ pub fn validate_bind_host(host: &str) -> Result<(), BindAddressError> {
         return Err(BindAddressError::Wildcard(host.to_owned()));
     }
     Ok(())
+}
+
+/// The socket address `--bind` names.
+///
+/// An IPv4 value is `host:port`. An IPv6 value with a port is `[host]:port`; without brackets the
+/// whole text is the address and the port is 8080, because a trailing colon-separated number is a
+/// legal IPv6 group. A mapped address is bound as the IPv4 it names. The unspecified address is
+/// refused: binding every interface would expose the process on the network.
+///
+/// # Errors
+///
+/// [`BindAddressError::NotLiteral`] for a hostname or a malformed address, [`BindAddressError::Port`]
+/// for a port outside `0..=65535`, and [`BindAddressError::Wildcard`] for `0.0.0.0` or `::`.
+pub fn listen_endpoint(bind: &str) -> Result<String, BindAddressError> {
+    let (host, port) = split_listen(bind)?;
+    validate_bind_host(&host)?;
+    let (bare, zone) = split_zone(&host);
+    let Some(address) = parse_bind_address(bare) else {
+        return Err(BindAddressError::NotLiteral(host));
+    };
+    let text = address.text();
+    let socket_host = if text.contains(':') {
+        match zone {
+            Some(zone) if !zone.is_empty() => format!("[{text}%{zone}]"),
+            _ => format!("[{text}]"),
+        }
+    } else {
+        text
+    };
+    Ok(format!("{socket_host}:{port}"))
+}
+
+/// Split a bind value into the address literal and the port.
+fn split_listen(bind: &str) -> Result<(String, u16), BindAddressError> {
+    let bind = bind.trim();
+    if let Some(rest) = bind.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return Err(BindAddressError::NotLiteral(bind.to_owned()));
+        };
+        let host = rest[..end].to_owned();
+        let after = &rest[end + 1..];
+        let port = if after.is_empty() {
+            8080
+        } else {
+            let Some(port) = after.strip_prefix(':') else {
+                return Err(BindAddressError::NotLiteral(bind.to_owned()));
+            };
+            parse_port(bind, port)?
+        };
+        return Ok((host, port));
+    }
+    if let Some((host, port)) = bind.rsplit_once(':') {
+        if parse_ipv4(host).is_some() {
+            return Ok((host.to_owned(), parse_port(bind, port)?));
+        }
+    }
+    if parse_bind_address(bind).is_some() {
+        return Ok((bind.to_owned(), 8080));
+    }
+    Err(BindAddressError::NotLiteral(bind.to_owned()))
+}
+
+/// Parse a decimal port. An empty string and a number above 65535 are both refusals.
+fn parse_port(bind: &str, port: &str) -> Result<u16, BindAddressError> {
+    let refused = || BindAddressError::Port(bind.to_owned());
+    if port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refused());
+    }
+    let Ok(port) = port.parse::<u32>() else {
+        return Err(refused());
+    };
+    u16::try_from(port).map_err(|_| refused())
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -966,6 +1042,74 @@ pub fn gzip_eligible(
         Some(length) => length >= threshold,
         None => true,
     }
+}
+
+/// A body after gzip negotiation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GzipBody {
+    /// The bytes to send.
+    pub body: Vec<u8>,
+    /// `gzip` when the body was compressed, absent when it is still identity.
+    pub content_encoding: Option<&'static str>,
+}
+
+/// Compresses one complete response when the client accepts gzip and the body is eligible.
+///
+/// An encode failure leaves the original bytes in place. A missing content type stays identity:
+/// images and other already-compressed bodies often arrive without a type this layer can judge.
+#[must_use]
+pub fn apply_gzip(
+    accept_encoding: &str,
+    content_type: Option<&str>,
+    content_range: Option<&str>,
+    body: Vec<u8>,
+    level: u8,
+    threshold: usize,
+) -> GzipBody {
+    let Some(content_type) = content_type else {
+        return GzipBody {
+            body,
+            content_encoding: None,
+        };
+    };
+    if !gzip_eligible(
+        accept_encoding,
+        Some(content_type),
+        content_range,
+        Some(body.len()),
+        threshold,
+    ) {
+        return GzipBody {
+            body,
+            content_encoding: None,
+        };
+    }
+    match gzip_encode(&body, level) {
+        Ok(encoded) => GzipBody {
+            body: encoded,
+            content_encoding: Some("gzip"),
+        },
+        Err(_) => GzipBody {
+            body,
+            content_encoding: None,
+        },
+    }
+}
+
+/// Encodes `body` as a gzip member at DEFLATE level `level` (clamped to 0 through 9).
+///
+/// # Errors
+///
+/// Returns the encoder's I/O error. A gzip member is a finite buffer here, so that is a failure of
+/// the compressor rather than of the destination.
+pub fn gzip_encode(body: &[u8], level: u8) -> std::io::Result<Vec<u8>> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::new(u32::from(level.min(9))),
+    );
+    encoder.write_all(body)?;
+    encoder.finish()
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2001,4 +2145,25 @@ pub fn base64url(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod gzip_tests {
+    use super::{apply_gzip, gzip_encode};
+
+    #[test]
+    fn gzip_round_trips_and_stays_off_when_refused() {
+        let raw = b"session ".repeat(200);
+        let encoded = gzip_encode(&raw, 1).expect("gzip");
+        let mut decoder = flate2::read::GzDecoder::new(encoded.as_slice());
+        let mut decoded = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut decoded).expect("decode");
+        assert_eq!(decoded, raw);
+        let compressed = apply_gzip("gzip", Some("application/json"), None, raw.clone(), 1, 1024);
+        assert_eq!(compressed.content_encoding, Some("gzip"));
+        assert!(compressed.body.len() < raw.len());
+        let identity = apply_gzip("identity", Some("text/html"), None, raw.clone(), 1, 1024);
+        assert_eq!(identity.content_encoding, None);
+        assert_eq!(identity.body, raw);
+    }
 }

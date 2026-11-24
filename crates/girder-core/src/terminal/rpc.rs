@@ -339,7 +339,10 @@ async fn attach_stream(open: girder_core::StreamOpen, terminals: Arc<TerminalReg
     }
 
     let mut sequence = 0_u64;
+    let mut saw_exit = false;
     loop {
+        let started = std::time::Instant::now();
+        let exited = saw_exit;
         tokio::select! {
             () = open.cancel.cancelled() => return,
             incoming = open.uplink.recv() => {
@@ -374,10 +377,31 @@ async fn attach_stream(open: girder_core::StreamOpen, terminals: Arc<TerminalReg
                         }
                     }
                     (Some("resize"), Some(command_seq)) => {
-                        if !open.push(json!({
+                        let columns = value.get("cols").and_then(Value::as_u64);
+                        let rows = value.get("rows").and_then(Value::as_u64);
+                        let Some(size) = resize_size(columns, rows) else {
+                            let _ = open.fail(RemoteError::InvalidArguments {
+                                namespace: NAMESPACE.to_owned(),
+                                method: METHOD_ATTACH.to_owned(),
+                                message: "terminal dimensions exceed the configured limits".to_owned(),
+                            });
+                            return;
+                        };
+                        if session.resize(size).await.is_err() {
+                            if !open.push(json!({
+                                "type": "ack",
+                                "sequence": command_seq,
+                                "refusal": "not-running",
+                            })) {
+                                return;
+                            }
+                        } else if !open.push(json!({
+                            "type": "state",
+                            "info": info(&session),
+                            "writable": session.status().is_running(),
+                        })) || !open.push(json!({
                             "type": "ack",
                             "sequence": command_seq,
-                            "refusal": "read-only",
                         })) {
                             return;
                         }
@@ -392,7 +416,15 @@ async fn attach_stream(open: girder_core::StreamOpen, terminals: Arc<TerminalReg
                     }
                 }
             }
-            output = session.read(Duration::from_millis(50)) => {
+            output = async {
+                if exited {
+                    std::future::pending().await
+                } else {
+                    // A live pty answers when bytes arrive or the slave closes. The bound only
+                    // covers a shell that never closes its output; it is not a poll interval.
+                    session.read(Duration::from_secs(60 * 60)).await
+                }
+            } => {
                 match output {
                     Ok(Some(data)) => {
                         sequence = sequence.saturating_add(1);
@@ -404,13 +436,26 @@ async fn attach_stream(open: girder_core::StreamOpen, terminals: Arc<TerminalReg
                             return;
                         }
                     }
+                    Ok(None) if !session.status().is_running() => {
+                        saw_exit = true;
+                        if !open.push(json!({
+                            "type": "state",
+                            "info": info(&session),
+                            "writable": false,
+                        })) {
+                            return;
+                        }
+                    }
                     Ok(None) => {
-                        // A host shell may answer an empty read immediately. Yielding here keeps
-                        // that implementation from monopolising the stream task while it waits
-                        // for either input or the next output chunk.
-                        tokio::task::yield_now().await;
+                        // A shell that ignores the wait returns before any byte could arrive.
+                        // Sleeping here is what keeps that shell from spinning. A pty that waited
+                        // out the bound just loops and waits again.
+                        if started.elapsed() < Duration::from_millis(20) {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
                     }
                     Err(_) => {
+                        saw_exit = true;
                         if !open.push(json!({
                             "type": "state",
                             "info": info(&session),
@@ -683,6 +728,28 @@ fn validate_id(id: &str) -> Result<String, RemoteError> {
 /// client that did not choose a size gets the same one a test would. Out-of-range values are refused
 /// instead of clamped: a client that asked for 5000 columns meant something, and silently giving it
 /// 65535 would draw a screen it did not request.
+/// The widest window `terminal.attach` will apply.
+///
+/// Upstream's default `maxCols`. A larger request is rejected rather than clamped.
+const MAX_COLUMNS: u64 = 500;
+
+/// The tallest window `terminal.attach` will apply.
+///
+/// Upstream's default `maxRows`.
+const MAX_ROWS: u64 = 200;
+
+/// A resize the attachment may apply.
+///
+/// Columns start at 2 and rows at 1, matching the host check in upstream's terminal attachment.
+/// A missing or fractional number is not a size.
+fn resize_size(columns: Option<u64>, rows: Option<u64>) -> Option<TerminalSize> {
+    let columns = columns.filter(|columns| (2..=MAX_COLUMNS).contains(columns))?;
+    let rows = rows.filter(|rows| (1..=MAX_ROWS).contains(rows))?;
+    let columns = u16::try_from(columns).ok()?;
+    let rows = u16::try_from(rows).ok()?;
+    TerminalSize::new(columns, rows)
+}
+
 fn size(columns: Option<u64>, rows: Option<u64>) -> Result<TerminalSize, RemoteError> {
     let headless = TerminalSize::headless();
     let columns = dimension(columns, headless.columns, "columns")?;

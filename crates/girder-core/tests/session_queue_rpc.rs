@@ -11,8 +11,8 @@
 //! - **an item that already started is refused differently from one that never existed** — the two
 //!   need different words in the UI, and answering both with "not found" would tell a user their
 //!   message vanished
-//! - **`remove`, `steer`, and the content rules behave as declared** — an unimplemented action
-//!   reports itself instead of doing something adjacent
+//! - **`remove`, `steer`, and the content rules behave as declared** — steer moves the item onto
+//!   the next step, and a content rule that fails reports itself instead of editing a neighbour
 //! - **a read-only policy cannot mutate a queue**, since the method declares a write
 //!
 //! Isolation: every test builds its own registry, its own agent map, and its own catalog over a
@@ -355,19 +355,37 @@ async fn an_item_that_never_existed_is_told_apart_from_one_that_started() {
 }
 
 #[tokio::test]
-async fn a_steer_is_refused_rather_than_treated_as_an_edit() {
+async fn a_steer_moves_a_queued_item_onto_the_next_step() {
     let fixture = Fixture::new("steer");
     let live = fixture.live("s1");
     queue(&live, InboxTarget::NextTurn, vec![message("m1", "waiting")]);
 
-    let error = fixture
+    let value = fixture
         .update("s1", "m1", json!({"kind": "steer"}))
         .await
-        .expect_err("steering has no channel in this build");
+        .expect("steered");
+    assert_eq!(value["accepted"], true);
+    let inbox = live.inbox_state();
+    assert!(inbox.next_turn().is_empty());
+    let step = inbox.next_step();
+    assert_eq!(step.len(), 1);
+    assert_eq!(step[0].id.as_str(), "m1");
+    assert_eq!(step[0].text(), "waiting");
+}
 
-    assert!(error.contains("steering is unavailable"), "{error}");
-    // Critically, the item is still queued: steering must not remove it as a side effect.
-    assert_eq!(live.inbox_state().next_turn().len(), 1);
+#[tokio::test]
+async fn steering_an_item_already_on_the_next_step_leaves_it_there() {
+    let fixture = Fixture::new("steer-again");
+    let live = fixture.live("s1");
+    queue(&live, InboxTarget::NextStep, vec![message("m1", "waiting")]);
+
+    let value = fixture
+        .update("s1", "m1", json!({"kind": "steer"}))
+        .await
+        .expect("already steering");
+    assert_eq!(value["accepted"], true);
+    assert_eq!(live.inbox_state().next_step().len(), 1);
+    assert!(live.inbox_state().next_turn().is_empty());
 }
 
 #[tokio::test]
@@ -532,9 +550,8 @@ fn the_agent_map_replaces_and_forgets_handles() {
 fn the_queue_error_messages_state_the_reason() {
     // The wire has no domain error codes, so the message is the only thing a client can read; each
     // variant is checked to say what was wrong rather than only that something was.
-    let cases: [(QueueError, &str); 4] = [
+    let cases: [(QueueError, &str); 3] = [
         (QueueError::EditBlank, "non-whitespace"),
-        (QueueError::SteerUnavailable, "steering is unavailable"),
         (
             QueueError::NotPending {
                 item_id: "m9".to_owned(),
@@ -620,7 +637,6 @@ fn a_closure_is_a_queue_source() {
 fn cleanup(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod session {

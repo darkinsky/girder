@@ -65,6 +65,10 @@ struct FakeShell {
     closed: std::sync::atomic::AtomicBool,
     /// Whether `close` reports a failure, for the test that needs one.
     close_fails: bool,
+    /// Becomes not-alive once a read finds no output.
+    exit_when_idle: bool,
+    /// What [`Shell::is_alive`] reports.
+    alive: std::sync::atomic::AtomicBool,
 }
 
 impl FakeShell {
@@ -74,6 +78,15 @@ impl FakeShell {
             pending: std::sync::Mutex::new(chunk.map(ToOwned::to_owned)),
             closed: std::sync::atomic::AtomicBool::new(false),
             close_fails: false,
+            exit_when_idle: false,
+            alive: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    fn exits_when_idle(chunk: Option<&str>) -> Self {
+        Self {
+            exit_when_idle: true,
+            ..Self::new(chunk)
         }
     }
 
@@ -114,7 +127,14 @@ impl Shell for FakeShell {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        if chunk.is_none() && self.exit_when_idle {
+            self.alive.store(false, Ordering::Relaxed);
+        }
         Box::pin(async move { Ok(chunk) })
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     fn close(&self) -> BoxFut<Result<(), TerminalError>> {
@@ -734,6 +754,102 @@ async fn attach_stream_starts_with_a_snapshot_and_pushes_output() {
         .expect("frame");
     assert_eq!(ack, json!({"type": "ack", "sequence": 4}));
     assert_eq!(shell.written(), vec!["pwd\n".to_owned()]);
+
+    inbox
+        .push(
+            json!({"type": "resize", "sequence": 5, "cols": 100, "rows": 30}),
+            64,
+        )
+        .expect("uplink");
+    let state = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("state")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(state["type"], "state");
+    assert_eq!(state["info"]["cols"], 100);
+    assert_eq!(state["info"]["rows"], 30);
+    let ack = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("resize ack")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(ack, json!({"type": "ack", "sequence": 5}));
+    assert_eq!(
+        harness.terminals.get("t1").expect("session").size(),
+        girder_core::TerminalSize::new(100, 30).expect("size")
+    );
+
+    inbox
+        .push(
+            json!({"type": "resize", "sequence": 6, "cols": 1, "rows": 24}),
+            64,
+        )
+        .expect("uplink");
+    let rejected = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("rejection")
+        .expect("stream")
+        .expect_err("a column count below 2 ends the attachment");
+    assert!(rejected.to_string().contains("dimensions"), "{rejected}");
+
+    cancel.cancel();
+    let _ = running.await;
+}
+
+#[tokio::test]
+async fn attach_stream_reports_exit_when_the_shell_stops() {
+    let shell = Arc::new(FakeShell::exits_when_idle(Some("done\n")));
+    let harness = Harness::serving(Arc::clone(&shell));
+    harness
+        .ok("create", json!({"id": "t1", "sessionId": "s1"}))
+        .await;
+
+    let call = RemoteCall {
+        args: json!({"id": "t1", "sessionId": "s1"}),
+        peer: "test".to_owned(),
+    };
+    let handler = harness
+        .registry
+        .stream_method("terminal", "attach", &call)
+        .expect("attach is a stream");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        call,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "terminal/attach",
+        )),
+        cancel.clone(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let _snapshot = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("snapshot")
+        .expect("stream")
+        .expect("frame");
+    let output = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+        .await
+        .expect("output")
+        .expect("stream")
+        .expect("frame");
+    assert_eq!(output["data"], "done\n");
+
+    let started = std::time::Instant::now();
+    let state = tokio::time::timeout(Duration::from_millis(500), frames.recv())
+        .await
+        .expect("exit state")
+        .expect("stream")
+        .expect("frame");
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "exit waited on a poll"
+    );
+    assert_eq!(state["type"], "state");
+    assert_eq!(state["writable"], false);
+    assert_eq!(state["info"]["state"], "exited");
 
     cancel.cancel();
     let _ = running.await;

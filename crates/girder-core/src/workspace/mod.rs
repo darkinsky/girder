@@ -5,6 +5,7 @@ pub mod desktop_rpc;
 pub mod diff;
 pub mod files_extra;
 pub mod files_rpc;
+pub mod native_watch;
 pub mod open_rpc;
 pub mod path;
 pub mod rpc_extra;

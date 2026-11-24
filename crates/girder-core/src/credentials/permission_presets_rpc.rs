@@ -77,10 +77,10 @@ pub fn register_permission_preset_methods(
                 "options": entries.iter().map(option_of).collect::<Vec<_>>(),
                 // What this deployment offers as a default: the built-in set, which is what a fresh
                 // session may start from.
-                "defaultOptions": catalogue
-                    .available()
+                "defaultOptions": entries
                     .iter()
-                    .map(|preset| preset.name.clone())
+                    .filter(|entry| entry.available)
+                    .map(option_of)
                     .collect::<Vec<_>>(),
                 "defaultPreset": default_preset,
             }))
@@ -159,11 +159,7 @@ async fn set_preset(
             .await
             .map_err(|error| preset_invalid(error.to_string()))?;
     }
-    let approval = match entry.preset.knobs.approval {
-        crate::credentials::permissions::Approval::Always => "always",
-        crate::credentials::permissions::Approval::OutsideWorkspace => "outside-workspace",
-        crate::credentials::permissions::Approval::Never => "never",
-    };
+    let approval = approval_name(entry.preset.knobs.approval);
     if folded.approval.as_deref() != Some(approval) {
         session
             .append(crate::session::SessionEvent::ApprovalPolicy {
@@ -215,7 +211,10 @@ fn current_preset(catalogue: &Catalogue, events: &[crate::session::SessionEvent]
         && (folded.sandbox.is_none()
             || folded.sandbox.as_deref() == Some(entry.preset.knobs.sandbox.as_str()))
         && (folded.approval.is_none()
-            || folded.approval.as_deref() == Some(approval_name(entry.preset.knobs.approval)))
+            || folded
+                .approval
+                .as_deref()
+                .is_some_and(|stored| stored_approval_matches(stored, entry.preset.knobs.approval)))
     {
         return name.to_owned();
     }
@@ -224,7 +223,7 @@ fn current_preset(catalogue: &Catalogue, events: &[crate::session::SessionEvent]
         for entry in catalogue.entries() {
             if entry.available
                 && entry.preset.knobs.sandbox.as_str() == sandbox
-                && approval_name(entry.preset.knobs.approval) == approval
+                && stored_approval_matches(approval, entry.preset.knobs.approval)
             {
                 return entry.preset.name;
             }
@@ -233,12 +232,33 @@ fn current_preset(catalogue: &Catalogue, events: &[crate::session::SessionEvent]
     "custom".to_owned()
 }
 
+/// Host `approval/policy` is `ask` or `never`.
+///
+/// Asking inside the workspace and asking for every write are both `ask`. The local engine still
+/// tells those two apart; the session log only records whether a person is consulted.
 fn approval_name(approval: crate::credentials::permissions::Approval) -> &'static str {
     match approval {
-        crate::credentials::permissions::Approval::Always => "always",
-        crate::credentials::permissions::Approval::OutsideWorkspace => "outside-workspace",
+        crate::credentials::permissions::Approval::Always
+        | crate::credentials::permissions::Approval::OutsideWorkspace => "ask",
         crate::credentials::permissions::Approval::Never => "never",
     }
+}
+
+fn stored_approval_matches(
+    stored: &str,
+    approval: crate::credentials::permissions::Approval,
+) -> bool {
+    if stored == approval_name(approval) {
+        return true;
+    }
+    matches!(
+        (stored, approval),
+        (
+            "always" | "outside-workspace",
+            crate::credentials::permissions::Approval::Always
+                | crate::credentials::permissions::Approval::OutsideWorkspace
+        )
+    )
 }
 
 fn preset_invalid(message: String) -> RemoteError {
@@ -316,6 +336,53 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_outside_workspace_policy_still_selects_the_preset() {
+        let catalogue = Catalogue::builtin();
+        let events = vec![
+            crate::session::SessionEvent::PermissionPreset {
+                preset: "workspace-write".to_owned(),
+            },
+            crate::session::SessionEvent::SandboxMode {
+                mode: "workspace-write".to_owned(),
+                source: None,
+            },
+            crate::session::SessionEvent::ApprovalPolicy {
+                policy: "outside-workspace".to_owned(),
+            },
+        ];
+        assert_eq!(current_preset(&catalogue, &events), "workspace-write");
+    }
+
+    #[tokio::test]
+    async fn the_catalog_offers_default_options_as_objects() {
+        let mut registry = RemoteRegistry::new();
+        let catalog: Arc<dyn crate::api::remote::SessionCatalog> = Arc::new(
+            crate::api::remote::DirectoryCatalog::new("/nonexistent-presets"),
+        );
+        register_permission_preset_methods(
+            &mut registry,
+            &default_catalogue(),
+            DEFAULT_PRESET,
+            &catalog,
+        );
+        let value = registry
+            .dispatch(
+                NAMESPACE,
+                CATALOG_METHOD,
+                RemoteCall {
+                    args: json!({}),
+                    peer: "test".to_owned(),
+                },
+            )
+            .await
+            .expect("catalog");
+        let option = &value["defaultOptions"][0];
+        assert!(option["value"].as_str().is_some(), "{value}");
+        assert!(option["name"].as_str().is_some(), "{value}");
+        assert_eq!(value["defaultPreset"], DEFAULT_PRESET);
+    }
+
+    #[test]
     fn an_option_omits_an_empty_description() {
         let catalogue = Catalogue::builtin();
         let first = catalogue.entries().into_iter().next().expect("one entry");
@@ -372,7 +439,7 @@ mod tests {
         )));
         assert!(record.events.iter().any(|event| matches!(
             event,
-            crate::session::SessionEvent::ApprovalPolicy { policy } if policy == "outside-workspace"
+            crate::session::SessionEvent::ApprovalPolicy { policy } if policy == "ask"
         )));
         let again = registry
             .dispatch(

@@ -118,6 +118,11 @@ pub struct SessionSummary {
     pub running: bool,
     /// Whether the session has no messages yet.
     pub blank: bool,
+    /// Persistence format as the browser list reads it.
+    ///
+    /// This build writes the current session format, so a listed row is `current`.
+    #[serde(rename = "formatStatus")]
+    pub format_status: String,
 
     /// How much of the log could be read.
     ///
@@ -129,6 +134,16 @@ pub struct SessionSummary {
     /// Working directory, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Fork parent, when this session was created from another.
+    #[serde(
+        rename = "parentSessionId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_session_id: Option<String>,
+    /// Creation origin, when the session was not opened directly by a person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 impl SessionSummary {
@@ -148,15 +163,18 @@ impl SessionSummary {
         Self {
             session_id: session_id.into(),
             updated_at,
-            // Nothing in this build keeps a live agent registry; a stored session is not attached.
+            // A summary built from a log has no live agent. `session.list` overlays the runtime.
             agent_available: false,
             running: false,
             blank: !has_messages,
+            format_status: "current".to_owned(),
             // The summary was built from events this caller already decoded, so it can say how many.
             integrity: crate::session::log_integrity::Integrity::Readable {
                 events: events.len(),
             },
             cwd: None,
+            parent_session_id: None,
+            origin: None,
         }
     }
 
@@ -171,8 +189,11 @@ impl SessionSummary {
             agent_available: false,
             running: false,
             blank: record.blank,
+            format_status: "current".to_owned(),
             integrity: record.integrity.clone(),
             cwd: None,
+            parent_session_id: None,
+            origin: None,
         }
     }
 }
@@ -185,6 +206,10 @@ pub struct SessionListValue {
 }
 
 /// The request to `session.prompt`.
+///
+/// The browser sends `requestId`, `mode`, and `content` parts. This struct is the text the runtime
+/// actually runs after those parts are read. `text` remains for callers that still send the local
+/// one-string form.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionPromptRequest {
     /// Session to prompt.
@@ -325,8 +350,13 @@ impl RemoteRegistry {
     /// to that clone, and the server would keep dispatching through the original.
     #[must_use]
     pub fn with_policy(mut self, policy: std::sync::Arc<dyn crate::guard::access::Policy>) -> Self {
-        self.policy = Some(policy);
+        self.set_policy(policy);
         self
+    }
+
+    /// Replaces the mounted access policy.
+    pub fn set_policy(&mut self, policy: std::sync::Arc<dyn crate::guard::access::Policy>) {
+        self.policy = Some(policy);
     }
 
     /// Declares what one method does, for the policy.
@@ -365,7 +395,7 @@ impl RemoteRegistry {
             peer: call.peer.clone(),
             method: format!("{namespace}.{method}"),
             access: declaration.access,
-            resources: declaration.resources,
+            resources: concrete_resources(declaration.resources, &call.args),
         };
         match policy.decide(&request) {
             crate::guard::access::Decision::Allow => Ok(()),
@@ -526,6 +556,46 @@ impl std::fmt::Debug for RemoteRegistry {
     }
 }
 
+/// Fills declared resource ids from the call arguments.
+///
+/// Declarations name a kind. A session or workspace call usually names the identity inside `args`,
+/// and a policy that only sees the empty id cannot tell one session from another.
+fn concrete_resources(
+    resources: Vec<crate::guard::access::Resource>,
+    args: &Value,
+) -> Vec<crate::guard::access::Resource> {
+    let session_id = args
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            args.get("address")
+                .and_then(|address| address.get("sessionId"))
+                .and_then(Value::as_str)
+        })
+        .filter(|id| !id.is_empty());
+    let workspace_id = args
+        .get("workspaceId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    resources
+        .into_iter()
+        .map(|mut resource| {
+            if resource.id.is_empty() {
+                if resource.kind == "session" {
+                    if let Some(id) = session_id {
+                        resource.id = id.to_owned();
+                    }
+                } else if resource.kind == "workspace" {
+                    if let Some(id) = workspace_id {
+                        resource.id = id.to_owned();
+                    }
+                }
+            }
+            resource
+        })
+        .collect()
+}
+
 /// Parses a method's arguments, naming the method when it fails.
 fn parse_args<T: for<'de> Deserialize<'de>>(
     namespace: &str,
@@ -537,6 +607,43 @@ fn parse_args<T: for<'de> Deserialize<'de>>(
         method: method.to_owned(),
         message: error.to_string(),
     })
+}
+
+/// Durable fields a session list and follow snapshot share.
+///
+/// Stored beside the log rather than inside it: the event log is the conversation, and these
+/// fields describe the file. Optional values stay absent on the wire.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHeaderMeta {
+    /// Creation time in milliseconds since the epoch.
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    /// Working directory, when the session was placed in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Session this one was forked from.
+    #[serde(
+        rename = "parentSession",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_session: Option<String>,
+    /// Who created the session, when it was not a direct client session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Preset recorded for the session.
+    #[serde(
+        rename = "agentPreset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_preset: Option<String>,
+    /// Whether the log starts with events inherited from a parent.
+    #[serde(rename = "isSeeded", default)]
+    pub is_seeded: bool,
+    /// Distance from the root session.
+    #[serde(rename = "delegationDepth", default)]
+    pub delegation_depth: u64,
 }
 
 /// A session the `session.*` methods operate on.
@@ -579,6 +686,65 @@ pub trait SessionCatalog: Send + Sync {
     /// Idempotent per id: creating one that exists reuses it rather than failing, which is what
     /// upstream's `create` does for a blank session.
     fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>>;
+
+    /// Creates a session with immutable metadata in the log header.
+    ///
+    /// Lightweight catalogs keep the default; persistent catalogs override it so metadata and
+    /// events use one durable format.
+    fn create_with_header(
+        &self,
+        id: &str,
+        _header: SessionHeaderMeta,
+    ) -> BoxFut<Result<SessionRecord, RemoteError>> {
+        self.create(id)
+    }
+
+    /// Returns the persisted session header, when the catalog stores one.
+    ///
+    /// The default keeps lightweight in-memory catalogs source-compatible. The directory-backed
+    /// catalog reads the header from the log, so a restart restores the fields a list and a
+    /// follow snapshot render.
+    fn session_header(&self, _id: &str) -> Option<SessionHeaderMeta> {
+        None
+    }
+
+    /// Persists the session header selected when a session is created or forked.
+    fn store_session_header(
+        &self,
+        _id: &str,
+        _header: &SessionHeaderMeta,
+    ) -> Result<(), RemoteError> {
+        Ok(())
+    }
+
+    /// Returns the persisted working directory for a session, when the catalog stores one.
+    ///
+    /// The default keeps lightweight in-memory catalogs source-compatible; the directory-backed
+    /// implementation overrides it so a restart does not lose the workspace shown by the client.
+    fn working_directory(&self, id: &str) -> Option<String> {
+        self.session_header(id).and_then(|header| header.cwd)
+    }
+
+    /// Returns the durable creation time for a session, when the catalog records one.
+    fn created_at(&self, id: &str) -> Option<u64> {
+        self.session_header(id).map(|header| header.created_at)
+    }
+
+    /// Wakes a session stream after the catalog may have changed.
+    ///
+    /// Directory catalogs watch the log directory. A catalog without a native watcher returns
+    /// `None`, and the stream keeps its bounded poll.
+    fn changes(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        None
+    }
+
+    /// Persists the working directory selected when a session is created.
+    ///
+    /// Catalogs that do not persist placement may keep the default no-op because the caller still
+    /// maintains its live placement index for the lifetime of the process.
+    fn set_working_directory(&self, _id: &str, _cwd: &str) -> Result<(), RemoteError> {
+        Ok(())
+    }
 
     /// Opens the writable log for `id`, or `None` when no session has that id.
     ///
@@ -736,6 +902,13 @@ pub struct SessionCreateRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub agent_preset: Option<String>,
+    /// Workspace the session joins. Exclusive with `cwd`.
+    #[serde(
+        rename = "workspaceId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspace_id: Option<String>,
 }
 
 /// The request to `session.cancel`.
@@ -778,13 +951,21 @@ pub struct SessionCreateValue {
 pub struct DirectoryCatalog {
     /// Directory holding `*.jsonl.zst` files.
     pub root: std::path::PathBuf,
+    /// Wakes session streams after a log in `root` changes.
+    changes: std::sync::Arc<tokio::sync::Notify>,
+    /// The directory watch. Started on the first stream that asks for it.
+    watch: std::sync::Mutex<Option<crate::workspace::native_watch::NativeWatcher>>,
 }
 
 impl DirectoryCatalog {
     /// Creates a catalog over `root`.
     #[must_use]
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            changes: std::sync::Arc::new(tokio::sync::Notify::new()),
+            watch: std::sync::Mutex::new(None),
+        }
     }
 }
 
@@ -805,6 +986,21 @@ fn log_path(root: &std::path::Path, id: &str) -> Result<std::path::PathBuf, Remo
 }
 
 impl SessionCatalog for DirectoryCatalog {
+    fn changes(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        let mut slot = self
+            .watch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = crate::workspace::native_watch::NativeWatcher::watch(
+                &self.root.to_string_lossy(),
+                true,
+                std::sync::Arc::clone(&self.changes),
+            );
+        }
+        slot.is_some().then(|| std::sync::Arc::clone(&self.changes))
+    }
+
     fn list(&self) -> BoxFut<Vec<SessionRecord>> {
         let root = self.root.clone();
         Box::pin(async move {
@@ -879,6 +1075,45 @@ impl SessionCatalog for DirectoryCatalog {
         };
         let id = id.to_owned();
         Box::pin(async move { read_record(&path, id) })
+    }
+
+    fn session_header(&self, id: &str) -> Option<SessionHeaderMeta> {
+        let log = log_path(&self.root, id).ok()?;
+        if let Ok(Some(value)) = crate::session::read_session_header(&log) {
+            if let Ok(header) = serde_json::from_value(value) {
+                return Some(header);
+            }
+        }
+        let raw = std::fs::read_to_string(self.root.join(format!("{id}.header"))).ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    fn store_session_header(
+        &self,
+        id: &str,
+        header: &SessionHeaderMeta,
+    ) -> Result<(), RemoteError> {
+        let path = log_path(&self.root, id)?;
+        if path.is_file() {
+            let existing = crate::session::read_session_header(&path).ok().flatten();
+            let document = durable_header(existing.as_ref(), header)?;
+            crate::session::SessionStore::new(&path)
+                .rewrite_header(&document)
+                .map_err(|error| {
+                    RemoteError::Failed(format!("cannot update session header: {error}"))
+                })?;
+        }
+        let raw = serde_json::to_string(header).map_err(|error| {
+            RemoteError::Failed(format!("cannot encode session header: {error}"))
+        })?;
+        std::fs::write(self.root.join(format!("{id}.header")), raw)
+            .map_err(|error| RemoteError::Failed(format!("cannot persist session header: {error}")))
+    }
+
+    fn set_working_directory(&self, id: &str, cwd: &str) -> Result<(), RemoteError> {
+        let mut header = self.session_header(id).unwrap_or_default();
+        header.cwd = Some(cwd.to_owned());
+        self.store_session_header(id, &header)
     }
 
     /// Renames a session by writing a companion file beside its log.
@@ -960,6 +1195,7 @@ impl SessionCatalog for DirectoryCatalog {
         };
         let id = id.to_owned();
         let root = self.root.clone();
+        let source_header = self.session_header(&id);
         Box::pin(async move {
             let Ok(events) = crate::session::read_session_file(&source) else {
                 return Err(RemoteError::InvalidArguments {
@@ -987,9 +1223,21 @@ impl SessionCatalog for DirectoryCatalog {
 
             let forked_id = format!("{id}-fork-{}", crate::schedule::now_millis());
             let target = root.join(format!("{forked_id}.jsonl.zst"));
+            let mut header = source_header.unwrap_or_default();
+            header.created_at = crate::now_millis();
+            header.parent_session = Some(id.clone());
+            let mut header_value = serde_json::to_value(&header)
+                .map_err(|error| RemoteError::Failed(error.to_string()))?;
+            if let Some(object) = header_value.as_object_mut() {
+                object.insert(
+                    "type".to_owned(),
+                    serde_json::Value::String("session".to_owned()),
+                );
+                object.insert("version".to_owned(), serde_json::Value::from(4_u64));
+            }
             let store = crate::session::SessionStore::new(&target);
             store
-                .touch()
+                .touch_with_header(&header_value)
                 .map_err(|error| RemoteError::Failed(error.to_string()))?;
             for event in events.into_iter().take(cut) {
                 store
@@ -1010,6 +1258,9 @@ impl SessionCatalog for DirectoryCatalog {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         let title = self.root.join(format!("{id}.title"));
+        let header = self.root.join(format!("{id}.header"));
+        let cwd = self.root.join(format!("{id}.cwd"));
+        let created = self.root.join(format!("{id}.created"));
         let id = id.to_owned();
         Box::pin(async move {
             let _ = id;
@@ -1020,6 +1271,9 @@ impl SessionCatalog for DirectoryCatalog {
             };
             // A title with no log is stale, so it goes either way.
             let _ = std::fs::remove_file(&title);
+            let _ = std::fs::remove_file(&header);
+            let _ = std::fs::remove_file(&cwd);
+            let _ = std::fs::remove_file(&created);
             Ok(removed)
         })
     }
@@ -1034,6 +1288,20 @@ impl SessionCatalog for DirectoryCatalog {
     }
 
     fn create(&self, id: &str) -> BoxFut<Result<SessionRecord, RemoteError>> {
+        self.create_with_header(
+            id,
+            SessionHeaderMeta {
+                created_at: crate::now_millis(),
+                ..SessionHeaderMeta::default()
+            },
+        )
+    }
+
+    fn create_with_header(
+        &self,
+        id: &str,
+        header: SessionHeaderMeta,
+    ) -> BoxFut<Result<SessionRecord, RemoteError>> {
         let path = match log_path(&self.root, id) {
             Ok(path) => path,
             Err(error) => return Box::pin(async move { Err(error) }),
@@ -1052,34 +1320,53 @@ impl SessionCatalog for DirectoryCatalog {
             //
             // `create_new` makes the check atomic at the filesystem: exactly one writer wins, and
             // the losers fall through to reading what the winner wrote.
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => {
-                    // The file exists and is empty. It used to hold a placeholder `turn/start`, which
-                    // made a session that had never been prompted look like it had one turn, and made
-                    // the first prompt write a second `turn/start` for the same turn. An empty file is
-                    // a valid session (`read_all` reads it as no events) and the loop writes the first
-                    // turn.
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Reuse rather than fail: upstream's `create` returns the existing session, and
-                    // a client re-sending a create must not fork history.
-                }
-                Err(error) => {
-                    return Err(RemoteError::Failed(format!(
-                        "cannot create session: {error}"
-                    )));
-                }
+            let mut header = serde_json::to_value(&header).map_err(|error| {
+                RemoteError::Failed(format!("cannot encode session header: {error}"))
+            })?;
+            if let Some(object) = header.as_object_mut() {
+                object.insert(
+                    "type".to_owned(),
+                    serde_json::Value::String("session".to_owned()),
+                );
+                object.insert("version".to_owned(), serde_json::Value::from(4_u64));
             }
+            crate::session::SessionStore::new(&path)
+                .touch_with_header(&header)
+                .map_err(|error| RemoteError::Failed(format!("cannot create session: {error}")))?;
 
             read_record(&path, id).ok_or_else(|| {
                 RemoteError::Failed("the session disappeared while being created".to_owned())
             })
         })
     }
+}
+
+/// The log header a reader will see after a metadata update.
+///
+/// Fields already stored in the log stay unless this update names them. `type` and `version` are
+/// put back even when the sidecar shape omitted them, because that is what makes the first line a
+/// header rather than an event.
+fn durable_header(
+    existing: Option<&serde_json::Value>,
+    header: &SessionHeaderMeta,
+) -> Result<serde_json::Value, RemoteError> {
+    let mut object = existing
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let patch = serde_json::to_value(header)
+        .map_err(|error| RemoteError::Failed(format!("cannot encode session header: {error}")))?;
+    if let Some(patch) = patch.as_object() {
+        for (key, value) in patch {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    object.insert(
+        "type".to_owned(),
+        serde_json::Value::String("session".to_owned()),
+    );
+    object.insert("version".to_owned(), serde_json::Value::from(4_u64));
+    Ok(serde_json::Value::Object(object))
 }
 
 /// Reads one session log from disk, or `None` when the file is absent.
@@ -1176,10 +1463,13 @@ fn register_session_core(
     catalog: &Arc<dyn SessionCatalog>,
     runtime: Option<&Arc<crate::core::runtime::AgentRuntime>>,
 ) {
-    register_list(registry, catalog);
-    register_create(registry, catalog);
+    let places = Arc::new(std::sync::Mutex::new(
+        crate::session::workspace::Index::new(),
+    ));
+    register_list(registry, catalog, runtime, &places);
+    register_create(registry, catalog, &places, None);
     register_history(registry, catalog);
-    register_follow(registry, catalog);
+    register_follow(registry, catalog, &places);
     // The version handshake. A client that speaks an older shape asks once and learns it is old, instead of discovering it
     // from an argument error it cannot interpret -- and a client newer than this build is told to upgrade rather than
     // silently degraded, which is the one failure a version check exists to prevent.
@@ -1222,10 +1512,19 @@ fn register_session_core(
 }
 
 /// Registers `session.list`.
-fn register_list(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+fn register_list(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    runtime: Option<&Arc<crate::core::runtime::AgentRuntime>>,
+    places: &Arc<std::sync::Mutex<crate::session::workspace::Index>>,
+) {
     let shared: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    let runtime = runtime.cloned();
+    let places = Arc::clone(places);
     registry.register("session", "list", move |call| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&shared);
+        let runtime = runtime.clone();
+        let places = Arc::clone(&places);
         Box::pin(async move {
             // `session.list` takes an empty request upstream; a null or missing body is the common
             // case, so it is accepted rather than rejected as invalid arguments.
@@ -1242,7 +1541,23 @@ fn register_list(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog
                     // `from_record`, not `from_events`: `list` deliberately leaves `events` empty, so reading them here
                     // reported every session as blank -- a conversation with seven messages listed as unused. The
                     // constructor written for this case existed and had no caller.
-                    SessionSummary::from_record(record)
+                    let mut summary = SessionSummary::from_record(record);
+                    // Girder attaches an agent for the turn that is in flight. Upstream separates an idle
+                    // attached agent from a running one; this build has the agent only while the turn runs.
+                    if runtime
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.is_running(&record.id))
+                    {
+                        summary.running = true;
+                        summary.agent_available = true;
+                    }
+                    if let Some(header) = catalog.session_header(&record.id) {
+                        summary.cwd = header.cwd.clone();
+                        summary.parent_session_id = header.parent_session.clone();
+                        summary.origin = header.origin.clone();
+                    }
+                    summary.cwd = summary.cwd.or_else(|| recorded_cwd(&places, &record.id));
+                    summary
                 })
                 .collect();
             serde_json::to_value(SessionListValue { items })
@@ -1252,12 +1567,22 @@ fn register_list(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog
 }
 
 /// Registers `session.create`.
-fn register_create(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+fn register_create(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    places: &Arc<std::sync::Mutex<crate::session::workspace::Index>>,
+    workspaces: Option<&Arc<crate::api::config::WorkspaceRegistry>>,
+) {
     let shared: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    let places = Arc::clone(places);
+    let workspaces = workspaces.cloned();
     registry.register("session", "create", move |call| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&shared);
+        let places = Arc::clone(&places);
+        let workspaces = workspaces.clone();
         Box::pin(async move {
             let request: SessionCreateRequest = parse_args("session", "create", call.args)?;
+            let place = create_place(&request, workspaces.as_ref())?;
             // An id is either supplied or minted. A minted id carries the millisecond so two
             // creates in the same second do not collide.
             let id = request
@@ -1265,8 +1590,23 @@ fn register_create(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                 .filter(|id| !id.trim().is_empty())
                 .unwrap_or_else(mint_session_id);
 
-            let _ = request.cwd;
-            catalog.create(&id).await?;
+            let header = SessionHeaderMeta {
+                created_at: crate::now_millis(),
+                cwd: place.clone(),
+                agent_preset: request.agent_preset.clone(),
+                ..SessionHeaderMeta::default()
+            };
+            catalog.create_with_header(&id, header).await?;
+            if let Some(cwd) = place {
+                remember_place(&places, &id, &cwd);
+                if let Some(workspace_id) =
+                    request.workspace_id.as_deref().filter(|id| !id.is_empty())
+                {
+                    if let Some(workspaces) = &workspaces {
+                        let _ = workspaces.attach_session(workspace_id, &id, crate::now_millis());
+                    }
+                }
+            }
             serde_json::to_value(SessionCreateValue {
                 session_id: id,
                 agent_preset: request.agent_preset,
@@ -1274,6 +1614,93 @@ fn register_create(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
             .map_err(|error| RemoteError::Failed(error.to_string()))
         })
     });
+}
+
+/// Rebinds `session.list`, `session.create`, and `session.follow` to one place index.
+///
+/// The first registration keeps its own index. A server that also has a workspace registry calls
+/// this so a created session, its list row, and its follow header name the same directory.
+pub fn bind_session_places(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    places: &Arc<std::sync::Mutex<crate::session::workspace::Index>>,
+    workspaces: Option<&Arc<crate::api::config::WorkspaceRegistry>>,
+    runtime: Option<&Arc<crate::core::runtime::AgentRuntime>>,
+) {
+    register_list(registry, catalog, runtime, places);
+    register_create(registry, catalog, places, workspaces);
+    register_follow(registry, catalog, places);
+}
+
+fn create_invalid(message: impl Into<String>) -> RemoteError {
+    RemoteError::InvalidArguments {
+        namespace: "session".to_owned(),
+        method: "create".to_owned(),
+        message: message.into(),
+    }
+}
+
+fn create_place(
+    request: &SessionCreateRequest,
+    workspaces: Option<&Arc<crate::api::config::WorkspaceRegistry>>,
+) -> Result<Option<String>, RemoteError> {
+    let workspace_id = request
+        .workspace_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty());
+    let cwd = request.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty());
+    if workspace_id.is_some() && cwd.is_some() {
+        return Err(create_invalid(
+            "session.create accepts workspaceId or cwd, not both",
+        ));
+    }
+    if let Some(id) = workspace_id {
+        let Some(workspaces) = workspaces else {
+            return Err(RemoteError::Failed(format!("workspace \"{id}\" not found")));
+        };
+        let Some(workspace) = workspaces.get(id) else {
+            return Err(RemoteError::Failed(format!("workspace \"{id}\" not found")));
+        };
+        let path = workspace.path.to_string_lossy().into_owned();
+        crate::session::workspace::WorkspaceId::from_path(&path)
+            .map_err(|error| create_invalid(error.to_string()))?;
+        return Ok(Some(path));
+    }
+    if let Some(cwd) = cwd {
+        crate::session::workspace::WorkspaceId::from_path(cwd)
+            .map_err(|error| create_invalid(error.to_string()))?;
+        return Ok(Some(cwd.to_owned()));
+    }
+    Ok(None)
+}
+
+fn remember_place(
+    places: &std::sync::Mutex<crate::session::workspace::Index>,
+    session_id: &str,
+    cwd: &str,
+) {
+    let Ok(workspace) = crate::session::workspace::WorkspaceId::from_path(cwd) else {
+        return;
+    };
+    places
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .associate(crate::session::workspace::Association {
+            session: session_id.to_owned(),
+            workspace,
+            at_ms: crate::now_millis(),
+        });
+}
+
+fn recorded_cwd(
+    places: &std::sync::Mutex<crate::session::workspace::Index>,
+    session_id: &str,
+) -> Option<String> {
+    places
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .workspace_of(session_id)
+        .map(|workspace| workspace.as_str().to_owned())
 }
 
 /// Mints a session id from the current time.
@@ -1401,12 +1828,18 @@ fn register_stream(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
     });
 }
 
-fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatalog>) {
+fn register_follow(
+    registry: &mut RemoteRegistry,
+    catalog: &Arc<dyn SessionCatalog>,
+    places: &Arc<std::sync::Mutex<crate::session::workspace::Index>>,
+) {
     let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
+    let places = Arc::clone(places);
     let projections = crate::session::projection_setup::assemble()
         .expect("built-in session projections have unique keys");
     registry.register_stream("session", "follow", move |open| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
+        let places = Arc::clone(&places);
         let projections = Arc::clone(&projections);
         Box::pin(async move {
             let Some(session_id) = follow_session_id(&open.call.args) else {
@@ -1443,7 +1876,16 @@ fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                                 ..SessionPageRequest::default()
                             },
                         );
-                        cursor = page.cursor;
+                        // `session.follow` uses the upstream SessionSeq space: the first event
+                        // is seq 0 and an empty log is cursor -1. `page.cursor` is the local
+                        // history-page count, so keep the next physical offset separately.
+                        cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
+                        let wire_cursor = record
+                            .events
+                            .len()
+                            .checked_sub(1)
+                            .and_then(|index| u64::try_from(index).ok())
+                            .map_or(-1_i64, |seq| i64::try_from(seq).unwrap_or(i64::MAX));
                         let records = page
                             .records
                             .iter()
@@ -1452,21 +1894,53 @@ fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                                 let seq = page
                                     .cursor
                                     .saturating_sub(page.records.len() as u64)
-                                    .saturating_add(index as u64)
-                                    .saturating_add(1);
+                                    .saturating_add(index as u64);
                                 session_wire_record(&record.event, seq)
                             })
                             .collect::<Vec<_>>();
                         let projected = projections.project(&record.events);
+                        let stored = catalog.session_header(&session_id);
+                        let mut header = serde_json::json!({
+                            "version": 4,
+                            "id": session_id,
+                            "createdAt": stored
+                                .as_ref()
+                                .map(|header| header.created_at)
+                                .unwrap_or(record.updated_at),
+                            "isSeeded": stored.as_ref().is_some_and(|header| header.is_seeded),
+                            "delegationDepth": stored
+                                .as_ref()
+                                .map(|header| header.delegation_depth)
+                                .unwrap_or(0),
+                        });
+                        if let Some(cwd) = stored
+                            .as_ref()
+                            .and_then(|header| header.cwd.clone())
+                            .or_else(|| recorded_cwd(&places, &session_id))
+                        {
+                            header["cwd"] = serde_json::Value::String(cwd);
+                        }
+                        if let Some(parent) = stored
+                            .as_ref()
+                            .and_then(|header| header.parent_session.clone())
+                        {
+                            header["parentSession"] = serde_json::Value::String(parent);
+                        }
+                        if let Some(origin) =
+                            stored.as_ref().and_then(|header| header.origin.clone())
+                        {
+                            header["origin"] = serde_json::Value::String(origin);
+                        }
+                        if let Some(preset) = stored
+                            .as_ref()
+                            .and_then(|header| header.agent_preset.clone())
+                        {
+                            header["agentPreset"] = serde_json::Value::String(preset);
+                        }
                         if !open.push(serde_json::json!({
                             "type": "snapshot",
-                            "header": {
-                                "version": 1,
-                                "id": session_id,
-                                "createdAt": record.updated_at,
-                                "isSeeded": false,
-                            },
-                            "cursor": cursor,
+                            "header": header,
+                            "cursor": wire_cursor,
                             "records": records,
                             "hasMore": page.has_more,
                             "projections": {
@@ -1481,7 +1955,7 @@ fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                         let len = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
                         let start = usize::try_from(cursor).unwrap_or(usize::MAX);
                         for (offset, event) in record.events.iter().enumerate().skip(start) {
-                            let seq = u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1);
+                            let seq = u64::try_from(offset).unwrap_or(u64::MAX);
                             let Some(frame) = session_wire_record(event, seq) else {
                                 continue;
                             };
@@ -1495,12 +1969,13 @@ fn register_follow(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCatal
                     if !open.push(serde_json::json!({
                         "type": "snapshot",
                         "header": {
-                            "version": 1,
+                            "version": 4,
                             "id": session_id,
                             "createdAt": 0,
                             "isSeeded": false,
+                            "delegationDepth": 0,
                         },
-                        "cursor": 0,
+                        "cursor": -1,
                         "records": [],
                         "hasMore": false,
                         "projections": {},
@@ -1535,7 +2010,9 @@ fn follow_session_id(args: &Value) -> Option<String> {
 /// One `{ type: "event", event }` record whose event is a `SessionWireEvent`.
 ///
 /// Surface events carry `surfaceOp: "append"`. `user/message` puts the message itself in `data`;
-/// every other type keeps its typed fields there. Returns `None` when the event cannot be serialized.
+/// every other type keeps its typed fields there. The sequence is the upstream zero-based
+/// `SessionSeq`; event time is currently unavailable in Girder's compact event enum and remains
+/// the stable placeholder `0`. Returns `None` when the event cannot be serialized.
 pub fn session_wire_record(event: &SessionEvent, seq: u64) -> Option<Value> {
     let mut value = serde_json::to_value(event).ok()?;
     let object = value.as_object_mut()?;
@@ -1577,33 +2054,224 @@ pub const FOLLOW_LIMIT: usize = 64;
 
 /// Registers `session.prompt`.
 fn register_prompt(registry: &mut RemoteRegistry) {
-    registry.register("session", "prompt", |call| {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        String,
+        std::sync::Arc<PromptReceipt>,
+    >::new()));
+    registry.register("session", "prompt", move |call| {
+        let seen = std::sync::Arc::clone(&seen);
         Box::pin(async move {
-            let request: SessionPromptRequest = parse_args("session", "prompt", call.args)?;
-            if request.text.trim().is_empty() {
-                return Err(RemoteError::InvalidArguments {
-                    namespace: "session".to_owned(),
-                    method: "prompt".to_owned(),
-                    message: "`text` must not be empty".to_owned(),
-                });
-            }
-            if request.session_id.trim().is_empty() {
-                return Err(RemoteError::InvalidArguments {
-                    namespace: "session".to_owned(),
-                    method: "prompt".to_owned(),
-                    message: "`sessionId` is required".to_owned(),
-                });
+            let request = admit_prompt(&call.args)?;
+            let Some((key, receipt, owner)) = begin_prompt(&seen, &request) else {
+                return prompt_value(1);
+            };
+            if !owner {
+                return prompt_result_value(wait_prompt(receipt).await);
             }
             // This build has no agent registry to attach to, so the prompt is accepted and
             // acknowledged rather than run. Returning an error would be worse: a client would retry
             // a call the harness has genuinely received.
-            serde_json::to_value(SessionPromptValue {
-                accepted: true,
-                turn: 1,
-            })
-            .map_err(|error| RemoteError::Failed(error.to_string()))
+            finish_prompt(&seen, &key, &receipt, Ok(1), true);
+            prompt_result_value(Ok(1))
         })
     });
+}
+
+/// One prompt after the browser `content` parts, or the local `text` field, have been read.
+struct AdmittedPrompt {
+    session_id: String,
+    text: String,
+    request_id: Option<String>,
+    delivery: PromptDelivery,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptDelivery {
+    /// `{ sessionId, text }` with no `mode`. A busy session refuses this.
+    Legacy,
+    /// Wait for the running turn, then answer.
+    Queue,
+    /// Join the running turn at the next model step.
+    Steer,
+}
+
+fn prompt_invalid(message: impl Into<String>) -> RemoteError {
+    RemoteError::InvalidArguments {
+        namespace: "session".to_owned(),
+        method: "prompt".to_owned(),
+        message: message.into(),
+    }
+}
+
+fn prompt_value(turn: u64) -> Result<Value, RemoteError> {
+    serde_json::to_value(SessionPromptValue {
+        accepted: true,
+        turn,
+    })
+    .map_err(|error| RemoteError::Failed(error.to_string()))
+}
+
+fn prompt_result_value(result: Result<u64, String>) -> Result<Value, RemoteError> {
+    result.map_or_else(|error| Err(RemoteError::Failed(error)), prompt_value)
+}
+
+/// Reads a `session.prompt` payload.
+///
+/// The browser sends `{ requestId, sessionId, mode, content, clientTimeZone }`. `content` is a list
+/// of text, image, and file parts. This build runs a single text prompt, so text parts are joined
+/// and an image or file is refused instead of being dropped. `mode` is `queue` or `steer`. An idle
+/// session starts a turn for either. A busy session queues `queue` for the next turn and inserts
+/// `steer` at the next model step. A prompt without `mode` still refuses a busy session.
+/// `clientTimeZone` is accepted and not stored: the message source has no time-zone field yet.
+/// Callers that still send `{ sessionId, text }` keep working.
+fn admit_prompt(args: &Value) -> Result<AdmittedPrompt, RemoteError> {
+    let delivery = match args.get("mode") {
+        None => PromptDelivery::Legacy,
+        Some(Value::String(mode)) if mode == "queue" => PromptDelivery::Queue,
+        Some(Value::String(mode)) if mode == "steer" => PromptDelivery::Steer,
+        Some(Value::String(mode)) => {
+            return Err(prompt_invalid(format!(
+                "`mode` must be `queue` or `steer`, got `{mode}`"
+            )));
+        }
+        Some(_) => return Err(prompt_invalid("`mode` must be `queue` or `steer`")),
+    };
+    let session_id = args
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| prompt_invalid("`sessionId` is required"))?
+        .to_owned();
+    if let Some(content) = args.get("content") {
+        let parts = content
+            .as_array()
+            .ok_or_else(|| prompt_invalid("`content` must be an array of parts"))?;
+        let mut texts = Vec::new();
+        for part in parts {
+            match part.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    let text = part
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| prompt_invalid("a text part needs `text`"))?;
+                    texts.push(text);
+                }
+                Some(other) => {
+                    return Err(prompt_invalid(format!(
+                        "part type `{other}` needs an attachment store this build does not have"
+                    )));
+                }
+                None => return Err(prompt_invalid("a content part needs `type`")),
+            }
+        }
+        let text = texts.join("\n");
+        if text.trim().is_empty() {
+            return Err(prompt_invalid("`text` must not be empty"));
+        }
+        let request_id = args
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| prompt_invalid("`requestId` is required"))?;
+        return Ok(AdmittedPrompt {
+            session_id,
+            text,
+            request_id: Some(request_id),
+            delivery,
+        });
+    }
+    let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+    if text.trim().is_empty() {
+        return Err(prompt_invalid("`text` must not be empty"));
+    }
+    let request_id = args
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    Ok(AdmittedPrompt {
+        session_id,
+        text: text.to_owned(),
+        request_id,
+        delivery,
+    })
+}
+
+fn prompt_key(request: &AdmittedPrompt) -> Option<String> {
+    request
+        .request_id
+        .as_ref()
+        .map(|id| format!("{}\u{0}{id}", request.session_id))
+}
+
+struct PromptReceipt {
+    result: std::sync::Mutex<Option<Result<u64, String>>>,
+    notify: tokio::sync::Notify,
+}
+
+fn begin_prompt(
+    seen: &std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<PromptReceipt>>>,
+    request: &AdmittedPrompt,
+) -> Option<(String, std::sync::Arc<PromptReceipt>, bool)> {
+    let key = prompt_key(request)?;
+    let mut seen = seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(receipt) = seen.get(&key) {
+        return Some((key, std::sync::Arc::clone(receipt), false));
+    }
+    let receipt = new_prompt_receipt();
+    seen.insert(key.clone(), std::sync::Arc::clone(&receipt));
+    Some((key, receipt, true))
+}
+
+fn new_prompt_receipt() -> std::sync::Arc<PromptReceipt> {
+    std::sync::Arc::new(PromptReceipt {
+        result: std::sync::Mutex::new(None),
+        notify: tokio::sync::Notify::new(),
+    })
+}
+
+async fn wait_prompt(receipt: std::sync::Arc<PromptReceipt>) -> Result<u64, String> {
+    loop {
+        let notified = receipt.notify.notified();
+        if let Some(result) = receipt
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return result;
+        }
+        notified.await;
+    }
+}
+
+fn finish_prompt(
+    seen: &std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<PromptReceipt>>>,
+    key: &str,
+    receipt: &std::sync::Arc<PromptReceipt>,
+    result: Result<u64, String>,
+    retain: bool,
+) {
+    let is_error = result.is_err();
+    *receipt
+        .result
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+    receipt.notify.notify_waiters();
+    if is_error && !retain {
+        let mut entries = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries
+            .get(key)
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, receipt))
+        {
+            entries.remove(key);
+        }
+    }
 }
 
 /// Builds a registry with every method this build implements, without a runtime.
@@ -1702,48 +2370,55 @@ fn register_prompt_with_runtime(
 ) {
     let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
     let runtime = Arc::clone(runtime);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        String,
+        std::sync::Arc<PromptReceipt>,
+    >::new()));
     registry.register("session", "prompt", move |call| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
         let runtime = Arc::clone(&runtime);
+        let seen = std::sync::Arc::clone(&seen);
         Box::pin(async move {
-            let request: SessionPromptRequest = parse_args("session", "prompt", call.args)?;
-            if request.text.trim().is_empty() {
-                return Err(RemoteError::InvalidArguments {
-                    namespace: "session".to_owned(),
-                    method: "prompt".to_owned(),
-                    message: "`text` must not be empty".to_owned(),
-                });
-            }
-            if request.session_id.trim().is_empty() {
-                return Err(RemoteError::InvalidArguments {
-                    namespace: "session".to_owned(),
-                    method: "prompt".to_owned(),
-                    message: "`sessionId` is required".to_owned(),
-                });
+            let request = admit_prompt(&call.args)?;
+            let (key, receipt, owner) = begin_prompt(&seen, &request)
+                .unwrap_or_else(|| (String::new(), new_prompt_receipt(), true));
+            if !owner {
+                return prompt_result_value(wait_prompt(receipt).await);
             }
 
             // The session must exist: prompting an unknown id should fail rather than mint a log.
             let Some(session) = catalog.open(&request.session_id) else {
-                return Err(RemoteError::Failed(format!(
-                    "no session named `{}`",
-                    request.session_id
-                )));
+                let error = format!("no session named `{}`", request.session_id);
+                finish_prompt(&seen, &key, &receipt, Err(error.clone()), false);
+                return Err(RemoteError::Failed(error));
             };
 
-            let turn = crate::core::runtime::AgentRuntime::prompt(
+            let result = match crate::core::runtime::AgentRuntime::prompt(
                 &runtime,
                 &request.session_id,
                 &request.text,
-                session,
+                std::sync::Arc::clone(&session),
             )
             .await
-            .map_err(|error| RemoteError::Failed(error.to_string()))?;
-
-            serde_json::to_value(SessionPromptValue {
-                accepted: true,
-                turn,
-            })
-            .map_err(|error| RemoteError::Failed(error.to_string()))
+            {
+                Ok(turn) => Ok(turn),
+                Err(crate::core::runtime::RuntimeError::Busy { .. })
+                    if request.delivery != PromptDelivery::Legacy =>
+                {
+                    runtime
+                        .enqueue(
+                            &request.session_id,
+                            &request.text,
+                            request.delivery == PromptDelivery::Steer,
+                        )
+                        .ok_or_else(|| {
+                            format!("session `{}` is already running a turn", request.session_id)
+                        })
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            finish_prompt(&seen, &key, &receipt, result.clone(), false);
+            prompt_result_value(result)
         })
     });
 }
@@ -1845,6 +2520,9 @@ pub fn register_job_methods(
         Box::pin(async move {
             let mut previous = serde_json::Value::Null;
             loop {
+                let notified = jobs.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 let rows = job_list_value(&jobs, session_id.as_deref());
                 if rows != previous {
                     if !open.push(serde_json::json!({
@@ -1862,7 +2540,7 @@ pub fn register_job_methods(
                             return;
                         }
                     }
-                    () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                    () = notified => {}
                 }
             }
         })

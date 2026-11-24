@@ -30,6 +30,8 @@ pub mod env;
 pub mod local;
 pub mod meta;
 pub mod persist;
+#[cfg(unix)]
+mod pty_io;
 pub mod retain;
 pub mod retain_rpc;
 pub mod rpc;
@@ -346,6 +348,16 @@ pub trait Shell: Send + Sync {
     fn exit_code(&self) -> Option<i32> {
         None
     }
+
+    /// Changes the terminal's window size.
+    ///
+    /// The default accepts the size and does nothing else, so a shell that has no terminal device
+    /// still lets the session record what the client asked for. A local pty overrides this and
+    /// applies the size to the device.
+    fn resize(&self, columns: u16, rows: u16) -> BoxFut<Result<(), TerminalError>> {
+        let _ = (columns, rows);
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// One managed terminal.
@@ -355,7 +367,7 @@ pub struct Session {
     shell: Arc<dyn Shell>,
     status: std::sync::Mutex<Status>,
     transcript: std::sync::Mutex<Transcript>,
-    size: Size,
+    size: std::sync::Mutex<Size>,
     /// What a person called this terminal.
     ///
     /// `None` until it is renamed, which is what a client shows as "Terminal 3" from the id rather
@@ -369,7 +381,7 @@ impl std::fmt::Debug for Session {
         f.debug_struct("Session")
             .field("id", &self.id)
             .field("status", &self.status())
-            .field("size", &self.size)
+            .field("size", &self.size())
             .finish_non_exhaustive()
     }
 }
@@ -384,7 +396,7 @@ impl Session {
             shell,
             status: std::sync::Mutex::new(Status::Running),
             transcript: std::sync::Mutex::new(Transcript::new(max_bytes)),
-            size,
+            size: std::sync::Mutex::new(size),
             title: std::sync::Mutex::new(None),
         }
     }
@@ -438,6 +450,32 @@ impl Session {
     #[must_use]
     pub fn size(&self) -> Size {
         self.size
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Applies a new window size and remembers it when the shell accepts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TerminalError::NotRunning`] when the shell has exited, or whatever [`Shell::resize`]
+    /// reports when the device rejects the size. A rejected size leaves the remembered dimensions
+    /// unchanged.
+    pub async fn resize(&self, size: Size) -> Result<(), TerminalError> {
+        let status = self.status();
+        if !status.is_running() {
+            return Err(TerminalError::NotRunning {
+                id: self.id.clone(),
+                status: status.as_str(),
+            });
+        }
+        self.shell.resize(size.columns, size.rows).await?;
+        *self
+            .size
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = size;
+        Ok(())
     }
 
     /// Its state.

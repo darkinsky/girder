@@ -897,8 +897,54 @@ pub struct PeerDirectory {
 struct DirectoryInner {
     browser: Peer,
     peers: Mutex<BTreeMap<String, Record>>,
+    grants: Mutex<BTreeMap<String, Vec<AccessGrant>>>,
+    access_changed: Arc<tokio::sync::Notify>,
     next: AtomicU64,
     disposed: AtomicBool,
+}
+
+/// One resource grant held by a non-owner peer.
+///
+/// Actions are stored sorted so a snapshot can compare two generations without treating order as a
+/// change. An absent id is a kind-wide grant; a present id names one resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessGrant {
+    /// Resource kind, such as `session` or `global`.
+    pub kind: String,
+    /// Resource identity. `None` grants the kind as a whole.
+    pub id: Option<String>,
+    /// Endpoint actions, spelled `namespace/method` and sorted.
+    pub actions: Vec<String>,
+}
+
+impl AccessGrant {
+    /// Builds a grant and normalizes its action list.
+    #[must_use]
+    pub fn new(
+        kind: impl Into<String>,
+        id: Option<String>,
+        actions: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let mut actions: Vec<String> = actions.into_iter().map(Into::into).collect();
+        actions.sort();
+        actions.dedup();
+        Self {
+            kind: kind.into(),
+            id: id.filter(|id| !id.is_empty()),
+            actions,
+        }
+    }
+
+    /// The `remoteAccess.follow` wire object.
+    #[must_use]
+    pub fn to_wire(&self) -> Value {
+        let mut resource = serde_json::Map::new();
+        resource.insert("kind".to_owned(), Value::String(self.kind.clone()));
+        if let Some(id) = &self.id {
+            resource.insert("id".to_owned(), Value::String(id.clone()));
+        }
+        json!({ "resource": resource, "actions": self.actions })
+    }
 }
 
 #[derive(Debug)]
@@ -919,6 +965,8 @@ impl PeerDirectory {
             inner: Arc::new(DirectoryInner {
                 browser: Peer::new(PeerId::new("browser"), Principal::owner()),
                 peers: Mutex::new(BTreeMap::new()),
+                grants: Mutex::new(BTreeMap::new()),
+                access_changed: Arc::new(tokio::sync::Notify::new()),
                 next: AtomicU64::new(1),
                 disposed: AtomicBool::new(false),
             }),
@@ -950,6 +998,27 @@ impl PeerDirectory {
             },
         );
         peer
+    }
+
+    /// Replaces the grants held by one peer and wakes `remoteAccess.follow`.
+    pub fn set_grants(&self, id: &PeerId, grants: Vec<AccessGrant>) {
+        lock(&self.inner.grants).insert(id.as_str().to_owned(), grants);
+        self.inner.access_changed.notify_waiters();
+    }
+
+    /// The grants currently held by one peer.
+    #[must_use]
+    pub fn grants(&self, id: &PeerId) -> Vec<AccessGrant> {
+        lock(&self.inner.grants)
+            .get(id.as_str())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Wakes when any peer's grants are replaced.
+    #[must_use]
+    pub fn access_changed(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.inner.access_changed)
     }
 
     /// Looks a published Peer up by identity.

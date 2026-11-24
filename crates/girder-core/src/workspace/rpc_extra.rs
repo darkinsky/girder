@@ -80,8 +80,10 @@
 //! module that reached for a global would give two registries in one process different answers about
 //! the same pins.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use girder_core::api::config::{Workspace, WorkspaceRegistry};
@@ -242,7 +244,7 @@ pub trait WorkspacePreferences: Send + Sync {
 }
 
 /// The state [`InMemoryPreferences`] holds.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct PreferenceState {
     /// Pin set, most recently pinned first.
     pinned: Vec<String>,
@@ -329,6 +331,158 @@ impl WorkspacePreferences for InMemoryPreferences {
         let before = state.archived.len();
         state.archived.retain(|id| id != session_id);
         Ok(state.archived.len() != before)
+    }
+}
+
+/// A workspace preference store backed by one atomically replaced JSON document.
+///
+/// The document is intentionally small and independent of workspace records: pins and archives
+/// refer to session ids, while the workspace registry owns the rows those ids belong to. Reopening
+/// this store therefore restores the user-facing marks without coupling two storage migrations.
+#[derive(Debug)]
+pub struct FilePreferences {
+    path: PathBuf,
+    state: Mutex<PreferenceState>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PreferenceDocument {
+    #[serde(default)]
+    pinned: Vec<String>,
+    #[serde(default)]
+    archived: Vec<String>,
+}
+
+impl FilePreferences {
+    /// Opens a file-backed preference store.
+    ///
+    /// A missing or empty file is a fresh store. An unreadable document is also treated as fresh
+    /// so the server can start and repair it through the RPC surface rather than trapping the
+    /// operator outside the settings that would fix it.
+    #[must_use]
+    pub fn open(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let state = read_preference_document(&path)
+            .map(|document| PreferenceState {
+                pinned: document.pinned,
+                archived: document.archived,
+            })
+            .unwrap_or_default();
+        Self {
+            path,
+            state: Mutex::new(state),
+        }
+    }
+
+    /// The file this store writes.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PreferenceState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn flush(&self, state: &PreferenceState) -> Result<(), PreferenceError> {
+        let document = PreferenceDocument {
+            pinned: state.pinned.clone(),
+            archived: state.archived.clone(),
+        };
+        let encoded = serde_json::to_string_pretty(&document).map_err(|error| {
+            PreferenceError::failed(format!("cannot encode preferences: {error}"))
+        })?;
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                PreferenceError::failed(format!(
+                    "cannot create preference directory `{}`: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        girder_core::util::atomic_write::write_text_atomic(
+            &self.path,
+            &format!("{encoded}\n"),
+            girder_core::util::atomic_write::Mode::PRIVATE,
+        )
+        .map_err(|error| PreferenceError::failed(format!("cannot write preferences: {error}")))
+    }
+
+    fn update(
+        &self,
+        update: impl FnOnce(&mut PreferenceState) -> Result<bool, PreferenceError>,
+    ) -> Result<bool, PreferenceError> {
+        let mut state = self.lock();
+        let before = state.clone();
+        let changed = update(&mut state)?;
+        if !changed {
+            return Ok(false);
+        }
+        if let Err(error) = self.flush(&state) {
+            *state = before;
+            return Err(error);
+        }
+        Ok(true)
+    }
+}
+
+fn read_preference_document(path: &Path) -> Option<PreferenceDocument> {
+    let text = std::fs::read_to_string(path).ok()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str(&text).ok()
+}
+
+impl WorkspacePreferences for FilePreferences {
+    fn pinned_session_ids(&self) -> Vec<String> {
+        self.lock().pinned.clone()
+    }
+
+    fn archived_session_ids(&self) -> Vec<String> {
+        self.lock().archived.clone()
+    }
+
+    fn pin_session(&self, session_id: &str) -> Result<bool, PreferenceError> {
+        self.update(|state| {
+            if state.archived.iter().any(|id| id == session_id) {
+                return Err(PreferenceError::Archived {
+                    session_id: session_id.to_owned(),
+                });
+            }
+            if state.pinned.iter().any(|id| id == session_id) {
+                return Ok(false);
+            }
+            state.pinned.insert(0, session_id.to_owned());
+            Ok(true)
+        })
+    }
+
+    fn unpin_session(&self, session_id: &str) -> Result<bool, PreferenceError> {
+        self.update(|state| {
+            let before = state.pinned.len();
+            state.pinned.retain(|id| id != session_id);
+            Ok(state.pinned.len() != before)
+        })
+    }
+
+    fn archive_session(&self, session_id: &str) -> Result<bool, PreferenceError> {
+        self.update(|state| {
+            if state.archived.iter().any(|id| id == session_id) {
+                return Ok(false);
+            }
+            state.pinned.retain(|id| id != session_id);
+            state.archived.push(session_id.to_owned());
+            Ok(true)
+        })
+    }
+
+    fn unarchive_session(&self, session_id: &str) -> Result<bool, PreferenceError> {
+        self.update(|state| {
+            let before = state.archived.len();
+            state.archived.retain(|id| id != session_id);
+            Ok(state.archived.len() != before)
+        })
     }
 }
 

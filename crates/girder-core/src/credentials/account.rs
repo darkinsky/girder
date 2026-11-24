@@ -341,6 +341,11 @@ pub trait CredentialSource: Send + Sync {
         0
     }
 
+    /// Wakes `account.watch` after [`Self::revision`] advances.
+    fn revision_wake(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
+
     /// How many times the DeepSeek account credential has been removed.
     ///
     /// `account.watchExpiry` reads this after it opens. Earlier removals are not replayed.
@@ -369,6 +374,8 @@ pub struct MemoryCredentialSource {
     /// provenance — which is the one fact a "which layer is winning" bug needs.
     values: RwLock<BTreeMap<String, (String, String)>>,
     revision: AtomicU64,
+    /// Waiters registered by `account.watch`.
+    changed: Arc<tokio::sync::Notify>,
     /// Removals of the DeepSeek account credential. Other references do not advance it.
     expiry_seq: AtomicU64,
     /// Waiters registered by `account.watchExpiry`.
@@ -380,6 +387,7 @@ impl Default for MemoryCredentialSource {
         Self {
             values: RwLock::new(BTreeMap::new()),
             revision: AtomicU64::new(0),
+            changed: Arc::new(tokio::sync::Notify::new()),
             expiry_seq: AtomicU64::new(0),
             expiry: Arc::new(tokio::sync::Notify::new()),
         }
@@ -433,6 +441,7 @@ impl CredentialSource for MemoryCredentialSource {
             (value.to_owned(), "memory".to_owned()),
         );
         self.revision.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_waiters();
         Ok(())
     }
 
@@ -440,6 +449,7 @@ impl CredentialSource for MemoryCredentialSource {
         let removed = self.write().remove(reference).is_some();
         if removed {
             self.revision.fetch_add(1, Ordering::Relaxed);
+            self.changed.notify_waiters();
             if reference == DEEPSEEK_ACCOUNT_REFERENCE {
                 self.expiry_seq.fetch_add(1, Ordering::Release);
                 self.expiry.notify_waiters();
@@ -450,6 +460,10 @@ impl CredentialSource for MemoryCredentialSource {
 
     fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed)
+    }
+
+    fn revision_wake(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.changed))
     }
 
     fn expiry_seq(&self) -> u64 {

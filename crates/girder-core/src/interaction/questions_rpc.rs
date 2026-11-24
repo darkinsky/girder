@@ -632,6 +632,8 @@ pub struct QuestionQueue {
     /// A `Vec` rather than a single sender because a wait is not exclusive: two callers may legitimately
     /// watch one question (a retry, a second process), and whichever settles it must release both.
     waiters: Mutex<BTreeMap<String, Vec<oneshot::Sender<QuestionState>>>>,
+    /// Wakes `attachWait` and `session.wait` after a question settles. The record remains the state.
+    changed: std::sync::Arc<tokio::sync::Notify>,
 }
 
 // Hand-written rather than derived: the store is a trait object, and a `Debug` render that printed
@@ -652,7 +654,22 @@ impl QuestionQueue {
         Self {
             store,
             waiters: Mutex::new(BTreeMap::new()),
+            changed: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Resolves after the next successful settle.
+    ///
+    /// Enable the future before reading the queue. A settle that lands after that registration
+    /// wakes it; one that landed earlier is visible in the read.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
+
+    /// The same signal [`Self::notified`] waits on, shared with session observers.
+    #[must_use]
+    pub fn activity(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.changed)
     }
 
     /// Creates a queue over a fresh in-memory store.
@@ -823,6 +840,8 @@ impl QuestionQueue {
             // would refuse an answer that is legitimately recorded.
             let _ = sender.send(record.state.clone());
         }
+        drop(waiters);
+        self.changed.notify_waiters();
         Ok(record)
     }
 
@@ -949,6 +968,12 @@ async fn follow_attach_wait(open: girder_core::StreamOpen, queue: Arc<QuestionQu
         return;
     }
     loop {
+        let notified = queue.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if matching_open(&queue, call_id, session).is_none() {
+            return;
+        }
         tokio::select! {
             () = open.cancel.cancelled() => return,
             incoming = open.uplink.recv() => {
@@ -956,11 +981,7 @@ async fn follow_attach_wait(open: girder_core::StreamOpen, queue: Arc<QuestionQu
                     return;
                 }
             }
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                if matching_open(&queue, call_id, session).is_none() {
-                    return;
-                }
-            }
+            () = notified => {}
         }
     }
 }

@@ -488,6 +488,24 @@ pub enum SessionEvent {
         attachments: Vec<String>,
     },
 
+    /// A decision recorded for an action card.
+    ///
+    /// Upstream's `action-cards/decision`. The card projection reads this event, so a dismiss
+    /// survives a restart instead of living only in the process that accepted the click.
+    #[serde(rename = "action-cards/decision")]
+    ActionCardsDecision {
+        /// The assistant message that offered the card.
+        #[serde(rename = "cardId")]
+        card_id: String,
+        /// The action the card named.
+        action: String,
+        /// The verb that was applied, or `dismissed`.
+        phase: String,
+        /// Verb payload, when the client sent an object.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
+
     /// A message's feedback was withdrawn.
     ///
     /// Upstream's `feedback/message-delete`. A separate event rather than a tombstone: the log is
@@ -532,6 +550,7 @@ impl SessionEvent {
             Self::ImageOffload { .. } => "image/offload",
             Self::TeamMode { .. } => "team/mode",
             Self::TeamTask { .. } => "team/task",
+            Self::ActionCardsDecision { .. } => "action-cards/decision",
         }
     }
 
@@ -568,7 +587,8 @@ impl SessionEvent {
             | Self::CompactionSummary { .. }
             | Self::ImageOffload { .. }
             | Self::TeamMode { .. }
-            | Self::TeamTask { .. } => None,
+            | Self::TeamTask { .. }
+            | Self::ActionCardsDecision { .. } => None,
         }
     }
 }
@@ -735,6 +755,84 @@ impl SessionStore {
         }
     }
 
+    /// Creates an empty session file whose first record is a durable session header.
+    ///
+    /// The header is stored in the same compressed JSONL stream as the events. This keeps the
+    /// immutable session identity beside the conversation while preserving the append-only event
+    /// path: later calls to [`SessionStore::append`] add event frames after it.
+    pub fn touch_with_header(&self, header: &serde_json::Value) -> Result<bool, SessionError> {
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let mut line = serde_json::to_vec(header).map_err(|error| {
+            SessionError::Compression(format!("failed to encode header: {error}"))
+        })?;
+        line.push(b'\n');
+        let frame = zstd::encode_all(line.as_slice(), self.level)
+            .map_err(|error| SessionError::Compression(error.to_string()))?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.path)
+        {
+            Ok(mut file) => {
+                std::io::Write::write_all(&mut file, &frame)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Replaces the durable session header without dropping the events after it.
+    ///
+    /// A later working directory has to live in the same record `read_session_header` reads. The
+    /// sidecar is not enough: a reader that finds a header in the log returns it and never looks
+    /// beside the file. The rewrite holds the same path lock as [`Self::append`], then replaces
+    /// the whole compressed stream so a torn frame cannot sit between the old header and the events.
+    pub fn rewrite_header(&self, header: &serde_json::Value) -> Result<(), SessionError> {
+        let lock = path_lock(&self.path);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let encoded = serde_json::to_string(header).map_err(|error| {
+            SessionError::Compression(format!("failed to encode header: {error}"))
+        })?;
+        let existing = match std::fs::read(&self.path) {
+            Ok(bytes) if !bytes.is_empty() => {
+                let decoded = zstd::decode_all(bytes.as_slice())
+                    .map_err(|error| SessionError::Compression(error.to_string()))?;
+                String::from_utf8(decoded).map_err(|error| {
+                    SessionError::Compression(format!("session log is not UTF-8: {error}"))
+                })?
+            }
+            Ok(_) | Err(_) => String::new(),
+        };
+        let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
+        let header_at = lines.iter().position(|line| !line.trim().is_empty());
+        match header_at {
+            Some(index) if session_header_line(&lines[index]) => lines[index] = encoded,
+            Some(index) => lines.insert(index, encoded),
+            None => lines.push(encoded),
+        }
+        let mut payload = lines.join("\n");
+        payload.push('\n');
+        let frame = zstd::encode_all(payload.as_bytes(), self.level)
+            .map_err(|error| SessionError::Compression(error.to_string()))?;
+        crate::util::atomic_write::write_atomic(
+            &self.path,
+            &frame,
+            crate::util::atomic_write::Mode(0o644),
+        )
+        .map_err(|error| SessionError::Io(std::io::Error::other(error.to_string())))?;
+        if let Ok(mut cached) = self.cached.write() {
+            *cached = None;
+        }
+        Ok(())
+    }
+
     /// Opens a store at `path`. The file is created on the first append or by [`touch`].
     ///
     /// [`touch`]: SessionStore::touch
@@ -876,8 +974,17 @@ impl SessionStore {
             if line.trim().is_empty() {
                 continue;
             }
+            let value = serde_json::from_str::<serde_json::Value>(&line).map_err(|source| {
+                SessionError::Corrupt {
+                    line: index + 1,
+                    source,
+                }
+            })?;
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("session") {
+                continue;
+            }
             let event: SessionEvent =
-                serde_json::from_str(&line).map_err(|source| SessionError::Corrupt {
+                serde_json::from_value(value).map_err(|source| SessionError::Corrupt {
                     line: index + 1,
                     source,
                 })?;
@@ -927,9 +1034,16 @@ impl SessionStore {
             }
             // A line that will not parse still counts as content: the session is not blank, and
             // hiding a corrupt log behind "blank" would be worse than showing it.
-            match serde_json::from_str::<SessionEvent>(&line) {
-                // A line that will not parse still counts as content: the session is not blank, and
-                // hiding a corrupt log behind "blank" would be worse than showing it.
+            let value = match serde_json::from_str::<serde_json::Value>(&line) {
+                Ok(value) => value,
+                // A line that will not parse still counts as content: the session is not blank,
+                // and hiding a corrupt log behind "blank" would be worse than showing it.
+                Err(_) => return Ok(true),
+            };
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("session") {
+                continue;
+            }
+            match serde_json::from_value::<SessionEvent>(value) {
                 Ok(SessionEvent::UserMessage { .. }) | Err(_) => return Ok(true),
                 Ok(_) => {}
             }
@@ -1335,6 +1449,44 @@ pub fn read_session_file(path: impl AsRef<Path>) -> Result<Vec<SessionEvent>, Se
     Ok(events)
 }
 
+fn session_header_line(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("session")
+}
+
+/// Reads the first durable session header, when a log has one.
+///
+/// Older Girder logs began directly with events, so absence is a valid compatibility result rather
+/// than corruption. Header validation remains the responsibility of the format layer that needs
+/// migration diagnostics.
+pub fn read_session_header(
+    path: impl AsRef<Path>,
+) -> Result<Option<serde_json::Value>, SessionError> {
+    let mut bytes = Vec::new();
+    File::open(path.as_ref())?.read_to_end(&mut bytes)?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let decoded = zstd::decode_all(&bytes[..])
+        .map_err(|error| SessionError::Compression(error.to_string()))?;
+    let text = String::from_utf8(decoded)
+        .map_err(|error| SessionError::Compression(format!("session log is not UTF-8: {error}")))?;
+    let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let value = serde_json::from_str::<serde_json::Value>(line)
+        .map_err(|source| SessionError::Corrupt { line: 1, source })?;
+    Ok((value.get("type").and_then(serde_json::Value::as_str) == Some("session")).then_some(value))
+}
+
 impl SessionEvent {
     /// Builds a user-message event from text.
     ///
@@ -1439,6 +1591,72 @@ mod flush_tests {
         store.sync().expect("sync");
         assert_eq!(store.read_all().expect("read").len(), 1);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rewriting_the_header_keeps_the_events() {
+        let path = std::env::temp_dir().join(format!(
+            "girder-header-rewrite-{}-{}.jsonl.zst",
+            std::process::id(),
+            crate::now_millis()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = SessionStore::new(&path);
+        store
+            .touch_with_header(&serde_json::json!({
+                "type": "session",
+                "version": 4,
+                "createdAt": 1,
+            }))
+            .expect("created");
+        store
+            .append(&SessionEvent::user_text("m", "hello"))
+            .expect("append");
+        store
+            .rewrite_header(&serde_json::json!({
+                "type": "session",
+                "version": 4,
+                "createdAt": 1,
+                "cwd": "/work",
+            }))
+            .expect("rewritten");
+        let header = super::read_session_header(&path)
+            .expect("header")
+            .expect("present");
+        assert_eq!(header["cwd"], "/work");
+        assert_eq!(store.read_all().expect("events").len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_catalog_directory_change_is_visible_from_the_log() {
+        let dir = std::env::temp_dir().join(format!(
+            "girder-header-catalog-{}-{}",
+            std::process::id(),
+            crate::now_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let catalog = crate::api::remote::DirectoryCatalog::new(&dir);
+        let created = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(crate::api::remote::SessionCatalog::create(&catalog, "s1"))
+            .expect("created");
+        assert_eq!(created.id, "s1");
+        crate::api::remote::SessionCatalog::set_working_directory(&catalog, "s1", "/workspace")
+            .expect("cwd");
+        let header =
+            crate::api::remote::SessionCatalog::session_header(&catalog, "s1").expect("header");
+        assert_eq!(header.cwd.as_deref(), Some("/workspace"));
+        let reopened = crate::api::remote::DirectoryCatalog::new(&dir);
+        assert_eq!(
+            crate::api::remote::SessionCatalog::session_header(&reopened, "s1")
+                .and_then(|header| header.cwd),
+            Some("/workspace".to_owned())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

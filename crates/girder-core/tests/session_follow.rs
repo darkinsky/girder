@@ -117,7 +117,9 @@ async fn the_opening_snapshot_contains_the_log() {
 
     let snapshot = next_frame(&mut frames).await;
     assert_eq!(snapshot["type"], "snapshot");
-    assert_eq!(snapshot["cursor"], 3);
+    assert_eq!(snapshot["cursor"], 2);
+    assert_eq!(snapshot["header"]["version"], 4);
+    assert_eq!(snapshot["header"]["delegationDepth"], 0);
     assert_eq!(snapshot["header"]["id"], "s1");
     assert_eq!(snapshot["projections"]["asOfSeq"], 3);
     assert_eq!(
@@ -128,7 +130,7 @@ async fn the_opening_snapshot_contains_the_log() {
     assert_eq!(records.len(), 3);
     let event = &records[0]["event"];
     assert_eq!(event["type"], "user/message");
-    assert_eq!(event["seq"], 1);
+    assert_eq!(event["seq"], 0);
     assert_eq!(event["time"], 0);
     assert_eq!(event["surfaceOp"], "append");
     assert_eq!(event["data"]["role"], "user");
@@ -146,19 +148,38 @@ async fn a_new_event_arrives_after_the_snapshot() {
     let registry = registry(&dir);
     let (cancel, mut frames, running) = opened(&registry, json!({"sessionId": "s1"})).await;
     let snapshot = next_frame(&mut frames).await;
-    assert_eq!(snapshot["cursor"], 2);
+    assert_eq!(snapshot["cursor"], 1);
 
     SessionStore::new(dir.join("s1.jsonl.zst"))
         .append(&SessionEvent::user_text("m9", "late"))
         .expect("appended");
     let frame = next_frame(&mut frames).await;
     assert_eq!(frame["type"], "event");
-    assert_eq!(frame["event"]["seq"], 3);
+    assert_eq!(frame["event"]["seq"], 2);
     assert_eq!(frame["event"]["type"], "user/message");
     assert_eq!(frame["event"]["data"]["content"][0]["text"], "late");
     assert_eq!(frame["event"]["surfaceOp"], "append");
     girder_core::session::client::assert_session_wire_event(&frame["event"])
         .expect("wire envelope");
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_opening_snapshot_uses_the_persisted_creation_time() {
+    let dir = scratch("created-at");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s1").await.expect("session created");
+    let header = girder_core::read_session_header(dir.join("s1.jsonl.zst"))
+        .expect("session header read")
+        .expect("session header");
+    let created_at = header["createdAt"].as_u64().expect("creation timestamp");
+    let registry = registry(&dir);
+    let (cancel, mut frames, running) = opened(&registry, json!({"sessionId": "s1"})).await;
+
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["header"]["createdAt"], created_at);
     cancel.cancel();
     let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -172,8 +193,10 @@ async fn an_unknown_session_opens_with_an_empty_snapshot() {
 
     let snapshot = next_frame(&mut frames).await;
     assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["header"]["version"], 4);
+    assert_eq!(snapshot["header"]["delegationDepth"], 0);
     assert_eq!(snapshot["records"].as_array().map(Vec::len), Some(0));
-    assert_eq!(snapshot["cursor"], 0);
+    assert_eq!(snapshot["cursor"], -1);
     cancel.cancel();
     let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -208,9 +231,9 @@ async fn max_messages_keeps_the_newest_window() {
 
     let snapshot = next_frame(&mut frames).await;
     assert_eq!(snapshot["records"].as_array().map(Vec::len), Some(4));
-    assert_eq!(snapshot["cursor"], 10);
+    assert_eq!(snapshot["cursor"], 9);
     assert_eq!(snapshot["hasMore"], true);
-    assert_eq!(snapshot["records"][0]["event"]["seq"], 7);
+    assert_eq!(snapshot["records"][0]["event"]["seq"], 6);
     cancel.cancel();
     let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);

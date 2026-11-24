@@ -164,24 +164,47 @@ pub fn register_account_methods(
                     return;
                 }
                 let mut revision = store.revision();
+                let wake = store.revision_wake();
                 loop {
-                    tokio::select! {
-                        () = open.cancel.cancelled() => return,
-                        incoming = open.uplink.recv() => {
-                            if !matches!(incoming, Ok(Some(_))) {
-                                return;
+                    let changed = if let Some(wake) = wake.as_ref() {
+                        let notified = wake.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        if store.revision() != revision {
+                            true
+                        } else {
+                            tokio::select! {
+                                () = open.cancel.cancelled() => return,
+                                incoming = open.uplink.recv() => {
+                                    if !matches!(incoming, Ok(Some(_))) {
+                                        return;
+                                    }
+                                    false
+                                }
+                                () = notified => true,
                             }
                         }
-                        () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                            let current = store.revision();
-                            if current != revision {
-                                revision = current;
-                                if !open.push(json!({
-                                    "type": "snapshot",
-                                    "state": account_state(&store),
-                                })) {
+                    } else {
+                        tokio::select! {
+                            () = open.cancel.cancelled() => return,
+                            incoming = open.uplink.recv() => {
+                                if !matches!(incoming, Ok(Some(_))) {
                                     return;
                                 }
+                                false
+                            }
+                            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => true,
+                        }
+                    };
+                    if changed {
+                        let current = store.revision();
+                        if current != revision {
+                            revision = current;
+                            if !open.push(json!({
+                                "type": "snapshot",
+                                "state": account_state(&store),
+                            })) {
+                                return;
                             }
                         }
                     }

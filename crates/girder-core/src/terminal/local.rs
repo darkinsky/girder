@@ -4,28 +4,12 @@
 //! [`crate::terminal`] module owns session bookkeeping and [`crate::terminal::tool`] owns the tool
 //! surface, but neither owns a process. This module is that missing layer, and nothing else.
 //!
-//! # This is not a pty
+//! # Unix runs a pty
 //!
-//! The child gets three pipes — stdin, stdout, stderr — and no pseudo-terminal. A real pty needs a
-//! dependency such as `portable-pty` for the C `openpty`/`forkpty` dance, and that is a large amount
-//! of unsafe code for a capability this crate has not needed yet. So the choice is deliberate, and
-//! the consequences are all paid by the caller rather than hidden:
-//!
-//! - **No tty, so interactive programs do not work.** `vim`, `top`, `less`, `ssh` and anything else
-//!   that asks whether its input is a terminal will either refuse to start or misbehave; they check
-//!   `isatty`, get "no", and take a non-interactive path that expects a script. Scripts, builds,
-//!   `git`, `grep`, and any command that just prints and exits work normally.
-//! - **No window size.** `spec.size` is exported as `COLUMNS` and `LINES` instead, which many
-//!   programs read, and the ioctl that asks a terminal directly returns nothing. A table drawn by a
-//!   program that uses the ioctl will use its own default width, not the session's.
-//! - **No job control and no terminal-generated signals.** There is no foreground process group, so
-//!   Ctrl-C/Ctrl-Z cannot be delivered by typing a byte; stopping a runaway command means
-//!   [`Shell::close`], which stops the whole group.
-//! - **No echo and no line editing.** Nothing prints a prompt or echoes what was typed, because
-//!   those are terminal-driver behaviours. A transcript here holds program output only.
-//! - **Output can lag.** A C program with a pipe on stdout block-buffers 4 KiB at a time; under a
-//!   tty it would be line-buffered. A progress bar that updates in place may therefore arrive late
-//!   in one burst.
+//! On Unix the child is given a pseudo-terminal: stdin, stdout, and stderr are the slave, the
+//! parent reads and writes the master, and [`Shell::resize`] updates the kernel window size and
+//! sends `SIGWINCH`. Programs that call `isatty` see a terminal. A host that is not Unix still gets
+//! three pipes, with the limits that implies: no window size, no echo, and no job control.
 //!
 //! # Why `sh` without `-i`
 //!
@@ -43,6 +27,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -86,7 +71,9 @@ enum Ready {
     Stderr(std::io::Result<usize>),
 }
 
-/// A shell running as a child process, without a pty.
+/// A shell running as a child process.
+///
+/// On Unix the child is attached to a pty. Elsewhere it is attached to pipes.
 ///
 /// Construct it with [`ProcessShell::start`], or let [`LocalLauncher`] do it as part of mounting the
 /// terminal tools. The trait methods are the interface; everything here is a process plus the pipes
@@ -127,36 +114,39 @@ impl ProcessShell {
     /// with a working directory that does not exist. The reason is meant to be shown to a model, and
     /// does not repeat the session id — the tool wraps it as "cannot start terminal `<id>`" once.
     pub fn start(spec: &TerminalLaunch) -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            Self::start_pty(spec)
+        }
+        #[cfg(not(unix))]
+        {
+            Self::start_pipes(spec)
+        }
+    }
+
+    /// Starts the shell on three pipes.
+    ///
+    /// Used where a pty is not available. The size is exported as `COLUMNS` and `LINES` because
+    /// there is no terminal device to query.
+    #[cfg(not(unix))]
+    fn start_pipes(spec: &TerminalLaunch) -> Result<Self, String> {
         let program = spec.shell.clone().unwrap_or_else(default_shell);
         let mut command = Command::new(&program);
         command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            // A session that is dropped rather than closed must not leave a shell running with no
-            // reader. This is the backstop; `close` is the path that also takes the group.
             .kill_on_drop(true);
         if let Some(cwd) = &spec.cwd {
             command.current_dir(cwd);
         }
-        // The size goes into the environment because there is no terminal to ioctl. Programs that
-        // read `COLUMNS`/`LINES` see the session's size; programs that ask the terminal directly
-        // get nothing, which is visible in their own output rather than papered over here.
         command
             .env("COLUMNS", spec.size.columns.to_string())
             .env("LINES", spec.size.rows.to_string());
-        #[cfg(unix)]
-        {
-            // Its own process group: a shell that started a pipeline leaves children holding the
-            // pipes, and killing only the shell would leave them running with no reader.
-            command.process_group(0);
-        }
 
         let mut child = command
             .spawn()
             .map_err(|error| format!("could not start `{program}`: {error}"))?;
-        // Read before anything can be reaped: `Child::id` answers `None` once the child is waited
-        // for, and the group is signalled by pid.
         let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -172,6 +162,70 @@ impl ProcessShell {
                     pid,
                     exit: ExitState::Running,
                 }),
+                closed: AtomicBool::new(false),
+            }),
+        })
+    }
+
+    /// Starts the shell on a pty.
+    ///
+    /// The slave becomes the child's controlling terminal. The parent keeps the master.
+    #[cfg(unix)]
+    fn start_pty(spec: &TerminalLaunch) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+
+        let program = spec.shell.clone().unwrap_or_else(default_shell);
+        let (master, slave) = super::pty_io::open_pty(spec.size.columns, spec.size.rows)
+            .map_err(|error| format!("could not open a pty for `{program}`: {error}"))?;
+        let reader = master
+            .try_clone()
+            .map_err(|error| format!("could not open a pty for `{program}`: {error}"))?;
+        let slave_fd = slave.as_raw_fd();
+        let master_fd = master.as_raw_fd();
+
+        let mut command = Command::new(&program);
+        command.kill_on_drop(true);
+        if let Some(cwd) = &spec.cwd {
+            command.current_dir(cwd);
+        }
+        command
+            .env("TERM", "xterm-256color")
+            .env("COLUMNS", spec.size.columns.to_string())
+            .env("LINES", spec.size.rows.to_string());
+        super::pty_io::prepare_child(&mut command, slave_fd, master_fd);
+
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                return Err(format!("could not start `{program}`: {error}"));
+            }
+        };
+        drop(slave);
+        let pid = child.id();
+        let (chunks_tx, chunks_rx) = tokio::sync::mpsc::channel(32);
+        std::thread::Builder::new()
+            .name("girder-pty".to_owned())
+            .spawn(move || read_pty(reader, chunks_tx))
+            .map_err(|error| format!("could not read the pty for `{program}`: {error}"))?;
+
+        Ok(Self {
+            inner: Arc::new(Inner {
+                id: spec.id.clone(),
+                stdin: tokio::sync::Mutex::new(None),
+                streams: tokio::sync::Mutex::new(Streams {
+                    stdout: None,
+                    stderr: None,
+                }),
+                pty: Some(PtyMaster {
+                    master: Mutex::new(master),
+                    chunks: tokio::sync::Mutex::new(chunks_rx),
+                }),
+                state: Mutex::new(ChildState {
+                    child,
+                    pid,
+                    exit: ExitState::Running,
+                }),
+                closed: AtomicBool::new(false),
             }),
         })
     }
@@ -210,6 +264,11 @@ impl Shell for ProcessShell {
         })
     }
 
+    fn resize(&self, columns: u16, rows: u16) -> BoxFut<Result<(), TerminalError>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move { inner.resize(columns, rows) })
+    }
+
     fn is_alive(&self) -> bool {
         self.inner.is_alive()
     }
@@ -236,11 +295,16 @@ struct Inner {
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     /// The child's two output pipes, read together.
     streams: tokio::sync::Mutex<Streams>,
+    /// The pty master, when this shell was started on Unix.
+    #[cfg(unix)]
+    pty: Option<PtyMaster>,
     /// The child and what is known about its exit.
     ///
     /// A `std` mutex because [`Shell::is_alive`] is synchronous and must not wait behind a read that
     /// is holding the streams lock.
     state: Mutex<ChildState>,
+    /// Set when [`Inner::close`] starts, so a later write cannot succeed against a dead terminal.
+    closed: AtomicBool,
 }
 
 /// The child's output pipes, in the shape the pump needs.
@@ -275,9 +339,75 @@ struct ChildState {
     exit: ExitState,
 }
 
+/// The parent's end of a pty, plus the chunks a reader thread has already pulled off it.
+#[cfg(unix)]
+struct PtyMaster {
+    /// Writes and window-size changes.
+    master: Mutex<std::fs::File>,
+    /// Output the reader thread has copied off the master.
+    chunks: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Option<Vec<u8>>>>,
+}
+
+#[cfg(unix)]
+impl PtyMaster {
+    /// Writes `bytes` without holding the async runtime inside the kernel write.
+    async fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = self
+            .master
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_clone()?;
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            file.write_all(&bytes)
+        })
+        .await
+        .map_err(|error| std::io::Error::other(error))?
+    }
+}
+
+/// Copies pty output onto a channel until the slave hangs up.
+#[cfg(unix)]
+fn read_pty(mut reader: std::fs::File, chunks: tokio::sync::mpsc::Sender<Option<Vec<u8>>>) {
+    use std::io::Read;
+    let mut buffer = [0u8; CHUNK];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                let _ = chunks.blocking_send(None);
+                break;
+            }
+            Ok(count) => {
+                if chunks
+                    .blocking_send(Some(buffer[..count].to_vec()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                let _ = chunks.blocking_send(None);
+                break;
+            }
+        }
+    }
+}
+
 impl Inner {
     /// Writes `input` to the shell's stdin.
     async fn write(&self, input: &str) -> Result<(), TerminalError> {
+        if self.closed.load(Ordering::Relaxed) || !self.is_alive() {
+            return Err(self.not_running());
+        }
+        #[cfg(unix)]
+        if let Some(pty) = &self.pty {
+            return pty
+                .write_all(input.as_bytes())
+                .await
+                .map_err(|_| self.not_running());
+        }
         let mut stdin = self.stdin.lock().await;
         let Some(pipe) = stdin.as_mut() else {
             return Err(self.not_running());
@@ -291,8 +421,39 @@ impl Inner {
         Ok(())
     }
 
+    /// Changes the pty's window size and tells the foreground group.
+    fn resize(&self, columns: u16, rows: u16) -> Result<(), TerminalError> {
+        #[cfg(unix)]
+        if let Some(pty) = &self.pty {
+            let file = pty.master.lock().unwrap_or_else(PoisonError::into_inner);
+            super::pty_io::set_window_size(&file, columns, rows).map_err(|_| self.not_running())?;
+            self.signal_window();
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        let _ = (columns, rows);
+        Ok(())
+    }
+
+    /// Tells the child's process group that the window changed.
+    #[cfg(unix)]
+    fn signal_window(&self) {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let Some(pid) = self.pid().and_then(|pid| i32::try_from(pid).ok()) else {
+            return;
+        };
+        let _ = kill(Pid::from_raw(-pid), Signal::SIGWINCH);
+    }
+
     /// Returns the next chunk either pipe produced, or `None` when both are closed.
     async fn next_chunk(&self) -> Option<String> {
+        #[cfg(unix)]
+        if let Some(pty) = &self.pty {
+            let mut chunks = pty.chunks.lock().await;
+            return chunks.recv().await.flatten().map(|bytes| text(&bytes));
+        }
         let mut guard = self.streams.lock().await;
         // Rebinding through one deref is what lets the two fields be borrowed at once: reached
         // through the guard, each field access would re-borrow `*guard` mutably and the pair would
@@ -335,9 +496,20 @@ impl Inner {
 
     /// Ends the session, taking the whole process group with it.
     async fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        #[cfg(unix)]
+        if let Some(pty) = &self.pty {
+            // Ctrl-D is EOF at a prompt. Closing the master instead would hang the terminal up
+            // before the shell could exit on its own.
+            let _ = pty.write_all(&[0x04]).await;
+        }
+        #[cfg(not(unix))]
         {
-            // EOF on stdin first: a shell at a prompt leaves on its own, and one running a command
-            // finishes it. That is the only path that produces a real exit code instead of a signal.
+            let mut stdin = self.stdin.lock().await;
+            let _taken = stdin.take();
+        }
+        #[cfg(unix)]
+        if self.pty.is_none() {
             let mut stdin = self.stdin.lock().await;
             let _taken = stdin.take();
         }
@@ -415,9 +587,12 @@ impl Inner {
                 Stop::Graceful => Signal::SIGTERM,
                 Stop::Forced => Signal::SIGKILL,
             };
-            // Negative pid addresses the group, which is the shell plus whatever it started. A
-            // failure is ignored: the process is gone, which is what the caller wanted.
+            // Negative pid addresses the group. A shell with job control puts background
+            // commands in other groups of the same session, so those are signalled too.
             let _ = kill(Pid::from_raw(-pid), signal);
+            for member in session_members(pid) {
+                let _ = kill(Pid::from_raw(member), signal);
+            }
         }
         #[cfg(not(unix))]
         {
@@ -467,13 +642,17 @@ impl Inner {
             let Some(pid) = i32::try_from(pid).ok() else {
                 return self.is_alive();
             };
-            match kill(Pid::from_raw(-pid), None) {
+            let group = match kill(Pid::from_raw(-pid), None) {
                 // A group with any member answers to the null signal. `EPERM` means it exists but
                 // belongs to somebody else, which still counts as alive for deciding whether to
                 // signal it.
                 Ok(()) | Err(Errno::EPERM) => true,
                 Err(_) => false,
-            }
+            };
+            group
+                || session_members(pid)
+                    .iter()
+                    .any(|member| kill(Pid::from_raw(*member), None).is_ok())
         }
         #[cfg(not(unix))]
         {
@@ -524,6 +703,37 @@ impl Inner {
     }
 }
 
+/// Pids that share the session led by `leader`, excluding the leader itself.
+///
+/// Job control puts background commands in other process groups of that session. `/proc` is the
+/// list Linux already keeps. A host without it contributes nothing, and the process-group signal
+/// remains the whole of the sweep.
+#[cfg(unix)]
+fn session_members(leader: i32) -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<i32>().ok())
+        .filter(|pid| *pid != leader && session_of(*pid) == Some(leader))
+        .collect()
+}
+
+/// The session id recorded for `pid`, when `/proc` has one.
+#[cfg(unix)]
+fn session_of(pid: i32) -> Option<i32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` can contain spaces and parentheses. The session id is the fourth field after the
+    // closing parenthesis of that name.
+    let rest = text.rsplit_once(')')?.1;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    let _parent = fields.next()?;
+    let _group = fields.next()?;
+    fields.next()?.parse().ok()
+}
+
 /// The default program for a shell a launch does not name.
 ///
 /// `$SHELL` first, because that is the shell the person running the harness chose, then `sh`, which
@@ -547,8 +757,7 @@ fn text(bytes: &[u8]) -> String {
 /// Starts [`ProcessShell`]s on the host this process runs on.
 ///
 /// This is the launcher to mount in [`crate::terminal::tool`] in place of `UnavailableLauncher`: it
-/// gives the model a terminal that really runs commands, at the cost of the pty limitations
-/// described at the top of this module.
+/// gives the model a terminal that really runs commands. On Unix that terminal is a pty.
 ///
 /// The fallback shell is captured when the launcher is built, so a session started later behaves
 /// like the environment the harness was started in rather than like whatever `$SHELL` says by then.

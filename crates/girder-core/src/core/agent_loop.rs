@@ -306,6 +306,15 @@ pub struct LoopContext {
     /// a call that did not happen.
     pub approver: Option<Arc<dyn crate::interaction::approval::Approver>>,
 
+    /// Sessions currently waiting for a human approval.
+    ///
+    /// This is separate from the approver because an approver is allowed to be a deployment-wide
+    /// service. The session state endpoint still needs a per-session answer while a tool is paused.
+    pub pending_approvals: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>,
+
+    /// Wakes passive observers when an approval starts or finishes.
+    pub activity: Option<Arc<tokio::sync::Notify>>,
+
     /// The sandbox and approval knobs this turn enforces.
     ///
     /// `None` leaves each tool on its own default, which is how the unit tests run. A deployment sets
@@ -440,6 +449,8 @@ impl LoopContext {
             refine_titles: false,
             tool_cache: None,
             approver: None,
+            pending_approvals: None,
+            activity: None,
             permissions: None,
             working_directory: None,
             approval_rules: None,
@@ -1071,10 +1082,15 @@ pub fn run(
             // Input queued for the next turn continues the conversation even when this turn ended
             // without tools. A user who typed while the model was answering expects that message to
             // be answered, and ending here would silently drop it.
-            let queued = context
+            let mut queued = context
                 .agent
                 .as_ref()
                 .map_or_else(Vec::new, |agent| agent.take_queued_turn());
+            // A steer that arrived after the last model step still belongs to the person. The step
+            // loop already consumed steers that landed on a step boundary.
+            if let Some(agent) = &context.agent {
+                queued.extend(agent.take_queued_step());
+            }
 
             if !queued.is_empty() {
                 reset_repeat(&context);
@@ -1161,6 +1177,12 @@ async fn run_steps(
             .await;
         if let Some(agent) = &context.agent {
             for message in agent.take_queued_step() {
+                let _ = context
+                    .session
+                    .append(SessionEvent::UserMessage {
+                        message: message.clone(),
+                    })
+                    .await;
                 messages.push(Message::new(Role::User, message.content));
             }
         }
@@ -1781,6 +1803,62 @@ fn decide_by_rules(
 ///
 /// A free function because `dispatch` was at the length the linter enforces and because the three ways this can refuse --
 /// no approver, a denial, an unanswered request -- are the interesting part and read better named.
+struct PendingApprover {
+    inner: Arc<dyn crate::interaction::approval::Approver>,
+    pending: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    session_id: String,
+    activity: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl crate::interaction::approval::Approver for PendingApprover {
+    fn ask(
+        &self,
+        request: crate::interaction::approval::Request,
+    ) -> crate::core::scope::BoxFut<
+        Result<crate::interaction::approval::Decision, crate::interaction::approval::ApprovalError>,
+    > {
+        let inner = Arc::clone(&self.inner);
+        let pending = Arc::clone(&self.pending);
+        let session_id = self.session_id.clone();
+        let activity = self.activity.clone();
+        Box::pin(async move {
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(session_id.clone());
+            if let Some(activity) = &activity {
+                activity.notify_waiters();
+            }
+            let result = inner.ask(request).await;
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&session_id);
+            if let Some(activity) = &activity {
+                activity.notify_waiters();
+            }
+            result
+        })
+    }
+}
+
+fn tracked_approver(
+    context: &LoopContext,
+    approver: Arc<dyn crate::interaction::approval::Approver>,
+) -> Arc<dyn crate::interaction::approval::Approver> {
+    context
+        .pending_approvals
+        .as_ref()
+        .map_or(approver.clone(), |pending| {
+            Arc::new(PendingApprover {
+                inner: approver,
+                pending: Arc::clone(pending),
+                session_id: context.agent_id.as_str().to_owned(),
+                activity: context.activity.clone(),
+            })
+        })
+}
+
 async fn ask_approver(
     context: &LoopContext,
     tool: &str,
@@ -1800,7 +1878,10 @@ async fn ask_approver(
             "`{tool}` needs approval but the question was blank"
         )));
     };
-    match approver.ask(request).await {
+    let result = match tracked_approver(context, Arc::clone(approver))
+        .ask(request)
+        .await
+    {
         Ok(crate::interaction::approval::Decision::Approved { .. }) => Ok(()),
         Ok(crate::interaction::approval::Decision::Denied { .. }) => Err(
             crate::core::tools::ToolResult::error(format!("`{tool}` was not approved: {question}")),
@@ -1810,7 +1891,8 @@ async fn ask_approver(
         Err(error) => Err(crate::core::tools::ToolResult::error(format!(
             "`{tool}` could not be approved: {error}"
         ))),
-    }
+    };
+    result
 }
 
 /// Runs the call's body under the deployment's deadline.
@@ -1834,10 +1916,11 @@ async fn run_with_deadline(
         }
         None => None,
     };
-    let escalation = context
-        .approver
-        .clone()
-        .map(|approver| Arc::new(crate::sandbox::policy::ApproverBridge::new(approver)));
+    let escalation = context.approver.clone().map(|approver| {
+        Arc::new(crate::sandbox::policy::ApproverBridge::new(
+            tracked_approver(context, approver),
+        ))
+    });
     let body = async {
         context
             .bus

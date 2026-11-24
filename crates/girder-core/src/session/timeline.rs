@@ -285,7 +285,7 @@ pub fn outline(events: &[SessionEvent]) -> Vec<Segment> {
             | SessionEvent::LlmRetry { .. }
             // a timeline places turns in time; feedback answers about a message, so it contributes nothing here.
             | SessionEvent::MessageFeedbackPut { .. }
-            | SessionEvent::MessageFeedbackDelete { .. } | SessionEvent::SessionFeedbackRecord { .. } | SessionEvent::CompactionSummary { .. } | SessionEvent::ImageOffload { .. } | SessionEvent::TeamMode { .. } | SessionEvent::TeamTask { .. } => {}
+            | SessionEvent::MessageFeedbackDelete { .. } | SessionEvent::SessionFeedbackRecord { .. } | SessionEvent::CompactionSummary { .. } | SessionEvent::ImageOffload { .. } | SessionEvent::TeamMode { .. } | SessionEvent::TeamTask { .. } | SessionEvent::ActionCardsDecision { .. } => {}
         }
     }
 

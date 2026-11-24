@@ -76,6 +76,8 @@ async fn serve_dist(
             None,
             Some(config),
             auth,
+            None,
+            None,
             stop,
         )
         .await;

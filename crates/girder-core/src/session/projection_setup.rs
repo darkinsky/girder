@@ -80,6 +80,8 @@ pub fn base_projections() -> Vec<Arc<dyn crate::session::projection::Projection>
         Arc::new(crate::llm::token_measurement::TokenMeasurementProjection),
         // The working directory in effect, which a shell tool reads before running anything.
         Arc::new(crate::shell::working_dir::WorkingDirectoryProjection),
+        // Cards offered in assistant answers, and the decisions taken on them.
+        Arc::new(crate::interaction::action_card_projection::ActionCardsProjection),
     ]
 }
 

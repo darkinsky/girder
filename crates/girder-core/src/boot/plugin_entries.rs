@@ -134,12 +134,37 @@ pub const PROTECTED: &[&str] = &[
     "@deepseek-ai/dsh-session-controller",
 ];
 
+/// Desired enablement, and the file it is read back from after a restart.
+struct Enablement {
+    /// Explicit choices. An entry that is absent is enabled, which is how a compile-time plugin starts.
+    values: BTreeMap<String, bool>,
+    /// Where a change is written. Absent in a process that only answers from memory.
+    store: Option<std::path::PathBuf>,
+    /// Exemptions kept in memory when no profile directory has been named.
+    compatibility: crate::boot::install::CompatibilityFile,
+}
+
+impl Default for Enablement {
+    fn default() -> Self {
+        Self {
+            values: BTreeMap::new(),
+            store: None,
+            compatibility: crate::boot::install::CompatibilityFile {
+                exemptions: BTreeMap::new(),
+                warnings: Vec::new(),
+                rewritable: true,
+            },
+        }
+    }
+}
+
 /// The entry registry.
 #[derive(Default)]
 pub struct Registry {
     entries: BTreeMap<String, Entry>,
     rows: Vec<ProfileRow>,
     owner: Option<String>,
+    enabled: std::sync::Mutex<Enablement>,
 }
 
 impl Registry {
@@ -157,6 +182,133 @@ impl Registry {
     /// Adds one profile row.
     pub fn push_row(&mut self, row: ProfileRow) {
         self.rows.push(row);
+    }
+
+    /// Loads enablement from `path` and writes later changes back there.
+    ///
+    /// A missing file is the first run. A file that is not the map this method writes is ignored,
+    /// so a damaged record cannot turn every plugin off.
+    pub fn load_enablement(&mut self, path: impl Into<std::path::PathBuf>) {
+        let path = path.into();
+        let mut state = self
+            .enabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Ok(values) = serde_json::from_slice::<BTreeMap<String, bool>>(&bytes) {
+                state.values = values;
+            }
+        }
+        state.store = Some(path);
+    }
+
+    /// Records whether `id` should run, and reports the outcome `setPluginEnabled` returns.
+    ///
+    /// This build has no hot reload, so a change that was saved answers `restart-required`. The
+    /// plugin stays mounted until the next start, and [`Self::list`] already reports the saved choice.
+    #[must_use]
+    pub fn set_plugin_enabled(&self, id: &str, enabled: bool) -> serde_json::Value {
+        let Some(entry) = self.entries.get(id).cloned() else {
+            return failed_enable(id, enabled, "unknown-plugin");
+        };
+        if let Err(reason) = self.patch_id(&entry) {
+            return failed_enable(id, enabled, reason.as_str());
+        }
+        let mut state = self
+            .enabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = state.values.get(id).copied().unwrap_or(true);
+        let changed = previous != enabled;
+        if changed {
+            if let Some(path) = state.store.clone() {
+                let mut next = state.values.clone();
+                next.insert(id.to_owned(), enabled);
+                if let Err(error) = write_enablement(&path, &next) {
+                    return serde_json::json!({
+                        "changed": false,
+                        "application": "failed",
+                        "stage": "enable",
+                        "target": id,
+                        "enabled": enabled,
+                        "error": { "code": "operation-error", "diagnostic": error },
+                    });
+                }
+            }
+            state.values.insert(id.to_owned(), enabled);
+        }
+        serde_json::json!({
+            "changed": changed,
+            "application": "restart-required",
+            "restartReason": "no-hmr",
+            "stage": "enable",
+            "target": id,
+            "enabled": enabled,
+        })
+    }
+
+    /// The exemptions `listVersionExemptions` answers.
+    ///
+    /// A named profile is read from `compatibility.json` beside the enablement file. Without one,
+    /// the answer is the grants recorded in this process.
+    #[must_use]
+    pub fn version_exemptions(&self) -> serde_json::Value {
+        let state = self
+            .enabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let file = compatibility_of(&state);
+        serde_json::json!({
+            "exemptions": file.exemptions,
+            "warnings": file.warnings,
+        })
+    }
+
+    /// Grants or revokes one exact package/runtime exemption, as `setVersionExemption` answers.
+    ///
+    /// A saved change waits for the next start. The running version is this crate's version, so a
+    /// grant for any other runtime is refused rather than recorded.
+    #[must_use]
+    pub fn set_version_exemption(
+        &self,
+        package_version: &str,
+        runtime_version: &str,
+        enabled: bool,
+        accept_risk: bool,
+    ) -> serde_json::Value {
+        let mut state = self
+            .enabled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let file = compatibility_of(&state);
+        let before = file.exemptions.clone();
+        let next = match crate::boot::install::update_profile_compatibility(
+            &file,
+            package_version,
+            runtime_version,
+            enabled,
+            accept_risk,
+            env!("CARGO_PKG_VERSION"),
+        ) {
+            Ok(next) => next,
+            Err(error) => {
+                return failed_exemption(package_version, enabled, &error.to_string());
+            }
+        };
+        let changed = next != before;
+        if changed {
+            if let Err(error) = store_compatibility(&mut state, &next) {
+                return failed_exemption(package_version, enabled, &error);
+            }
+        }
+        serde_json::json!({
+            "changed": changed,
+            "application": "restart-required",
+            "restartReason": "no-hmr",
+            "stage": "enable",
+            "target": package_version,
+            "enabled": enabled,
+        })
     }
 
     /// Names the entry that is asking, so it reports itself as management-required.
@@ -197,9 +349,18 @@ impl Registry {
         self.entries()
             .into_iter()
             .map(|entry| {
+                let enabled = self
+                    .enabled
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values
+                    .get(&entry.entry_id)
+                    .copied()
+                    .unwrap_or(true);
                 let mut row = serde_json::json!({
                     "entryId": entry.entry_id,
                     "moduleName": entry.module_name,
+                    "enabled": enabled,
                 });
                 match self.patch_id(entry) {
                     Ok(patch_id) => row["patchId"] = serde_json::json!(patch_id),
@@ -209,6 +370,92 @@ impl Registry {
             })
             .collect()
     }
+}
+
+fn compatibility_of(state: &Enablement) -> crate::boot::install::CompatibilityFile {
+    match profile_dir(state) {
+        Some(dir) => crate::boot::install::read_profile_compatibility(&dir),
+        None => state.compatibility.clone(),
+    }
+}
+
+fn profile_dir(state: &Enablement) -> Option<std::path::PathBuf> {
+    state
+        .store
+        .as_ref()
+        .and_then(|path| path.parent())
+        .map(std::path::Path::to_path_buf)
+        .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+fn store_compatibility(
+    state: &mut Enablement,
+    exemptions: &BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    if let Some(dir) = profile_dir(state) {
+        let path = dir.join(crate::boot::install::PROFILE_COMPATIBILITY_FILENAME);
+        let body = crate::boot::install::render_compatibility(exemptions);
+        return write_private(&path, body.as_bytes());
+    }
+    state.compatibility.exemptions = exemptions.clone();
+    state.compatibility.warnings.clear();
+    state.compatibility.rewritable = true;
+    Ok(())
+}
+
+fn write_private(path: &std::path::Path, body: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        use std::io::Write;
+        file.write_all(body).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+fn failed_exemption(target: &str, enabled: bool, diagnostic: &str) -> serde_json::Value {
+    serde_json::json!({
+        "changed": false,
+        "application": "failed",
+        "stage": "enable",
+        "target": target,
+        "enabled": enabled,
+        "error": { "code": "operation-error", "diagnostic": diagnostic },
+    })
+}
+
+fn failed_enable(id: &str, enabled: bool, code: &str) -> serde_json::Value {
+    serde_json::json!({
+        "changed": false,
+        "application": "failed",
+        "stage": "enable",
+        "target": id,
+        "enabled": enabled,
+        "error": { "code": code },
+    })
+}
+
+fn write_enablement(path: &std::path::Path, values: &BTreeMap<String, bool>) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(values).map_err(|error| error.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, body).map_err(|error| error.to_string())?;
+    std::fs::rename(&temporary, path).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -321,5 +568,141 @@ mod tests {
             .map(|e| e.entry_id.as_str())
             .collect();
         assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    fn manageable(id: &str) -> Registry {
+        let mut registry = Registry::new();
+        registry.insert(entry(id, "some-plugin"));
+        registry.push_row(row("some-plugin", "some-plugin", INCLUDE_ROOT));
+        registry
+    }
+
+    #[test]
+    fn disabling_a_plugin_is_saved_and_listed() {
+        let registry = manageable("e1");
+        let first = registry.set_plugin_enabled("e1", false);
+        assert_eq!(first["changed"], true);
+        assert_eq!(first["application"], "restart-required");
+        assert_eq!(first["restartReason"], "no-hmr");
+        assert_eq!(first["enabled"], false);
+        assert_eq!(registry.list()[0]["enabled"], false);
+
+        let again = registry.set_plugin_enabled("e1", false);
+        assert_eq!(again["changed"], false);
+        assert_eq!(again["application"], "restart-required");
+
+        let restored = registry.set_plugin_enabled("e1", true);
+        assert_eq!(restored["changed"], true);
+        assert_eq!(registry.list()[0]["enabled"], true);
+    }
+
+    #[test]
+    fn an_unknown_or_protected_plugin_is_not_changed() {
+        let registry = manageable("e1");
+        let missing = registry.set_plugin_enabled("missing", false);
+        assert_eq!(missing["application"], "failed");
+        assert_eq!(missing["error"]["code"], "unknown-plugin");
+
+        let mut protected = Registry::new();
+        protected.insert(entry("core", "@deepseek-ai/dsh"));
+        let refused = protected.set_plugin_enabled("core", false);
+        assert_eq!(refused["error"]["code"], "management-required");
+        assert_eq!(protected.list()[0]["enabled"], true);
+    }
+
+    #[test]
+    fn enablement_survives_a_new_registry() {
+        let dir = std::env::temp_dir().join(format!(
+            "girder-plugin-enable-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("plugin-enablement.json");
+        let mut registry = manageable("e1");
+        registry.load_enablement(&path);
+        assert_eq!(registry.set_plugin_enabled("e1", false)["changed"], true);
+
+        let mut restored = manageable("e1");
+        restored.load_enablement(&path);
+        assert_eq!(restored.list()[0]["enabled"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_exemption_needs_consent_and_this_runtime() {
+        let runtime = env!("CARGO_PKG_VERSION");
+        let registry = Registry::new();
+        let refused = registry.set_version_exemption("some-plugin@1.2.3", runtime, true, false);
+        assert_eq!(refused["application"], "failed");
+        assert!(
+            refused["error"]["diagnostic"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("acceptRisk"),
+            "{refused}"
+        );
+        let stale = registry.set_version_exemption("some-plugin@1.2.3", "9.9.9", true, true);
+        assert!(
+            stale["error"]["diagnostic"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("9.9.9"),
+            "{stale}"
+        );
+        let granted = registry.set_version_exemption("some-plugin@1.2.3", runtime, true, true);
+        assert_eq!(granted["changed"], true);
+        assert_eq!(granted["application"], "restart-required");
+        assert_eq!(granted["restartReason"], "no-hmr");
+        assert_eq!(
+            registry.version_exemptions()["exemptions"]["some-plugin@1.2.3"][0],
+            runtime
+        );
+        assert_eq!(
+            registry.set_version_exemption("some-plugin@1.2.3", runtime, true, true)["changed"],
+            false
+        );
+        assert_eq!(
+            registry.set_version_exemption("some-plugin@1.2.3", runtime, false, false)["changed"],
+            true
+        );
+        assert!(
+            registry.version_exemptions()["exemptions"]
+                .as_object()
+                .expect("map")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_damaged_compatibility_file_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!(
+            "girder-plugin-compat-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mut registry = Registry::new();
+        registry.load_enablement(dir.join("plugin-enablement.json"));
+        let path = dir.join("compatibility.json");
+        std::fs::write(&path, "{not json").expect("damaged");
+        let before = std::fs::read(&path).expect("read");
+        let refused = registry.set_version_exemption(
+            "some-plugin@1.2.3",
+            env!("CARGO_PKG_VERSION"),
+            true,
+            true,
+        );
+        assert_eq!(refused["application"], "failed");
+        assert_eq!(std::fs::read(&path).expect("unchanged"), before);
+        assert!(
+            !registry.version_exemptions()["warnings"]
+                .as_array()
+                .expect("warnings")
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

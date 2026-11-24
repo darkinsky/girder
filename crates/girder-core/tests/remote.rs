@@ -102,6 +102,9 @@ async fn list_marks_a_session_without_messages_as_blank() {
 
     assert_eq!(by_id("blank")["blank"], true);
     assert_eq!(by_id("with-message")["blank"], false);
+    assert_eq!(by_id("blank")["formatStatus"], "current");
+    assert_eq!(by_id("blank")["running"], false);
+    assert_eq!(by_id("blank")["agentAvailable"], false);
 }
 
 #[tokio::test]
@@ -282,6 +285,64 @@ async fn prompt_requires_a_session_id() {
     assert!(error.to_string().contains("sessionId"));
 }
 
+#[tokio::test]
+async fn prompt_accepts_the_browser_content_shape() {
+    let registry = default_registry(Arc::new(FixedCatalog(vec![])));
+    let args = json!({
+        "requestId": "req-1",
+        "sessionId": "s1",
+        "mode": "queue",
+        "content": [
+            {"type": "text", "text": "hello"},
+            {"type": "text", "text": "again"},
+        ],
+        "clientTimeZone": "Asia/Shanghai",
+    });
+
+    let value = registry
+        .dispatch("session", "prompt", call(args.clone()))
+        .await
+        .expect("a browser prompt must be accepted");
+    assert_eq!(value["accepted"], true);
+    assert_eq!(value["turn"], 1);
+
+    let replayed = registry
+        .dispatch("session", "prompt", call(args))
+        .await
+        .expect("the same request id is the same admission");
+    assert_eq!(replayed["turn"], 1);
+
+    let image = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({
+                "requestId": "req-2",
+                "sessionId": "s1",
+                "mode": "steer",
+                "content": [{"type": "image", "mediaType": "image/png", "data": "a"}],
+            })),
+        )
+        .await
+        .expect_err("an image part is not admitted");
+    assert_eq!(image.code(), "INVALID_ARGUMENTS");
+
+    let mode = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({
+                "requestId": "req-3",
+                "sessionId": "s1",
+                "mode": "interrupt",
+                "content": [{"type": "text", "text": "hello"}],
+            })),
+        )
+        .await
+        .expect_err("an unknown mode is refused");
+    assert!(mode.to_string().contains("mode"));
+}
+
 // ---- the registry itself ------------------------------------------------------------------------
 
 #[test]
@@ -344,6 +405,33 @@ async fn a_missing_directory_lists_nothing() {
 }
 
 #[tokio::test]
+async fn a_directory_catalog_wakes_when_a_log_is_written() {
+    let dir = std::env::temp_dir().join(format!(
+        "girder-catalog-wake-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis())
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog = DirectoryCatalog::new(&dir);
+    let Some(wake) = SessionCatalog::changes(&catalog) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let notified = wake.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    std::fs::write(dir.join("s1.jsonl.zst"), b"x").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), notified)
+        .await
+        .expect("the log write wakes the catalog");
+    drop(catalog);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn a_directory_of_logs_lists_one_row_per_file() {
     let dir = std::env::temp_dir().join(format!("girder-catalog-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -393,8 +481,8 @@ fn a_summary_reflects_whether_the_session_has_a_message() {
 
 #[test]
 fn a_summary_is_not_attached_to_a_live_agent() {
-    // This build keeps no agent registry, so claiming otherwise would make a client render a
-    // "running" indicator that can never update.
+    // A summary folded from events has no live agent. `session.list` overlays a runtime when one
+    // is running a turn.
     let summary = SessionSummary::from_events(
         "s",
         &[SessionEvent::TurnEnd {
@@ -526,6 +614,125 @@ async fn create_echoes_the_requested_preset() {
         .unwrap();
 
     assert_eq!(value["agentPreset"], "coding");
+}
+
+#[tokio::test]
+async fn create_records_an_absolute_cwd_on_the_list() {
+    let dir = std::env::temp_dir().join(format!("girder-create-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cwd = std::env::temp_dir()
+        .join(format!("girder-place-{}", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let registry = default_registry(Arc::clone(&catalog));
+
+    registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({"sessionId": "placed", "cwd": cwd})),
+        )
+        .await
+        .unwrap();
+    let listed = registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .unwrap();
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["sessionId"] == "placed")
+        .expect("created session");
+    assert_eq!(row["cwd"], cwd);
+    let header = girder_core::read_session_header(dir.join("placed.jsonl.zst"))
+        .expect("session header read")
+        .expect("session header");
+    assert_eq!(header["cwd"], cwd);
+
+    // A fresh catalog instance represents a process restart. The working directory must come
+    // from durable metadata rather than the in-memory placement index used by the first registry.
+    let restarted: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let restarted_registry = default_registry(Arc::clone(&restarted));
+    let listed_after_restart = restarted_registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .unwrap();
+    assert_eq!(listed_after_restart["items"][0]["cwd"], cwd);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn create_refuses_a_relative_cwd_and_a_mixed_location() {
+    let registry = default_registry(Arc::new(FixedCatalog(vec![])));
+    let relative = registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({"sessionId": "s", "cwd": "relative"})),
+        )
+        .await
+        .expect_err("a relative cwd does not name a directory");
+    assert_eq!(relative.code(), "INVALID_ARGUMENTS");
+
+    let mixed = registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({"sessionId": "s", "cwd": "/tmp", "workspaceId": "w"})),
+        )
+        .await
+        .expect_err("cwd and workspaceId cannot both be set");
+    assert!(mixed.to_string().contains("not both"), "{mixed}");
+}
+
+#[tokio::test]
+async fn create_attaches_a_session_to_its_workspace() {
+    let dir = std::env::temp_dir().join(format!("girder-create-ws-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let place = dir.join("project");
+    std::fs::create_dir_all(&place).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let mut registry = default_registry(Arc::clone(&catalog));
+    let places = Arc::new(std::sync::Mutex::new(girder_core::WorkspaceIndex::new()));
+    let workspaces = Arc::new(girder_core::WorkspaceRegistry::new());
+    workspaces
+        .register("w1", &place, None, 1)
+        .expect("workspace");
+    girder_core::bind_session_places(&mut registry, &catalog, &places, Some(&workspaces), None);
+
+    let value = registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({"sessionId": "in-ws", "workspaceId": "w1"})),
+        )
+        .await
+        .expect("workspace create");
+    assert_eq!(value["sessionId"], "in-ws");
+    let listed = registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .unwrap();
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["sessionId"] == "in-ws")
+        .expect("attached session");
+    assert_eq!(row["cwd"], place.to_string_lossy().as_ref());
+    let attached = workspaces.get("w1").expect("workspace remains");
+    assert!(attached.session_ids.iter().any(|id| id == "in-ws"));
+
+    let missing = registry
+        .dispatch("session", "create", call(json!({"workspaceId": "missing"})))
+        .await
+        .expect_err("unknown workspace");
+    assert!(missing.to_string().contains("not found"), "{missing}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -971,6 +1178,215 @@ async fn a_second_prompt_while_running_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+struct HoldingProvider {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: Arc<std::sync::atomic::AtomicBool>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl LlmProvider for HoldingProvider {
+    fn stream(
+        &self,
+        _request: LlmRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> girder_core::BoxFut<Result<girder_core::ChunkStream, LlmError>> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let entered = Arc::clone(&self.entered);
+        let release = Arc::clone(&self.release);
+        let chunks = vec![
+            StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".to_owned(),
+            },
+            StreamChunk::TextDelta {
+                index: 0,
+                text: "echoed".to_owned(),
+            },
+            StreamChunk::Finish {
+                reason: FinishReason::Stop,
+            },
+        ];
+        Box::pin(async move {
+            if call == 0 {
+                entered.store(true, std::sync::atomic::Ordering::Release);
+                release.notified().await;
+            }
+            Ok(Box::pin(futures::stream::iter(chunks)) as girder_core::ChunkStream)
+        })
+    }
+}
+
+async fn prompt_while_a_turn_is_held(mode: &str, second: &str) -> usize {
+    let dir = std::env::temp_dir().join(format!(
+        "girder-prompt-hold-{}-{}",
+        mode,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s").await.unwrap();
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(HoldingProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    });
+    let tools: Arc<dyn ToolRegistryView> = Arc::new(ToolRegistry::new());
+    let runtime = AgentRuntime::new(RuntimeConfig {
+        provider: Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        tools,
+        bus: Arc::new(EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 2,
+        token_budget: girder_core::Ceiling::Unlimited,
+    });
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s", "text": "one"})),
+        )
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !entered.load(std::sync::atomic::Ordering::Acquire)
+        && std::time::Instant::now() < deadline
+    {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        entered.load(std::sync::atomic::Ordering::Acquire),
+        "the turn must start"
+    );
+
+    let queued = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({
+                "requestId": "req-queued",
+                "sessionId": "s",
+                "mode": mode,
+                "content": [{"type": "text", "text": second}],
+            })),
+        )
+        .await
+        .expect("a browser prompt joins the running turn");
+    assert_eq!(queued["accepted"], true);
+    release.notify_one();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_running("s") && std::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+    let events = girder_core::read_session_file(dir.join("s.jsonl.zst")).unwrap();
+    let texts: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::UserMessage { message } => Some(message.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.iter().any(|text| text == "one"), "{texts:?}");
+    assert!(texts.iter().any(|text| text == second), "{texts:?}");
+    let calls = provider.calls.load(std::sync::atomic::Ordering::SeqCst);
+    let _ = std::fs::remove_dir_all(&dir);
+    calls
+}
+
+#[tokio::test]
+async fn a_running_session_is_marked_on_the_list() {
+    let dir = std::env::temp_dir().join(format!("girder-list-running-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s").await.unwrap();
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(HoldingProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    });
+    let tools: Arc<dyn ToolRegistryView> = Arc::new(ToolRegistry::new());
+    let runtime = AgentRuntime::new(RuntimeConfig {
+        provider,
+        tools,
+        bus: Arc::new(EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
+    });
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s", "text": "one"})),
+        )
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !entered.load(std::sync::atomic::Ordering::Acquire)
+        && std::time::Instant::now() < deadline
+    {
+        tokio::task::yield_now().await;
+    }
+    let listed = registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .unwrap();
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["sessionId"] == "s")
+        .expect("the session is listed");
+    assert_eq!(row["running"], true);
+    assert_eq!(row["agentAvailable"], true);
+    assert_eq!(row["formatStatus"], "current");
+    release.notify_one();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_running("s") && std::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+    let settled = registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .unwrap();
+    let row = settled["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["sessionId"] == "s")
+        .expect("the session remains listed");
+    assert_eq!(row["running"], false);
+    assert_eq!(row["agentAvailable"], false);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_queued_prompt_is_answered_after_the_running_turn() {
+    let calls = prompt_while_a_turn_is_held("queue", "later").await;
+    assert!(
+        calls >= 2,
+        "the queued prompt must reach the model, calls={calls}"
+    );
+}
+
+#[tokio::test]
+async fn a_steered_prompt_joins_the_running_turn() {
+    let calls = prompt_while_a_turn_is_held("steer", "steer me").await;
+    assert!(
+        calls >= 2,
+        "the steered prompt must reach the model, calls={calls}"
+    );
+}
+
 #[tokio::test]
 async fn the_runtime_clears_a_session_when_the_turn_ends() {
     // A failed or finished turn must not wedge the session.
@@ -1053,6 +1469,60 @@ async fn the_prompt_is_recorded_exactly_once() {
         "the prompt must appear once, got {prompts}: {events:?}"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_repeated_browser_request_id_is_admitted_once() {
+    let dir = std::env::temp_dir().join(format!("girder-prompt-id-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    catalog.create("s1").await.unwrap();
+    let runtime = runtime_with(
+        Arc::new(EchoProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        Arc::new(EventBus::new()),
+    );
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+    let args = json!({
+        "requestId": "req-once",
+        "sessionId": "s1",
+        "mode": "steer",
+        "content": [{"type": "text", "text": "from the browser"}],
+    });
+
+    let first = registry
+        .dispatch("session", "prompt", call(args.clone()))
+        .await
+        .expect("the first admission starts the turn");
+    assert_eq!(first["turn"], 1);
+    let second = registry
+        .dispatch("session", "prompt", call(args))
+        .await
+        .expect("the retry is the same admission");
+    assert_eq!(second["turn"], 1);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while runtime.is_running("s1") && std::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+    }
+    let events = girder_core::read_session_file(dir.join("s1.jsonl.zst")).unwrap();
+    let prompts = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                SessionEvent::UserMessage { message }
+                    if message.text() == "from the browser"
+            )
+        })
+        .count();
+    assert_eq!(
+        prompts, 1,
+        "a repeated request id must not write a second prompt"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1317,12 +1787,19 @@ async fn concurrent_creates_of_one_id_leave_one_session() {
     let files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("zst")
+        })
         .map(|entry| entry.file_name())
         .collect();
     assert_eq!(
         files.len(),
         1,
-        "eight creates must leave one file: {files:?}"
+        "eight creates must leave one session log: {files:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1351,9 +1828,20 @@ async fn concurrent_creates_all_return_the_same_id() {
     let files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("zst")
+        })
         .map(|entry| entry.file_name())
         .collect();
-    assert_eq!(files.len(), 1, "six racers must leave one log: {files:?}");
+    assert_eq!(
+        files.len(),
+        1,
+        "six racers must leave one session log: {files:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

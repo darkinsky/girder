@@ -204,6 +204,13 @@ pub struct SessionStateValue {
 pub trait LiveTurns: Send + Sync {
     /// Whether `session_id` has a turn in flight.
     fn is_running(&self, session_id: &str) -> bool;
+
+    /// Wakes after [`Self::is_running`] may have changed.
+    ///
+    /// `None` means the source cannot say when it changes, so the observer keeps a short poll.
+    fn changes(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 /// A closure is a source too, so a host whose lookup is one line need not write a type.
@@ -236,6 +243,11 @@ impl LiveTurns for NoLiveTurns {
 pub trait PendingInputs: Send + Sync {
     /// Kinds currently waiting on `session_id`, without duplicates.
     fn kinds(&self, session_id: &str) -> Vec<String>;
+
+    /// Wakes after [`Self::kinds`] may have changed.
+    fn changes(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 impl<F> PendingInputs for F
@@ -275,7 +287,15 @@ pub fn register_session_state_method(
     // reference, and the named binding is also what the doc above points a host at.
     let turns: Arc<dyn LiveTurns> = Arc::new(NoLiveTurns);
     let pending: Arc<dyn PendingInputs> = Arc::new(NoPendingInputs);
-    register_session_state_method_observing(registry, catalog, projections, &turns, &pending);
+    let queues = no_queues();
+    register_session_state_method_observing(
+        registry,
+        catalog,
+        projections,
+        &turns,
+        &pending,
+        &queues,
+    );
 }
 
 /// Registers `session.state`, asking `turns` whether a turn is in flight.
@@ -290,7 +310,15 @@ pub fn register_session_state_method_with(
     turns: &Arc<dyn LiveTurns>,
 ) {
     let pending: Arc<dyn PendingInputs> = Arc::new(NoPendingInputs);
-    register_session_state_method_observing(registry, catalog, projections, turns, &pending);
+    let queues = no_queues();
+    register_session_state_method_observing(
+        registry,
+        catalog,
+        projections,
+        turns,
+        &pending,
+        &queues,
+    );
 }
 
 /// Registers the session state methods and reads pending input from `pending`.
@@ -304,6 +332,7 @@ pub fn register_session_state_method_observing(
     projections: &Arc<ProjectionRegistry>,
     turns: &Arc<dyn LiveTurns>,
     pending: &Arc<dyn PendingInputs>,
+    queues: &Arc<dyn girder_core::QueueAgentSource>,
 ) {
     // One owned clone per registration, because each closure takes ownership of what it captures.
     // Named by endpoint rather than by index: five handlers read these and a `_2` suffix would not
@@ -314,6 +343,7 @@ pub fn register_session_state_method_observing(
     let wait_catalog = Arc::clone(catalog);
     let wait_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
     let wait_pending = Arc::clone(pending);
+    let wait_queues = Arc::clone(queues);
     let event_catalog = Arc::clone(catalog);
     let projection_registry = Arc::clone(projections);
     let projection_catalog = Arc::clone(catalog);
@@ -340,7 +370,8 @@ pub fn register_session_state_method_observing(
         let catalog = Arc::clone(&wait_catalog);
         let turns = Arc::clone(&wait_turns);
         let pending = Arc::clone(&wait_pending);
-        Box::pin(async move { session_wait(&call.args, &catalog, &turns, &pending).await })
+        let queues = Arc::clone(&wait_queues);
+        Box::pin(async move { session_wait(&call.args, &catalog, &turns, &pending, &queues).await })
     });
 
     // The three `observe*` endpoints keep unary compatibility handlers and also register live
@@ -385,11 +416,13 @@ pub fn register_session_state_method_observing(
     let state_stream_catalog = Arc::clone(catalog);
     let state_stream_turns: Arc<dyn LiveTurns> = Arc::clone(turns);
     let state_stream_pending = Arc::clone(pending);
+    let state_stream_queues = Arc::clone(queues);
     registry.register_stream(NAMESPACE, "observeState", move |open| {
         let catalog = Arc::clone(&state_stream_catalog);
         let turns = Arc::clone(&state_stream_turns);
         let pending = Arc::clone(&state_stream_pending);
-        Box::pin(async move { observe_state_stream(open, catalog, turns, pending).await })
+        let queues = Arc::clone(&state_stream_queues);
+        Box::pin(async move { observe_state_stream(open, catalog, turns, pending, queues).await })
     });
 
     // `session.control`: one baseline, then one projection frame per session whose keys changed.
@@ -435,6 +468,12 @@ pub fn register_session_state_method_observing(
             let mut cursors: BTreeMap<String, usize> = BTreeMap::new();
             let mut opened = false;
             loop {
+                let wake = catalog.changes();
+                let notified = wake.as_ref().map(|wake| wake.notified());
+                tokio::pin!(notified);
+                if let Some(waiting) = notified.as_mut().as_pin_mut() {
+                    waiting.enable();
+                }
                 let listed = catalog.list().await;
                 if !opened {
                     let mut blocks = serde_json::Map::new();
@@ -464,14 +503,8 @@ pub fn register_session_state_method_observing(
                 {
                     return;
                 }
-                tokio::select! {
-                    () = open.cancel.cancelled() => return,
-                    incoming = open.uplink.recv() => {
-                        if !matches!(incoming, Ok(Some(_))) {
-                            return;
-                        }
-                    }
-                    () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                if !wait_armed(&open, notified.as_mut().as_pin_mut()).await {
+                    return;
                 }
             }
         })
@@ -536,8 +569,14 @@ async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn Se
         return;
     }
     loop {
+        let wake = catalog.changes();
+        let notified = wake.as_ref().map(|wake| wake.notified());
+        tokio::pin!(notified);
+        if let Some(waiting) = notified.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
         let Some(record) = catalog.read(&session_id).await else {
-            if !wait_for_session(&open).await {
+            if !wait_armed(&open, notified.as_mut().as_pin_mut()).await {
                 return;
             }
             continue;
@@ -558,7 +597,7 @@ async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn Se
             cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
             continue;
         }
-        if !wait_for_session(&open).await {
+        if !wait_armed(&open, notified.as_mut().as_pin_mut()).await {
             return;
         }
     }
@@ -587,8 +626,14 @@ async fn observe_projections_stream(
         return;
     }
     loop {
+        let wake = catalog.changes();
+        let notified = wake.as_ref().map(|wake| wake.notified());
+        tokio::pin!(notified);
+        if let Some(waiting) = notified.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
         let Some(record) = catalog.read(&session_id).await else {
-            if !wait_for_session(&open).await {
+            if !wait_armed(&open, notified.as_mut().as_pin_mut()).await {
                 return;
             }
             continue;
@@ -614,7 +659,7 @@ async fn observe_projections_stream(
             cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
             continue;
         }
-        if !wait_for_session(&open).await {
+        if !wait_armed(&open, notified.as_mut().as_pin_mut()).await {
             return;
         }
     }
@@ -622,12 +667,23 @@ async fn observe_projections_stream(
 
 /// Park until the catalog may have changed, or until the caller closes the stream.
 ///
-/// Returns false when the stream should stop.
-async fn wait_for_session(open: &girder_core::StreamOpen) -> bool {
+/// `waiting` is enabled before the caller reads. A directory catalog wakes it from the file
+/// watch. A catalog without one falls back to a 50ms poll. Returns false when the stream should
+/// stop.
+async fn wait_armed(
+    open: &girder_core::StreamOpen,
+    waiting: Option<std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>>,
+) -> bool {
     tokio::select! {
         () = open.cancel.cancelled() => false,
         incoming = open.uplink.recv() => matches!(incoming, Ok(Some(_))),
-        () = tokio::time::sleep(std::time::Duration::from_millis(50)) => true,
+        () = async {
+            if let Some(waiting) = waiting {
+                waiting.await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        } => true,
     }
 }
 
@@ -636,6 +692,7 @@ async fn observe_state_stream(
     catalog: Arc<dyn SessionCatalog>,
     turns: Arc<dyn LiveTurns>,
     pending: Arc<dyn PendingInputs>,
+    queues: Arc<dyn girder_core::QueueAgentSource>,
 ) {
     let method = "observeState";
     let session_id = match girder_core::api::api_final::session_id_of(&open.call.args, method) {
@@ -645,7 +702,7 @@ async fn observe_state_stream(
             return;
         }
     };
-    let mut last = match passive_state(&session_id, &catalog, &turns, &pending).await {
+    let mut last = match passive_state(&session_id, &catalog, &turns, &pending, &queues).await {
         Ok(value) => value,
         Err(error) => {
             let _ = open.fail(error);
@@ -656,6 +713,39 @@ async fn observe_state_stream(
         return;
     }
     loop {
+        let (sources, poll) = activity_sources(
+            catalog.as_ref(),
+            turns.as_ref(),
+            pending.as_ref(),
+            queues.as_ref(),
+        );
+        let first = sources[0].as_ref().map(|wake| wake.notified());
+        let second = sources[1].as_ref().map(|wake| wake.notified());
+        let third = sources[2].as_ref().map(|wake| wake.notified());
+        let fourth = sources[3].as_ref().map(|wake| wake.notified());
+        tokio::pin!(first, second, third, fourth);
+        if let Some(waiting) = first.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        if let Some(waiting) = second.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        if let Some(waiting) = third.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        if let Some(waiting) = fourth.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        let current = match passive_state(&session_id, &catalog, &turns, &pending, &queues).await {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        if current != last {
+            last = current.clone();
+            if !open.push(current) {
+                return;
+            }
+        }
         tokio::select! {
             () = open.cancel.cancelled() => return,
             incoming = open.uplink.recv() => {
@@ -663,20 +753,47 @@ async fn observe_state_stream(
                     return;
                 }
             }
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                let current = match passive_state(&session_id, &catalog, &turns, &pending).await {
-                    Ok(value) => value,
-                    Err(_) => return,
-                };
-                if current != last {
-                    last = current.clone();
-                    if !open.push(current) {
-                        return;
-                    }
-                }
-            }
+            () = await_sources(
+                first.as_mut().as_pin_mut(),
+                second.as_mut().as_pin_mut(),
+                third.as_mut().as_pin_mut(),
+                fourth.as_mut().as_pin_mut(),
+                poll.then_some(std::time::Duration::from_millis(50)),
+            ) => {}
         }
     }
+}
+
+async fn await_sources(
+    first: Option<std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>>,
+    second: Option<std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>>,
+    third: Option<std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>>,
+    fourth: Option<std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>>,
+    limit: Option<std::time::Duration>,
+) {
+    tokio::select! {
+        () = async { if let Some(waiting) = first { waiting.await } else { std::future::pending().await } } => {}
+        () = async { if let Some(waiting) = second { waiting.await } else { std::future::pending().await } } => {}
+        () = async { if let Some(waiting) = third { waiting.await } else { std::future::pending().await } } => {}
+        () = async { if let Some(waiting) = fourth { waiting.await } else { std::future::pending().await } } => {}
+        () = async { if let Some(limit) = limit { tokio::time::sleep(limit).await } else { std::future::pending().await } } => {}
+    }
+}
+
+fn activity_sources(
+    catalog: &dyn SessionCatalog,
+    turns: &dyn LiveTurns,
+    pending: &dyn PendingInputs,
+    queues: &dyn girder_core::QueueAgentSource,
+) -> ([Option<Arc<tokio::sync::Notify>>; 4], bool) {
+    let sources = [
+        catalog.changes(),
+        turns.changes(),
+        pending.changes(),
+        queues.changes(),
+    ];
+    let poll = sources.iter().any(Option::is_none);
+    (sources, poll)
 }
 
 /// Default `session.wait` deadline when the caller omits `timeoutMs`.
@@ -693,8 +810,8 @@ const DEFAULT_MAX_MESSAGES: usize = 50;
 
 /// `session.wait`: sample until the session is idle, needs input, or the deadline lands.
 ///
-/// A running turn keeps the call open and is re-read every 50ms. This process has no separate
-/// attached-agent table, so a sample that is not running is already idle. The returned `state` is
+/// A running turn keeps the call open. Sources that can signal a change wake the wait; a source
+/// that cannot still falls back to a 50ms sample. The returned `state` is
 /// the passive snapshot, and `output.records` are assistant messages after `afterSeq` through that
 /// snapshot's cursor, newest first.
 async fn session_wait(
@@ -702,15 +819,39 @@ async fn session_wait(
     catalog: &Arc<dyn SessionCatalog>,
     turns: &Arc<dyn LiveTurns>,
     pending: &Arc<dyn PendingInputs>,
+    queues: &Arc<dyn girder_core::QueueAgentSource>,
 ) -> Result<Value, RemoteError> {
     let bounds = wait_bounds(args)?;
     let started = std::time::Instant::now();
     loop {
-        let state = passive_state(&bounds.session_id, catalog, turns, pending).await?;
+        let (sources, poll) = activity_sources(
+            catalog.as_ref(),
+            turns.as_ref(),
+            pending.as_ref(),
+            queues.as_ref(),
+        );
+        let first = sources[0].as_ref().map(|wake| wake.notified());
+        let second = sources[1].as_ref().map(|wake| wake.notified());
+        let third = sources[2].as_ref().map(|wake| wake.notified());
+        let fourth = sources[3].as_ref().map(|wake| wake.notified());
+        tokio::pin!(first, second, third, fourth);
+        if let Some(waiting) = first.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        if let Some(waiting) = second.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        if let Some(waiting) = third.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        if let Some(waiting) = fourth.as_mut().as_pin_mut() {
+            waiting.enable();
+        }
+        let state = passive_state(&bounds.session_id, catalog, turns, pending, queues).await?;
         if started.elapsed() >= bounds.timeout {
             return finish_wait("timeout", &state, catalog, &bounds).await;
         }
-        let pending = state
+        let needs_input = state
             .get("pendingInput")
             .and_then(Value::as_array)
             .is_some_and(|items| !items.is_empty());
@@ -724,7 +865,7 @@ async fn session_wait(
             .unwrap_or(false);
         let action =
             girder_core::session::wait::wait_action(girder_core::session::wait::WaitFacts {
-                pending_input: pending,
+                pending_input: needs_input,
                 running,
                 active,
             });
@@ -738,7 +879,19 @@ async fn session_wait(
             }
             girder_core::session::wait::WaitAction::Continue => {
                 let remaining = bounds.timeout.saturating_sub(started.elapsed());
-                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50))).await;
+                let limit = if poll {
+                    remaining.min(std::time::Duration::from_millis(50))
+                } else {
+                    remaining
+                };
+                await_sources(
+                    first.as_mut().as_pin_mut(),
+                    second.as_mut().as_pin_mut(),
+                    third.as_mut().as_pin_mut(),
+                    fourth.as_mut().as_pin_mut(),
+                    Some(limit),
+                )
+                .await;
             }
         }
     }
@@ -907,14 +1060,16 @@ fn assistant_output(
 /// The passive state a client reads from `session.observeState`.
 ///
 /// `cursor` is the inclusive 0-based last event sequence, and an empty log is `-1`.
-/// `active` is true only while a turn is running: this process has no separate "agent attached"
-/// table. `queue` is an empty list while a turn is running and null otherwise. `pendingInput`
-/// lists the kinds [`PendingInputs`] reports for this session.
+/// `active` is true while a turn is running or a live agent still holds the inbox. `queue` is
+/// that inbox — next-turn items as `queued`, next-step user input as `steering`, anything else
+/// as `context` — an empty list while a turn is running with nothing queued, and null when the
+/// session is idle. `pendingInput` lists the kinds [`PendingInputs`] reports for this session.
 async fn passive_state(
     session_id: &str,
     catalog: &Arc<dyn SessionCatalog>,
     turns: &Arc<dyn LiveTurns>,
     pending: &Arc<dyn PendingInputs>,
+    queues: &Arc<dyn girder_core::QueueAgentSource>,
 ) -> Result<Value, RemoteError> {
     let Some(record) = catalog.read(session_id).await else {
         return Err(RemoteError::Failed(format!(
@@ -926,13 +1081,58 @@ async fn passive_state(
         .and_then(|length| length.checked_sub(1))
         .unwrap_or(-1);
     let running = turns.is_running(session_id);
+    let agent = queues.agent(session_id);
     Ok(serde_json::json!({
         "cursor": cursor,
-        "active": running,
+        "active": running || agent.is_some(),
         "running": running,
-        "queue": if running { Value::Array(Vec::new()) } else { Value::Null },
+        "queue": queue_snapshot(agent.as_deref(), running),
         "pendingInput": pending.kinds(session_id),
     }))
+}
+
+/// A host that has not connected a live-agent table.
+fn no_queues() -> Arc<dyn girder_core::QueueAgentSource> {
+    Arc::new(|_: &str| None)
+}
+
+/// The inbox a client renders, in the order upstream reports it: next turn, then next step.
+fn queue_snapshot(agent: Option<&girder_core::Agent>, running: bool) -> Value {
+    let Some(agent) = agent else {
+        return if running {
+            Value::Array(Vec::new())
+        } else {
+            Value::Null
+        };
+    };
+    let inbox = agent.inbox_state();
+    if inbox.is_empty() {
+        return if running {
+            Value::Array(Vec::new())
+        } else {
+            Value::Null
+        };
+    }
+    let mut items = Vec::new();
+    for message in inbox.next_turn() {
+        items.push(queue_item(message, "queued"));
+    }
+    for message in inbox.next_step() {
+        let placement = match &message.source {
+            girder_core::MessageSource::User { .. } => "steering",
+            _ => "context",
+        };
+        items.push(queue_item(message, placement));
+    }
+    Value::Array(items)
+}
+
+fn queue_item(message: &girder_core::ChatMessage, placement: &str) -> Value {
+    serde_json::json!({
+        "id": message.id.as_str(),
+        "placement": placement,
+        "content": message.content,
+    })
 }
 
 /// Keys whose folded value changed, in key order.

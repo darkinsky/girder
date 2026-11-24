@@ -34,10 +34,9 @@
 //!    append to: the change lives in the live agent's memory and a restart loses it. Inventing an
 //!    event here would put a shape in every session log that no reader understands, so the gap is
 //!    reported instead (see [`QueueError::NoLiveAgent`]) and left for the log layer to close.
-//! 3. **`steer` is refused, not emulated.** Steering hands a message *into* a turn that is already
-//!    running. This build has no channel for that — [`crate::subagent::tools`] declines it for the
-//!    same reason — and editing the pending queue instead would deliver the text as a new turn, which
-//!    is a different promise to the user. [`QueueError::SteerUnavailable`] says so.
+//! 3. **`steer` moves the item onto the next step.** That is the queue [`crate::Agent::steer`]
+//!    drains between model steps. The item is removed from the next-turn queue first, because the
+//!    inbox rejects an id that is still queued. An item already on the next step is left there.
 //!
 //! # Why an item that has started is refused, and how it is told apart
 //!
@@ -51,9 +50,9 @@
 //!
 //! # Why the seams are parameters
 //!
-//! The crate has no registry mapping a session id to its live [`Agent`]: [`crate::AgentRuntime`]
-//! tracks cancellation tokens for running turns, not handles. [`QueueAgentSource`] is that missing
-//! lookup, and [`AgentQueueMap`] is a working one for hosts that keep their own map. Both are passed
+//! [`crate::AgentRuntime::live_agent`] is the handle for a turn that is in flight.
+//! [`QueueAgentSource`] is the same lookup for a host that keeps its own table, and
+//! [`AgentQueueMap`] is a working one. Both are passed
 //! in at registration, like every other `register_*` function here: the host decides which
 //! capabilities exist, and a module that reached for global state would decide for it — with the
 //! additional defect that two registries in one process would answer for different sets of sessions.
@@ -93,6 +92,11 @@ pub trait QueueAgentSource: Send + Sync {
     /// `None` means no agent is live. It does not mean the session is unknown — this build cannot
     /// reconstruct a queue from a log, so a cold session has no pending input at all.
     fn agent(&self, session_id: &str) -> Option<Arc<Agent>>;
+
+    /// Wakes after a live inbox may have changed.
+    fn changes(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 /// A closure is a source too, so a host with one line of lookup need not write a type.
@@ -238,18 +242,12 @@ pub enum QueueError {
 
     /// The item has already begun executing, so it is no longer a queue edit.
     #[error(
-        "`{item_id}` has already started executing; changing it after the model has seen it is steering, which this build has no channel for"
+        "`{item_id}` has already started executing; changing it after the model has seen it is steering, and the text is already on the model-visible surface"
     )]
     AlreadyStarted {
         /// The id that was asked for.
         item_id: String,
     },
-
-    /// Steering was requested and this build cannot do it.
-    #[error(
-        "steering is unavailable in this build: there is no channel that injects a message into a turn that is already running"
-    )]
-    SteerUnavailable,
 
     /// The replacement content held a block that is not text.
     #[error("queue edits accept text content only; the request carried a `{kind}` block")]
@@ -411,7 +409,9 @@ async fn update_queue(
             replace_pending(&agent, target, index, &request.item_id, None)
                 .map_err(QueueError::into_remote)?;
         }
-        QueueAction::Steer => return Err(QueueError::SteerUnavailable.into_remote()),
+        QueueAction::Steer => {
+            steer_pending(&agent, target, index, &request.item_id)?;
+        }
     }
 
     // Upstream's receipt: an acknowledgement, not a copy of the queue. A client that rendered the
@@ -484,6 +484,46 @@ async fn started(catalog: &Arc<dyn SessionCatalog>, session_id: &str, item_id: &
         SessionEvent::UserMessage { message } => message.id.as_str() == item_id,
         _ => false,
     })
+}
+
+/// Moves a pending item onto the next model step.
+///
+/// An item already on that step is left where it is: steering it again would duplicate the
+/// prompt. An item waiting for the next turn is removed first and then inserted at the front of
+/// the next-step queue, which is where [`Splice::append`] and [`Agent::steer`] place new input.
+/// The inbox rejects an id that is still queued, so the removal has to land first. A failed
+/// insert puts the item back on the turn queue so a refused steer does not drop the user's text.
+fn steer_pending(
+    agent: &Agent,
+    target: InboxTarget,
+    index: usize,
+    item_id: &str,
+) -> Result<(), RemoteError> {
+    if target == InboxTarget::NextStep {
+        return Ok(());
+    }
+    let pending = agent.inbox_state();
+    let message = queue_of(&pending, target)
+        .get(index)
+        .cloned()
+        .ok_or_else(|| {
+            QueueError::NotPending {
+                item_id: item_id.to_owned(),
+            }
+            .into_remote()
+        })?;
+    replace_pending(agent, target, index, item_id, None).map_err(QueueError::into_remote)?;
+    if let Err(error) = agent.splice_inbox(&Splice::append(
+        InboxTarget::NextStep,
+        vec![message.clone()],
+    )) {
+        let _ = agent.splice_inbox(&Splice::append(target, vec![message]));
+        return Err(QueueError::Inbox {
+            reason: error.to_string(),
+        }
+        .into_remote());
+    }
+    Ok(())
 }
 
 /// Replaces or removes one entry, and proves it changed the entry that was asked for.

@@ -79,6 +79,9 @@ async fn follow_stream(open: girder_core::StreamOpen, jobs: Arc<JobRegistry>) {
     }
 
     loop {
+        let notified = jobs.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         let job = match jobs.get(&job_id) {
             Ok(job) => job,
             Err(_) => return,
@@ -119,7 +122,7 @@ async fn follow_stream(open: girder_core::StreamOpen, jobs: Arc<JobRegistry>) {
                     return;
                 }
             }
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            () = notified => {}
         }
     }
 }

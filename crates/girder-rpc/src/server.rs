@@ -258,6 +258,10 @@ pub struct RpcServer {
     browser_auth: Option<Arc<crate::BrowserAuth>>,
     /// Waterfall results shared by the WebSocket event stream and `/api` RPC.
     event_pending: crate::mux::PendingEvents,
+    /// gzip level and minimum body size, when this listener compresses responses.
+    gzip: Option<(u8, usize)>,
+    /// PEM certificate chain and private key, when this listener speaks HTTPS.
+    tls: Option<(String, String)>,
 }
 
 impl RpcServer {
@@ -273,7 +277,9 @@ impl RpcServer {
             local_owner: false,
             static_frontend: None,
             browser_auth: None,
-            event_pending: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            event_pending: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
+            gzip: None,
+            tls: None,
         }
     }
 
@@ -356,6 +362,23 @@ impl RpcServer {
         self
     }
 
+    /// Compresses eligible HTTP responses when the client accepts gzip.
+    ///
+    /// `level` is the DEFLATE level, 0 through 9. `threshold` is the smallest body that is worth
+    /// compressing. WebSocket upgrades stay uncompressed.
+    #[must_use]
+    pub fn with_gzip(mut self, level: u8, threshold: usize) -> Self {
+        self.gzip = Some((level, threshold));
+        self
+    }
+
+    /// Serves this listener over HTTPS with a PEM certificate chain and its private key.
+    #[must_use]
+    pub fn with_tls(mut self, cert_pem: impl Into<String>, key_pem: impl Into<String>) -> Self {
+        self.tls = Some((cert_pem.into(), key_pem.into()));
+        self
+    }
+
     /// Builds the axum router.
     ///
     /// The mux route is upstream's exact path; a second WebSocket path would let a client connect to
@@ -380,8 +403,74 @@ impl RpcServer {
         if self.static_frontend.is_some() {
             router = router.fallback(static_frontend);
         }
+        if let Some((level, threshold)) = self.gzip {
+            router = router.layer(axum::middleware::from_fn(move |request, next| {
+                gzip_http_response(level, threshold, request, next)
+            }));
+        }
         router.with_state(self)
     }
+}
+
+/// Buffers one finished HTTP response and gzips it when the client and the body both allow it.
+async fn gzip_http_response(
+    level: u8,
+    threshold: usize,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let accept = request
+        .headers()
+        .get(axum::http::header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let response = next.run(request).await;
+    if response.status() == StatusCode::SWITCHING_PROTOCOLS
+        || response
+            .headers()
+            .contains_key(axum::http::header::CONTENT_ENCODING)
+    {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let content_type = parts
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let content_range = parts
+        .headers
+        .get(axum::http::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024 * 1024).await else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "response exceeded the gzip buffer",
+        )
+            .into_response();
+    };
+    let decision = girder_core::host::webserver::apply_gzip(
+        &accept,
+        content_type.as_deref(),
+        content_range.as_deref(),
+        bytes.to_vec(),
+        level,
+        threshold,
+    );
+    if decision.content_encoding.is_some() {
+        parts.headers.insert(
+            axum::http::header::CONTENT_ENCODING,
+            axum::http::HeaderValue::from_static("gzip"),
+        );
+        parts.headers.insert(
+            axum::http::header::VARY,
+            axum::http::HeaderValue::from_static("Accept-Encoding"),
+        );
+        parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    }
+    Response::from_parts(parts, axum::body::Body::from(decision.body))
 }
 
 /// The largest request body the invoke endpoint accepts, and the largest WebSocket message.
@@ -1339,7 +1428,10 @@ pub async fn serve_with(
     remote: Option<Arc<girder_core::RemoteRegistry>>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
-    serve_with_options(listener, bus, watch, remote, None, None, None, cancel).await
+    serve_with_options(
+        listener, bus, watch, remote, None, None, None, None, None, cancel,
+    )
+    .await
 }
 
 /// Serves with peer identity enforced.
@@ -1368,6 +1460,8 @@ pub async fn serve_with_peers(
         Some(directory),
         None,
         None,
+        None,
+        None,
         cancel,
     )
     .await
@@ -1387,6 +1481,8 @@ pub async fn serve_with_options(
     directory: Option<Arc<girder_core::api::gateway::PeerDirectory>>,
     static_frontend: Option<girder_core::host::webserver::StaticConfig>,
     browser_auth: Option<Arc<crate::BrowserAuth>>,
+    gzip: Option<(u8, usize)>,
+    tls: Option<(String, String)>,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
     let mut server = RpcServer::new(bus).watching(watch);
@@ -1402,6 +1498,12 @@ pub async fn serve_with_options(
     if let Some(browser_auth) = browser_auth {
         server = server.with_browser_auth(browser_auth);
     }
+    if let Some((level, threshold)) = gzip {
+        server = server.with_gzip(level, threshold);
+    }
+    if let Some((cert_pem, key_pem)) = tls {
+        server = server.with_tls(cert_pem, key_pem);
+    }
     serve_server(listener, server, cancel).await
 }
 
@@ -1411,9 +1513,18 @@ async fn serve_server(
     server: RpcServer,
     cancel: CancellationToken,
 ) -> std::io::Result<()> {
-    axum::serve(listener, server.router())
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
-        .await
+    let tls = server.tls.clone();
+    let router = server.router();
+    if let Some((cert_pem, key_pem)) = tls {
+        let listener = crate::tls::TlsListener::new(listener, &cert_pem, &key_pem)?;
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move { cancel.cancelled().await })
+            .await
+    } else {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move { cancel.cancelled().await })
+            .await
+    }
 }
 
 /// Forwards bus dispatches to a client as `emit` frames.

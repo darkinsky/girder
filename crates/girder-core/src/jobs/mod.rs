@@ -381,6 +381,8 @@ pub const SETTLED_KEPT: usize = 64;
 pub struct JobRegistry {
     jobs: std::sync::Mutex<std::collections::BTreeMap<String, Job>>,
     ring_bytes: u64,
+    /// Wakes readers after a job is added, written, stopped, settled, or forgotten.
+    changed: tokio::sync::Notify,
 }
 
 impl JobRegistry {
@@ -390,7 +392,20 @@ impl JobRegistry {
         Self {
             jobs: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             ring_bytes,
+            changed: tokio::sync::Notify::new(),
         }
+    }
+
+    /// Resolves when the registry next changes.
+    ///
+    /// Enable the returned future before reading. A change that lands after that registration
+    /// wakes the future; a change that lands earlier is visible in the read itself.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
+
+    fn wake(&self) {
+        self.changed.notify_waiters();
     }
 
     /// Registers a running job.
@@ -422,24 +437,28 @@ impl JobRegistry {
         label: impl Into<String>,
         owner: Option<&str>,
     ) -> Result<Job, JobError> {
-        let mut jobs = self.lock();
-        if let Some(existing) = jobs.get(id.as_str()) {
-            return Err(JobError::AlreadySettled {
-                id: id.to_string(),
-                status: existing.status.as_str(),
-            });
-        }
-        let job = Job {
-            id: id.clone(),
-            kind: kind.into(),
-            label: label.into(),
-            status: Status::Running,
-            output: OutputRing::new(self.ring_bytes),
-            code: None,
-            settled_at: None,
-            owner: owner.filter(|value| !value.is_empty()).map(str::to_owned),
+        let job = {
+            let mut jobs = self.lock();
+            if let Some(existing) = jobs.get(id.as_str()) {
+                return Err(JobError::AlreadySettled {
+                    id: id.to_string(),
+                    status: existing.status.as_str(),
+                });
+            }
+            let job = Job {
+                id: id.clone(),
+                kind: kind.into(),
+                label: label.into(),
+                status: Status::Running,
+                output: OutputRing::new(self.ring_bytes),
+                code: None,
+                settled_at: None,
+                owner: owner.filter(|value| !value.is_empty()).map(str::to_owned),
+            };
+            jobs.insert(id.to_string(), job.clone());
+            job
         };
-        jobs.insert(id.to_string(), job.clone());
+        self.wake();
         Ok(job)
     }
 
@@ -455,18 +474,21 @@ impl JobRegistry {
         text: impl Into<String>,
         channel: Channel,
     ) -> Result<(), JobError> {
-        let mut jobs = self.lock();
-        let job = jobs
-            .get_mut(id)
-            .ok_or_else(|| JobError::NotFound { id: id.to_owned() })?;
-        if job.is_settled() {
-            return Err(JobError::WrongState {
-                id: id.to_owned(),
-                operation: "append",
-                status: job.status.as_str(),
-            });
+        {
+            let mut jobs = self.lock();
+            let job = jobs
+                .get_mut(id)
+                .ok_or_else(|| JobError::NotFound { id: id.to_owned() })?;
+            if job.is_settled() {
+                return Err(JobError::WrongState {
+                    id: id.to_owned(),
+                    operation: "append",
+                    status: job.status.as_str(),
+                });
+            }
+            job.output.append(text, channel);
         }
-        job.output.append(text, channel);
+        self.wake();
         Ok(())
     }
 
@@ -480,21 +502,27 @@ impl JobRegistry {
     ///
     /// Returns [`JobError::AlreadySettled`] or [`JobError::WrongState`].
     pub fn request_stop(&self, id: &str) -> Result<Job, JobError> {
-        let mut jobs = self.lock();
-        let job = jobs
-            .get_mut(id)
-            .ok_or_else(|| JobError::NotFound { id: id.to_owned() })?;
-        match job.status {
-            Status::Running => {
-                job.status = Status::Stopping;
-                Ok(job.clone())
+        let job = {
+            let mut jobs = self.lock();
+            let job = jobs
+                .get_mut(id)
+                .ok_or_else(|| JobError::NotFound { id: id.to_owned() })?;
+            match job.status {
+                Status::Running => {
+                    job.status = Status::Stopping;
+                    job.clone()
+                }
+                Status::Stopping => return Ok(job.clone()),
+                status => {
+                    return Err(JobError::AlreadySettled {
+                        id: id.to_owned(),
+                        status: status.as_str(),
+                    });
+                }
             }
-            Status::Stopping => Ok(job.clone()),
-            status => Err(JobError::AlreadySettled {
-                id: id.to_owned(),
-                status: status.as_str(),
-            }),
-        }
+        };
+        self.wake();
+        Ok(job)
     }
 
     /// Records that a job finished on its own.
@@ -540,19 +568,23 @@ impl JobRegistry {
         code: Option<i32>,
         now: u64,
     ) -> Result<Job, JobError> {
-        let mut jobs = self.lock();
-        let job = jobs
-            .get_mut(id)
-            .ok_or_else(|| JobError::NotFound { id: id.to_owned() })?;
-        if job.is_settled() {
-            // A terminal state is final: a second settle would rewrite history a reader already saw.
-            return Err(JobError::AlreadySettled {
-                id: id.to_owned(),
-                status: job.status.as_str(),
-            });
-        }
-        job.settle(status, code, now);
-        Ok(job.clone())
+        let job = {
+            let mut jobs = self.lock();
+            let job = jobs
+                .get_mut(id)
+                .ok_or_else(|| JobError::NotFound { id: id.to_owned() })?;
+            if job.is_settled() {
+                // A terminal state is final: a second settle would rewrite history a reader already saw.
+                return Err(JobError::AlreadySettled {
+                    id: id.to_owned(),
+                    status: job.status.as_str(),
+                });
+            }
+            job.settle(status, code, now);
+            job.clone()
+        };
+        self.wake();
+        Ok(job)
     }
 
     /// Reads a job.
@@ -597,17 +629,23 @@ impl JobRegistry {
     /// A running job is never removed whatever its age, because removing it would make a job a client is watching
     /// disappear. `now` is passed rather than read so a caller can decide what "old" means and a test can state it.
     pub fn retain_recent(&self, now: u64, older_than_ms: u64) -> usize {
-        let mut jobs = self.lock();
-        let before = jobs.len();
-        jobs.retain(|_, job| {
-            // `is_settled` is the test, not the status name: a job that is stopping has not stopped, and dropping it
-            // while it is still winding down would hide the outcome a client is waiting for.
-            !job.is_settled()
-                || job
-                    .settled_at
-                    .is_none_or(|settled| now.saturating_sub(settled) <= older_than_ms)
-        });
-        before - jobs.len()
+        let removed = {
+            let mut jobs = self.lock();
+            let before = jobs.len();
+            jobs.retain(|_, job| {
+                // `is_settled` is the test, not the status name: a job that is stopping has not stopped, and dropping it
+                // while it is still winding down would hide the outcome a client is waiting for.
+                !job.is_settled()
+                    || job
+                        .settled_at
+                        .is_none_or(|settled| now.saturating_sub(settled) <= older_than_ms)
+            });
+            before - jobs.len()
+        };
+        if removed > 0 {
+            self.wake();
+        }
+        removed
     }
 
     /// Forgets at most `keep` settled jobs, oldest first, returning how many were removed.
@@ -631,6 +669,8 @@ impl JobRegistry {
         for (_, id) in settled.into_iter().take(remove) {
             jobs.remove(&id);
         }
+        drop(jobs);
+        self.wake();
         remove
     }
 
@@ -781,22 +821,44 @@ pub fn spawn_job_owned(
 
 /// Resolves once a job has been asked to stop.
 ///
-/// Polling rather than a channel: the registry is the shared state and adding a notification channel
-/// would give the stop path a second source of truth. The interval is short enough that a kill feels
-/// immediate and long enough not to spin.
+/// The registry remains the state. The notify only wakes this read; it does not carry a second copy
+/// of the stop.
 async fn wait_for_stop(registry: &JobRegistry, id: &JobId) {
     loop {
+        let notified = registry.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if registry
             .get(&id.to_string())
             .is_ok_and(|job| job.status == Status::Stopping)
         {
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        notified.await;
     }
 }
 
 /// The current time in milliseconds since the epoch.
+#[cfg(test)]
+mod tests {
+    use super::{Channel, JobId, JobRegistry};
+
+    #[tokio::test]
+    async fn appending_output_wakes_a_waiter() {
+        let jobs = JobRegistry::new(1024);
+        let id = JobId::new("job-1").expect("id");
+        jobs.register(&id, "test", "label").expect("register");
+        let waiting = jobs.notified();
+        tokio::pin!(waiting);
+        waiting.as_mut().enable();
+        jobs.append("job-1", "hello", Channel::Stdout)
+            .expect("append");
+        tokio::time::timeout(std::time::Duration::from_millis(200), waiting)
+            .await
+            .expect("the append wakes the waiter");
+    }
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

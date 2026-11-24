@@ -337,6 +337,8 @@ pub struct Agent {
     selection: std::sync::Mutex<ModelSelectionState>,
     inbox: std::sync::Mutex<crate::api::inbox::Inbox>,
     cancel: tokio_util::sync::CancellationToken,
+    /// Wakes passive session observers after the inbox changes.
+    activity: std::sync::Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -357,6 +359,28 @@ impl Agent {
             selection: std::sync::Mutex::new(selection),
             inbox: std::sync::Mutex::new(crate::api::inbox::Inbox::new()),
             cancel: tokio_util::sync::CancellationToken::new(),
+            activity: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Forwards inbox changes to `wake`.
+    ///
+    /// The runtime binds the agent it starts. A queue edit then wakes `observeState` without a poll.
+    pub fn bind_activity(&self, wake: std::sync::Arc<tokio::sync::Notify>) {
+        *self
+            .activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    }
+
+    fn poke(&self) {
+        if let Some(wake) = self
+            .activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            wake.notify_waiters();
         }
     }
 
@@ -419,7 +443,9 @@ impl Agent {
         &self,
         splice: &crate::api::inbox::Splice,
     ) -> Result<crate::api::inbox::Inbox, crate::api::inbox::InboxError> {
-        self.lock_inbox().apply(splice)
+        let applied = self.lock_inbox().apply(splice)?;
+        self.poke();
+        Ok(applied)
     }
 
     /// The pending inbox state, as a detached copy.
@@ -434,7 +460,11 @@ impl Agent {
     /// detached copy and leaves the agent's queue untouched, so a loop that used it would read the
     /// same messages on every turn and never make progress.
     pub fn take_queued_turn(&self) -> Vec<crate::session::message::Message> {
-        self.lock_inbox().take_turn()
+        let taken = self.lock_inbox().take_turn();
+        if !taken.is_empty() {
+            self.poke();
+        }
+        taken
     }
 
     /// Queues a message to be seen at the next step boundary.
@@ -450,7 +480,10 @@ impl Agent {
             crate::api::inbox::Target::NextStep,
             vec![message],
         ));
-        inbox.len()
+        let len = inbox.len();
+        drop(inbox);
+        self.poke();
+        len
     }
 
     /// Queues a message for the turn after this one.
@@ -464,12 +497,19 @@ impl Agent {
             crate::api::inbox::Target::NextTurn,
             vec![message],
         ));
-        inbox.len()
+        let len = inbox.len();
+        drop(inbox);
+        self.poke();
+        len
     }
 
     /// Takes the queued next-step messages, emptying that queue.
     pub fn take_queued_step(&self) -> Vec<crate::session::message::Message> {
-        self.lock_inbox().take_step()
+        let taken = self.lock_inbox().take_step();
+        if !taken.is_empty() {
+            self.poke();
+        }
+        taken
     }
 
     /// Cancels the current turn.
@@ -482,6 +522,8 @@ impl Agent {
             let mut inbox = self.lock_inbox();
             let _ = inbox.take_turn();
             let _ = inbox.take_step();
+            drop(inbox);
+            self.poke();
         }
     }
 

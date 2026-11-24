@@ -24,12 +24,14 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::core::agent::{Agent, AgentOptions, AgentSpec};
 use crate::core::agent_loop::{LoopContext, LoopStep};
 use crate::core::events::{Event, EventBus};
 use crate::core::tools::ToolRegistryView;
 use crate::llm::{ContentBlock, FinishReason, LlmProvider, StreamChunk};
+use crate::session::message::{Message, MessageSource, Role};
 use crate::session::{Session, SessionEvent};
-use crate::util::brand::AgentId;
+use crate::util::brand::{AgentId, MessageId, SessionId};
 
 /// A step the runtime publishes as it runs a turn.
 ///
@@ -133,9 +135,35 @@ pub struct RuntimeConfig {
     pub token_budget: crate::util::limits::Ceiling,
 }
 
+fn user_prompt(turn: u64, text: &str) -> Message {
+    prompt_message(&format!("msg-{turn}"), text)
+}
+
+fn queued_prompt(text: &str) -> Message {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    prompt_message(&format!("msg-q-{n}"), text)
+}
+
+fn prompt_message(id: &str, text: &str) -> Message {
+    Message::new(
+        MessageId::new(id)
+            .unwrap_or_else(|_| MessageId::new("msg-0").expect("a constant id is valid")),
+        Role::User,
+        MessageSource::User { form: None },
+        vec![ContentBlock::Text {
+            text: text.to_owned(),
+        }],
+    )
+}
+
 /// A running turn.
 struct Running {
     cancel: CancellationToken,
+    /// The inbox a later `queue` or `steer` prompt writes while this turn is in flight.
+    agent: std::sync::Arc<Agent>,
+    /// The turn number already given to the client.
+    turn: u64,
 }
 
 /// Runs prompts against sessions.
@@ -147,6 +175,8 @@ pub struct AgentRuntime {
     /// Whether the route accepts image input, read from its declared modalities.
     accepts_images: bool,
     config: RuntimeConfig,
+    /// Sessions whose tool execution is waiting for an approval decision.
+    pending_approvals: Arc<Mutex<std::collections::BTreeSet<String>>>,
     /// Where an oversized tool result is saved, when this deployment has storage for it.
     spill: Option<Arc<dyn crate::spill::Store>>,
     /// How many bytes a tool result may carry before it is spilled.
@@ -180,6 +210,8 @@ pub struct AgentRuntime {
     goal: Option<Arc<std::sync::Mutex<crate::goal::GoalState>>>,
     /// One running turn per session id.
     running: Mutex<BTreeMap<String, Running>>,
+    /// Wakes `observeState` and `session.wait` after a turn, approval, or inbox change.
+    activity: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// How many read results one conversation remembers.
@@ -267,6 +299,8 @@ impl AgentRuntime {
         Arc::new(Self {
             config,
             running: Mutex::new(BTreeMap::new()),
+            activity: std::sync::Arc::new(tokio::sync::Notify::new()),
+            pending_approvals: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
             spill,
             spill_limit,
             goal,
@@ -439,6 +473,25 @@ impl AgentRuntime {
         self.lock().contains_key(session_id)
     }
 
+    /// The signal a passive observer waits on.
+    #[must_use]
+    pub fn activity(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.activity)
+    }
+
+    fn poke(&self) {
+        self.activity.notify_waiters();
+    }
+
+    /// Whether a tool in `session_id` is waiting for an approval decision.
+    #[must_use]
+    pub fn has_pending_approval(&self, session_id: &str) -> bool {
+        self.pending_approvals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(session_id)
+    }
+
     /// Starts a turn for `session_id`, returning the turn number once the loop has been spawned.
     ///
     /// The user message is written before the loop starts, so a replay shows the prompt even if the
@@ -455,6 +508,13 @@ impl AgentRuntime {
         text: &str,
         session: Arc<dyn Session>,
     ) -> Result<u64, RuntimeError> {
+        let agent = std::sync::Arc::new(Agent::new(AgentSpec::root(
+            SessionId::new(session_id).unwrap_or_else(|_| {
+                SessionId::new("invalid-session-id").expect("a constant id is valid")
+            }),
+            AgentOptions::default(),
+        )));
+        agent.bind_activity(std::sync::Arc::clone(&this.activity));
         // Taken and released before the await: the lock must not be held across a write, and the
         // check-then-insert must be atomic or two prompts could both see "idle".
         {
@@ -468,9 +528,12 @@ impl AgentRuntime {
                 session_id.to_owned(),
                 Running {
                     cancel: CancellationToken::new(),
+                    agent: std::sync::Arc::clone(&agent),
+                    turn: 0,
                 },
             );
         }
+        this.poke();
 
         // The turn number counts *user messages*, not `TurnStart` records.
         //
@@ -484,23 +547,25 @@ impl AgentRuntime {
             .count() as u64
             + 1;
 
-        let prompt = crate::session::message::Message::new(
-            crate::util::brand::MessageId::new(format!("msg-{turn}")).unwrap_or_else(|_| {
-                crate::util::brand::MessageId::new("msg-0").expect("constant is valid")
-            }),
-            crate::session::message::Role::User,
-            crate::session::message::MessageSource::User { form: None },
-            vec![ContentBlock::Text {
-                text: text.to_owned(),
-            }],
-        );
+        if let Some(running) = this.lock().get_mut(session_id) {
+            running.turn = turn;
+        }
+        let prompt = user_prompt(turn, text);
         // Written before the loop is spawned, which means `user/message` precedes `turn/start` --
         // upstream opens the turn first. The order is chosen deliberately: a prompt that reached the
         // server must survive a crash before the model answered, and a `turn/start` with no message
         // would then be a turn that began for nothing.
-        session
+        if let Err(error) = session
             .append(SessionEvent::UserMessage { message: prompt })
-            .await?;
+            .await
+        {
+            // Admission reserved the session before writing. Release that reservation when the
+            // durable prompt cannot be recorded, otherwise every later prompt would see a ghost
+            // turn forever.
+            this.lock().remove(session_id);
+            this.poke();
+            return Err(error.into());
+        }
         // The list name, from the opening the user just sent. A later prompt finds the record and
         // leaves it; a rename stored beside the log still wins when the catalog is read.
         crate::session::title::record_opening_title(session.as_ref()).await?;
@@ -523,13 +588,46 @@ impl AgentRuntime {
         let text = text.to_owned();
         tokio::spawn(async move {
             runtime
-                .drive(&session_id, text, session, cancel, turn)
+                .drive(&session_id, text, session, cancel, turn, agent)
                 .await;
             // Cleared however the turn ended, so a failed turn does not wedge the session forever.
             runtime.lock().remove(&session_id);
+            runtime.poke();
         });
 
         Ok(turn)
+    }
+
+    /// The agent holding the session's inbox, while a turn is in flight.
+    ///
+    /// Queue edits and the passive state snapshot read this handle. It disappears when the turn
+    /// is reaped, which is the same moment [`Self::enqueue`] starts returning `None`.
+    #[must_use]
+    pub fn live_agent(&self, session_id: &str) -> Option<std::sync::Arc<Agent>> {
+        self.lock()
+            .get(session_id)
+            .map(|running| std::sync::Arc::clone(&running.agent))
+    }
+
+    /// Puts a prompt on the running turn's inbox.
+    ///
+    /// `steer` joins the next model step. Otherwise the prompt waits for the next turn. Returns the
+    /// turn number the queued prompt will run as, or `None` when the session is idle and the caller
+    /// should start a turn instead.
+    pub fn enqueue(&self, session_id: &str, text: &str, steer: bool) -> Option<u64> {
+        let running = self.lock();
+        let running = running.get(session_id)?;
+        let message = queued_prompt(text);
+        let depth = if steer {
+            running.agent.steer(message)
+        } else {
+            running.agent.followup(message)
+        };
+        Some(
+            running
+                .turn
+                .saturating_add(u64::try_from(depth).unwrap_or(1)),
+        )
     }
 
     /// Cancels a running turn, returning whether one was running.
@@ -552,6 +650,7 @@ impl AgentRuntime {
         session: Arc<dyn Session>,
         cancel: CancellationToken,
         first_turn: u64,
+        agent: std::sync::Arc<Agent>,
     ) {
         let mut context = LoopContext::new(
             Arc::clone(&self.config.provider),
@@ -585,6 +684,8 @@ impl AgentRuntime {
         context.approver = self.approver.clone();
         context.approval_rules = self.approval_rules.clone();
         context.permissions = self.permissions.clone();
+        context.pending_approvals = Some(Arc::clone(&self.pending_approvals));
+        context.activity = Some(std::sync::Arc::clone(&self.activity));
         context.working_directory = self.working_directory.clone();
         if let Some(store) = self.tool_settings.clone() {
             context = context.with_tool_budget(store);
@@ -603,6 +704,7 @@ impl AgentRuntime {
         context.record_prompt = false;
         // The turn the client was told about, so the log agrees with the answer it already received.
         context.first_turn = first_turn;
+        context.agent = Some(agent);
         let context = Arc::new(context);
         let _lease = self
             .live_parents

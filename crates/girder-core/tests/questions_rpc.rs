@@ -1038,6 +1038,23 @@ async fn attach_wait_reports_the_remaining_time_until_the_question_is_answered()
     opened.running.abort();
 }
 
+#[tokio::test]
+async fn answering_wakes_attach_wait_without_a_poll() {
+    let queue = QuestionQueue::in_memory();
+    let record = PendingQuestion::new(questions_rpc_id(), text_question("name"));
+    let id = record.id.clone();
+    queue.store().insert(record).expect("seeded");
+    let waiting = queue.notified();
+    tokio::pin!(waiting);
+    waiting.as_mut().enable();
+    queue
+        .answer(&id, QuestionReply::human(Answer::Chosen("Ada".to_owned())))
+        .expect("answered");
+    tokio::time::timeout(Duration::from_millis(200), waiting)
+        .await
+        .expect("the answer wakes the waiter");
+}
+
 struct OpenedWait {
     frames: tokio::sync::mpsc::UnboundedReceiver<Result<Value, RemoteError>>,
     running: tokio::task::JoinHandle<()>,

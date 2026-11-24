@@ -28,6 +28,7 @@ pub mod browser_auth;
 mod mux;
 pub mod server;
 mod stream;
+mod tls;
 mod web;
 
 pub use browser_auth::{BrowserAuth, ConnectAuth, IndexAuth};

@@ -36,8 +36,9 @@ use host_gap::{
     Responder, RouteKind, StaticConfig, StaticRequest, TlsConfig, TlsError, WebRouter,
     WebServerConfig, accepts_gzip, apply_index_taps, base64url, bind_url_host,
     escape_html_attribute, gzip_eligible, is_compressible, is_loopback_host, is_resource_method,
-    is_wildcard_host, load_tls_material, mime_for_path, normalize_bind_address, parse_bind_address,
-    pem_labels, render_index_injections, serve_static, sha1, validate_bind_host, weak_etag,
+    is_wildcard_host, listen_endpoint, load_tls_material, mime_for_path, normalize_bind_address,
+    parse_bind_address, pem_labels, render_index_injections, serve_static, sha1,
+    validate_bind_host, weak_etag,
 };
 
 // ---- helpers ------------------------------------------------------------------------------------
@@ -223,6 +224,59 @@ fn rejects_the_wildcard_address_the_config_transform_rejects() {
         validate_bind_host("localhost"),
         Err(BindAddressError::NotLiteral("localhost".to_owned()))
     );
+}
+
+#[test]
+fn a_bracketed_ipv6_bind_keeps_its_port_and_a_bare_one_does_not_steal_a_group() {
+    assert_eq!(listen_endpoint("[::1]:8787").as_deref(), Ok("[::1]:8787"));
+    assert_eq!(listen_endpoint("::1").as_deref(), Ok("[::1]:8080"));
+    assert_eq!(listen_endpoint("[::1]").as_deref(), Ok("[::1]:8080"));
+    // `8787` is a legal IPv6 group, so this is an address, not a port.
+    assert_eq!(
+        listen_endpoint("::1:8787").as_deref(),
+        Ok("[::1:8787]:8080")
+    );
+    assert_eq!(
+        listen_endpoint("[::ffff:127.0.0.1]:9").as_deref(),
+        Ok("127.0.0.1:9")
+    );
+    assert_eq!(
+        listen_endpoint("[fe80::1%eth0]:9").as_deref(),
+        Ok("[fe80::1%eth0]:9")
+    );
+    assert_eq!(
+        listen_endpoint("127.0.0.1:8787").as_deref(),
+        Ok("127.0.0.1:8787")
+    );
+    assert_eq!(
+        listen_endpoint("0.0.0.0:8787"),
+        Err(BindAddressError::Wildcard("0.0.0.0".to_owned()))
+    );
+    assert_eq!(
+        listen_endpoint("[::]:8787"),
+        Err(BindAddressError::Wildcard("::".to_owned()))
+    );
+    assert_eq!(
+        listen_endpoint("127.0.0.1:99999"),
+        Err(BindAddressError::Port("127.0.0.1:99999".to_owned()))
+    );
+    assert_eq!(
+        listen_endpoint("localhost:8787"),
+        Err(BindAddressError::NotLiteral("localhost:8787".to_owned()))
+    );
+}
+
+#[test]
+fn an_ipv6_loopback_endpoint_accepts_a_connection() {
+    let endpoint = listen_endpoint("[::1]:0").expect("endpoint");
+    let listener = match std::net::TcpListener::bind(&endpoint) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => return,
+        Err(error) => panic!("bind {endpoint}: {error}"),
+    };
+    let address = listener.local_addr().expect("local");
+    assert!(address.is_ipv6(), "{address}");
+    let _client = std::net::TcpStream::connect(address).expect("connect");
 }
 
 // ---- configuration and origin --------------------------------------------------------------------
@@ -1226,7 +1280,6 @@ fn requires_an_absolute_dist_index_so_a_relative_one_cannot_rebase_on_the_cwd() 
     assert_eq!(config.dist_root, PathBuf::from("/srv/app/dist"));
     assert_eq!(config.dist_index, PathBuf::from("/srv/app/dist/index.html"));
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod host {

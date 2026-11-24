@@ -115,6 +115,106 @@ pub fn register_remote_access_follow_with(
     });
 }
 
+/// The snapshot for one admitted peer.
+///
+/// An empty peer is the legacy single-user connection, and the shared browser peer is the local
+/// owner. A published owner stays an owner. Every other identity receives the grants stored
+/// for it, and an identity with none receives an empty list.
+#[must_use]
+pub fn snapshot_for_directory(
+    directory: &crate::api::gateway::PeerDirectory,
+    peer: &str,
+) -> RemoteAccessSnapshot {
+    if peer.is_empty() || peer == directory.browser().id().as_str() {
+        return RemoteAccessSnapshot {
+            owner: true,
+            grants: Vec::new(),
+        };
+    }
+    let id = crate::api::gateway::PeerId::new(peer);
+    let owner = directory
+        .peer(&id)
+        .is_some_and(|peer| peer.principal().is_owner());
+    RemoteAccessSnapshot {
+        owner,
+        grants: if owner {
+            Vec::new()
+        } else {
+            directory
+                .grants(&id)
+                .iter()
+                .map(crate::api::gateway::AccessGrant::to_wire)
+                .collect()
+        },
+    }
+}
+
+/// Enforces the grants stored on a [`PeerDirectory`](crate::api::gateway::PeerDirectory).
+///
+/// Owners and the shared browser peer may call every method. A non-owner may call
+/// `remoteAccess.follow` so it can learn its grants, and every other call only when each declared
+/// resource is covered by a grant whose actions include that endpoint.
+#[derive(Clone, Debug)]
+pub struct DirectoryPolicy {
+    directory: crate::api::gateway::PeerDirectory,
+}
+
+impl DirectoryPolicy {
+    /// Builds a policy over the same directory that admits peers.
+    #[must_use]
+    pub fn new(directory: crate::api::gateway::PeerDirectory) -> Self {
+        Self { directory }
+    }
+}
+
+impl crate::guard::access::Policy for DirectoryPolicy {
+    fn decide(&self, request: &crate::guard::access::Request) -> crate::guard::access::Decision {
+        if request.method == "remoteAccess.follow" {
+            return crate::guard::access::Decision::Allow;
+        }
+        let peer = request.peer.as_str();
+        if peer.is_empty() || peer == self.directory.browser().id().as_str() {
+            return crate::guard::access::Decision::Allow;
+        }
+        let id = crate::api::gateway::PeerId::new(peer);
+        if self
+            .directory
+            .peer(&id)
+            .is_some_and(|peer| peer.principal().is_owner())
+        {
+            return crate::guard::access::Decision::Allow;
+        }
+        let action = request.method.replace('.', "/");
+        let grants = self.directory.grants(&id);
+        if request
+            .resources
+            .iter()
+            .all(|resource| grant_covers(&grants, &action, resource))
+        {
+            return crate::guard::access::Decision::Allow;
+        }
+        crate::guard::access::Decision::Refuse {
+            reason: "no-allow".to_owned(),
+        }
+    }
+}
+
+fn grant_covers(
+    grants: &[crate::api::gateway::AccessGrant],
+    action: &str,
+    resource: &crate::guard::access::Resource,
+) -> bool {
+    grants.iter().any(|grant| {
+        grant.kind == resource.kind
+            && grant.actions.iter().any(|candidate| candidate == action)
+            && match (&grant.id, resource.id.is_empty()) {
+                (_, true) => grant.id.is_none(),
+                (None, false) => true,
+                (Some(id), false) => id == &resource.id,
+            }
+    })
+}
+
 /// Registers `remoteAccess.follow`.
 pub fn register_remote_access_follow(registry: &mut RemoteRegistry) {
     let snapshot = Arc::new(|_peer: &str| RemoteAccessSnapshot {
@@ -129,7 +229,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        RemoteAccessSnapshot, register_remote_access_follow, register_remote_access_follow_with,
+        DirectoryPolicy, RemoteAccessSnapshot, register_remote_access_follow,
+        register_remote_access_follow_with, snapshot_for_directory,
     };
     use crate::api::extra::UplinkInbox;
     use crate::api::remote::{RemoteCall, RemoteRegistry, StreamOpen};
@@ -218,6 +319,145 @@ mod tests {
             .expect("ok");
         assert_eq!(remove["type"], "remove");
         assert_eq!(remove["resource"]["id"], "s1");
+
+        cancel.cancel();
+        let _ = running.await;
+    }
+
+    #[test]
+    fn a_directory_snapshot_keeps_owners_and_hides_guests() {
+        use crate::api::gateway::{Interactions, PeerDirectory, Principal};
+
+        let directory = PeerDirectory::new();
+        assert!(snapshot_for_directory(&directory, "").owner);
+        assert!(snapshot_for_directory(&directory, directory.browser().id().as_str()).owner);
+
+        let guest = directory.publish(Principal::named("test-guest", "spec"), Interactions::None);
+        let guest_snapshot = snapshot_for_directory(&directory, guest.id().as_str());
+        assert!(!guest_snapshot.owner);
+        assert!(guest_snapshot.grants.is_empty());
+
+        let owner = directory.publish(Principal::owner(), Interactions::Answer);
+        assert!(snapshot_for_directory(&directory, owner.id().as_str()).owner);
+
+        directory.set_grants(
+            guest.id(),
+            vec![crate::api::gateway::AccessGrant::new(
+                "session",
+                Some("s1".to_owned()),
+                ["session/page"],
+            )],
+        );
+        let granted = snapshot_for_directory(&directory, guest.id().as_str());
+        assert_eq!(granted.grants[0]["resource"]["id"], "s1");
+        assert_eq!(granted.grants[0]["actions"][0], "session/page");
+    }
+
+    #[tokio::test]
+    async fn directory_policy_allows_only_the_granted_resource() {
+        use crate::api::gateway::{AccessGrant, Interactions, PeerDirectory, Principal};
+        use crate::guard::access::Declaration;
+
+        let directory = PeerDirectory::new();
+        let guest = directory.publish(Principal::named("test-guest", "spec"), Interactions::None);
+        directory.set_grants(
+            guest.id(),
+            vec![AccessGrant::new(
+                "session",
+                Some("s1".to_owned()),
+                ["session/page"],
+            )],
+        );
+        let mut registry = RemoteRegistry::new();
+        registry.declare("session", "page", Declaration::read("session"));
+        registry.register("session", "page", |call| {
+            Box::pin(async move { Ok(call.args) })
+        });
+        registry.set_policy(Arc::new(DirectoryPolicy::new(directory.clone())));
+
+        let allowed = registry
+            .dispatch(
+                "session",
+                "page",
+                RemoteCall {
+                    args: serde_json::json!({"sessionId": "s1"}),
+                    peer: guest.id().as_str().to_owned(),
+                },
+            )
+            .await;
+        assert!(allowed.is_ok(), "{allowed:?}");
+        let refused = registry
+            .dispatch(
+                "session",
+                "page",
+                RemoteCall {
+                    args: serde_json::json!({"sessionId": "s2"}),
+                    peer: guest.id().as_str().to_owned(),
+                },
+            )
+            .await
+            .expect_err("another session is outside the grant");
+        assert_eq!(refused.code(), "REFUSED");
+
+        let owner = directory.publish(Principal::owner(), Interactions::Answer);
+        let owner_call = registry
+            .dispatch(
+                "session",
+                "page",
+                RemoteCall {
+                    args: serde_json::json!({"sessionId": "s2"}),
+                    peer: owner.id().as_str().to_owned(),
+                },
+            )
+            .await;
+        assert!(owner_call.is_ok(), "{owner_call:?}");
+    }
+
+    #[tokio::test]
+    async fn set_grants_pushes_an_upsert_on_follow() {
+        use crate::api::gateway::{AccessGrant, Interactions, PeerDirectory, Principal};
+
+        let directory = PeerDirectory::new();
+        let guest = directory.publish(Principal::named("test-guest", "spec"), Interactions::None);
+        let source = {
+            let directory = directory.clone();
+            Arc::new(move |peer: &str| snapshot_for_directory(&directory, peer))
+        };
+        let mut registry = RemoteRegistry::new();
+        register_remote_access_follow_with(&mut registry, source, directory.access_changed());
+        let call = RemoteCall {
+            args: serde_json::json!({}),
+            peer: guest.id().as_str().to_owned(),
+        };
+        let handler = registry
+            .stream_method("remoteAccess", "follow", &call)
+            .expect("follow is a stream");
+        let inbox = Arc::new(UplinkInbox::new(1024, "remoteAccess/follow"));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (open, mut frames) = StreamOpen::pair(call, inbox, cancel.clone());
+        let running = tokio::spawn(async move {
+            handler(open).await;
+        });
+        let baseline = frames.recv().await.expect("baseline").expect("ok");
+        assert_eq!(baseline["owner"], false);
+        assert!(baseline["grants"].as_array().unwrap().is_empty());
+
+        directory.set_grants(
+            guest.id(),
+            vec![AccessGrant::new(
+                "session",
+                Some("s1".to_owned()),
+                ["session/page"],
+            )],
+        );
+        let upsert = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+            .await
+            .expect("upsert")
+            .expect("stream")
+            .expect("ok");
+        assert_eq!(upsert["type"], "upsert");
+        assert_eq!(upsert["grant"]["resource"]["id"], "s1");
+        assert_eq!(upsert["grant"]["actions"][0], "session/page");
 
         cancel.cancel();
         let _ = running.await;

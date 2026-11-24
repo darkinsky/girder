@@ -293,7 +293,7 @@ pub fn digest(events: &[SessionEvent]) -> Digest {
             | SessionEvent::LlmRetry { .. }
             // a digest counts turns and tokens; feedback is neither, so it contributes nothing here.
             | SessionEvent::MessageFeedbackPut { .. }
-            | SessionEvent::MessageFeedbackDelete { .. } | SessionEvent::SessionFeedbackRecord { .. } | SessionEvent::CompactionSummary { .. } | SessionEvent::ImageOffload { .. } | SessionEvent::TeamMode { .. } | SessionEvent::TeamTask { .. } => {}
+            | SessionEvent::MessageFeedbackDelete { .. } | SessionEvent::SessionFeedbackRecord { .. } | SessionEvent::CompactionSummary { .. } | SessionEvent::ImageOffload { .. } | SessionEvent::TeamMode { .. } | SessionEvent::TeamTask { .. } | SessionEvent::ActionCardsDecision { .. } => {}
         }
     }
 

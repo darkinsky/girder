@@ -9,8 +9,8 @@
 //! directory.
 //!
 //! The records do not say it either. [`SessionRecord`](crate::SessionRecord) is `id`, `updated_at`,
-//! `blank`, and `events`; no event variant carries a working directory. `session.create` accepts a
-//! `cwd` and then drops it, so a client that started one session in `/a/project` and another in
+//! `blank`, and `events`; no event variant carries a working directory. `session.create` records a
+//! `cwd` or workspace path here, so a client that started one session in `/a/project` and another in
 //! `/b/project` has no way to tell them apart afterwards — not from the log, not from the listing,
 //! and not from the file names, which are id-shaped only.
 //!

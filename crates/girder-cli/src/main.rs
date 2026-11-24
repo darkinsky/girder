@@ -111,6 +111,18 @@ enum Command {
         /// dist directory and keeps the RPC routes under `/api`.
         #[arg(long)]
         dist_index: Option<std::path::PathBuf>,
+
+        /// Gzip eligible HTTP responses when the client sends `Accept-Encoding: gzip`.
+        #[arg(long)]
+        gzip: bool,
+
+        /// PEM certificate chain for HTTPS. Requires `--tls-key`.
+        #[arg(long)]
+        tls_cert: Option<std::path::PathBuf>,
+
+        /// PEM private key for `--tls-cert`.
+        #[arg(long)]
+        tls_key: Option<std::path::PathBuf>,
     },
 
     /// Print the RPC JSON Schema that the client side is checked against.
@@ -135,6 +147,9 @@ enum Mode {
         bind: String,
         watch: Vec<String>,
         dist_index: Option<std::path::PathBuf>,
+        gzip: bool,
+        tls_cert: Option<std::path::PathBuf>,
+        tls_key: Option<std::path::PathBuf>,
     },
     Schema,
     /// Explain one installation spec.
@@ -160,12 +175,18 @@ async fn main() -> Result<()> {
                 bind,
                 watch,
                 dist_index,
+                gzip,
+                tls_cert,
+                tls_key,
             }),
             _,
         ) => Mode::Serve {
             bind,
             watch,
             dist_index,
+            gzip,
+            tls_cert,
+            tls_key,
         },
         (Some(Command::Schema), _) => Mode::Schema,
         (Some(Command::Plugin { spec }), _) => Mode::Plugin(spec),
@@ -227,8 +248,11 @@ async fn main() -> Result<()> {
             bind,
             watch,
             dist_index,
+            gzip,
+            tls_cert,
+            tls_key,
         } => {
-            serve(cli, bind, watch, dist_index).await?;
+            serve(cli, bind, watch, dist_index, gzip, tls_cert, tls_key).await?;
             return Ok(());
         }
         // Handled above: the report prints and returns before any mode runs.
@@ -242,15 +266,16 @@ async fn main() -> Result<()> {
 ///
 /// One function because the two facts belong in one line: a client reading the banner needs both the
 /// URL to dial and whether the events it wants will arrive.
-fn print_banner(address: std::net::SocketAddr, selected: &[&str]) {
+fn print_banner(address: std::net::SocketAddr, selected: &[&str], tls: bool) {
+    let scheme = if tls { "wss" } else { "ws" };
     if selected.is_empty() {
         println!(
-            "girder rpc listening on ws://{address}{} (no events forwarded)",
+            "girder rpc listening on {scheme}://{address}{} (no events forwarded)",
             girder_rpc::REMOTE_STREAM_MUX_PATH
         );
     } else {
         println!(
-            "girder rpc listening on ws://{address}{} (watching: {})",
+            "girder rpc listening on {scheme}://{address}{} (watching: {})",
             girder_rpc::REMOTE_STREAM_MUX_PATH,
             selected.join(", ")
         );
@@ -432,20 +457,27 @@ fn configured_routes(model: &str) -> std::collections::BTreeMap<String, String> 
 /// The address `--bind` names, normalized and checked.
 ///
 /// Through the host module's parser rather than straight to the kernel: `TcpListener::bind` accepts
-/// forms this build cannot serve and its error names the syscall rather than the argument. The
-/// parser answers the normalized host or says which part is wrong, and it knows the wildcard and
-/// loopback cases the banner has to distinguish.
+/// forms this build cannot serve and its error names the syscall rather than the argument. IPv6
+/// with a port must be bracketed (`[::1]:8787`); a bare IPv6 literal keeps every colon as part of
+/// the address. The unspecified address is refused.
+fn load_tls(
+    cert: &Option<std::path::PathBuf>,
+    key: &Option<std::path::PathBuf>,
+) -> Result<Option<(String, String)>> {
+    match (cert, key) {
+        (None, None) => Ok(None),
+        (Some(cert), Some(key)) => {
+            let material = girder_core::host::webserver::load_tls_material(cert, key)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            Ok(Some((material.cert_pem, material.key_pem)))
+        }
+        (Some(_), None) => Err(anyhow::anyhow!("`--tls-cert` requires `--tls-key`")),
+        (None, Some(_)) => Err(anyhow::anyhow!("`--tls-key` requires `--tls-cert`")),
+    }
+}
+
 fn resolve_bind(bind: &str) -> Result<String> {
-    let (host, port) = bind.rsplit_once(':').unwrap_or((bind, "8080"));
-    let normalized = girder_core::normalize_bind_address(host)
-        .map_err(|error| anyhow::anyhow!("`--bind {bind}`: {error}"))?;
-    // An empty host is the wildcard, which the parser reports as no address at all.
-    let host = if normalized.is_empty() {
-        "0.0.0.0"
-    } else {
-        &normalized
-    };
-    Ok(format!("{host}:{port}"))
+    girder_core::listen_endpoint(bind).map_err(|error| anyhow::anyhow!("`--bind {bind}`: {error}"))
 }
 
 async fn serve(
@@ -453,6 +485,9 @@ async fn serve(
     bind: String,
     watch: Vec<String>,
     dist_index: Option<std::path::PathBuf>,
+    gzip: bool,
+    tls_cert: Option<std::path::PathBuf>,
+    tls_key: Option<std::path::PathBuf>,
 ) -> Result<()> {
     // Checked before binding: a deployment that cannot work should say so once instead of serving one error per
     // client. Only a fatal finding refuses to start, because a missing provider is the offline path and a missing
@@ -467,6 +502,7 @@ async fn serve(
     }
     let bus = Arc::new(EventBus::new());
     let endpoint = resolve_bind(&bind)?;
+    let tls = load_tls(&tls_cert, &tls_key)?;
     let listener = tokio::net::TcpListener::bind(&endpoint).await?;
     let address = listener.local_addr()?;
     let static_frontend = dist_index
@@ -487,9 +523,10 @@ async fn serve(
         resolve_watched(&watch)
     };
 
-    print_banner(address, &selected);
+    print_banner(address, &selected, tls.is_some());
     if let Some(auth) = browser_auth.as_ref() {
-        let url = auth.authenticated_url(&format!("http://{address}/"))?;
+        let scheme = if tls.is_some() { "https" } else { "http" };
+        let url = auth.authenticated_url(&format!("{scheme}://{address}/"))?;
         println!("girder web url: {url}");
     }
     tokio::spawn(async {
@@ -648,30 +685,21 @@ async fn serve(
     // to open something the tools could not read.
     register_host_surface(&mut remote, &workspace);
 
-    // The queue editor needs the agent that holds a session's queue, and this build has no session-to-agent registry:
-    // the map is created empty, so every call answers `NoLiveAgent` rather than pretending to have edited something.
-    // That is the honest state -- the method is reachable and says why it cannot act, which is better than a
-    // NOT_IMPLEMENTED that a client would read as "this build is old".
-    register_lifecycle_surface(&mut remote, &runtime, &projections, &questions);
-
-    let queues = Arc::new(girder_core::AgentQueueMap::new());
-    girder_core::register_session_queue_methods(
+    // The queue editor and the passive state snapshot share the agent that holds a running turn's
+    // inbox. The handle exists only while that turn is in flight, which is also when a client can
+    // still edit or steer what it typed.
+    let queues: Arc<dyn girder_core::QueueAgentSource> =
+        Arc::new(RuntimeQueues(Arc::clone(&runtime)));
+    register_lifecycle_surface(&mut remote, &runtime, &projections, &questions, &queues);
+    girder_core::register_session_queue_methods(&mut remote, &session_catalog(), &queues);
+    girder_core::register_workspace_methods(&mut remote, &workspaces);
+    let places = Arc::new(std::sync::Mutex::new(girder_core::WorkspaceIndex::new()));
+    girder_core::bind_session_places(
         &mut remote,
         &session_catalog(),
-        &(queues as Arc<dyn girder_core::QueueAgentSource>),
-    );
-    girder_core::register_workspace_methods(&mut remote, &workspaces);
-
-    let remote = Arc::new(remote);
-    println!(
-        "girder rpc exposing {} Remote method(s): {}",
-        remote.len(),
-        remote
-            .names()
-            .iter()
-            .map(|(ns, m)| format!("{ns}.{m}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        &places,
+        Some(&workspaces),
+        Some(&runtime),
     );
 
     // Peer identity is enforced only when this deployment says who its callers are. A credential
@@ -690,7 +718,36 @@ async fn serve(
         println!("peer identity: browser and /connect operators");
         directory = Some(Arc::new(girder_core::api::gateway::PeerDirectory::new()));
     }
+    if let Some(directory) = directory.as_ref() {
+        let snapshot_directory = Arc::clone(directory);
+        let changed = directory.access_changed();
+        girder_core::register_remote_access_follow_with(
+            &mut remote,
+            Arc::new(move |peer| girder_core::snapshot_for_directory(&snapshot_directory, peer)),
+            changed,
+        );
+        remote.set_policy(Arc::new(girder_core::DirectoryPolicy::new(
+            directory.as_ref().clone(),
+        )));
+    }
+
+    let remote = Arc::new(remote);
+    println!(
+        "girder rpc exposing {} Remote method(s): {}",
+        remote.len(),
+        remote
+            .names()
+            .iter()
+            .map(|(ns, m)| format!("{ns}.{m}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let cancel = CancellationToken::new();
+    let gzip = gzip.then_some((
+        girder_core::host::webserver::DEFAULT_COMPRESSION_LEVEL,
+        girder_core::host::webserver::DEFAULT_COMPRESSION_THRESHOLD_BYTES,
+    ));
     match directory {
         Some(directory) => {
             girder_rpc::serve_with_options(
@@ -701,6 +758,8 @@ async fn serve(
                 Some(directory),
                 static_frontend,
                 browser_auth,
+                gzip,
+                tls.clone(),
                 cancel,
             )
             .await?;
@@ -714,6 +773,8 @@ async fn serve(
                 None,
                 static_frontend,
                 browser_auth,
+                gzip,
+                tls,
                 cancel,
             )
             .await?;
@@ -893,11 +954,60 @@ fn session_directory(
 ///
 /// One function because they share the catalog and the runtime. `serve` was at the length limit, and a block that
 /// registers "the things a session can do to itself" reads better named than inlined.
+struct RuntimeQueues(std::sync::Arc<girder_core::AgentRuntime>);
+
+impl girder_core::QueueAgentSource for RuntimeQueues {
+    fn agent(&self, session_id: &str) -> Option<std::sync::Arc<girder_core::Agent>> {
+        self.0.live_agent(session_id)
+    }
+
+    fn changes(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        Some(self.0.activity())
+    }
+}
+
+struct RuntimeTurns(std::sync::Arc<girder_core::AgentRuntime>);
+
+impl girder_core::LiveTurns for RuntimeTurns {
+    fn is_running(&self, session_id: &str) -> bool {
+        self.0.is_running(session_id)
+    }
+
+    fn changes(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        Some(self.0.activity())
+    }
+}
+
+struct RuntimePending {
+    runtime: std::sync::Arc<girder_core::AgentRuntime>,
+    questions: Arc<girder_core::QuestionQueue>,
+}
+
+impl girder_core::PendingInputs for RuntimePending {
+    fn kinds(&self, session_id: &str) -> Vec<String> {
+        let waiting = self.questions.pending().into_iter().any(|record| {
+            record.state.is_open() && record.session_id.as_deref() == Some(session_id)
+        });
+        let approval = self.runtime.has_pending_approval(session_id);
+        match (waiting, approval) {
+            (true, true) => vec!["question".to_owned(), "approval".to_owned()],
+            (true, false) => vec!["question".to_owned()],
+            (false, true) => vec!["approval".to_owned()],
+            (false, false) => Vec::new(),
+        }
+    }
+
+    fn changes(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        Some(self.questions.activity())
+    }
+}
+
 fn register_lifecycle_surface(
     remote: &mut girder_core::RemoteRegistry,
     runtime: &std::sync::Arc<girder_core::AgentRuntime>,
     projections: &std::sync::Arc<girder_core::ProjectionRegistry>,
     questions: &Arc<girder_core::QuestionQueue>,
+    queues: &Arc<dyn girder_core::QueueAgentSource>,
 ) {
     // Resuming confirms a session can be reopened and reports where its log ends, so a client knows from which sequence
     // to continue rather than re-reading the whole conversation to find out.
@@ -906,20 +1016,12 @@ fn register_lifecycle_surface(
     // a client makes one call per projection and re-derives what the server already folded.
     // The runtime knows which sessions have a turn in flight, so `running` comes from it rather than from the default
     // source that always answers false -- which would tell every client that nothing is ever running.
-    let live_runtime = std::sync::Arc::clone(runtime);
     let turns: std::sync::Arc<dyn girder_core::LiveTurns> =
-        std::sync::Arc::new(move |session_id: &str| live_runtime.is_running(session_id));
-    let open_questions = Arc::clone(questions);
+        std::sync::Arc::new(RuntimeTurns(std::sync::Arc::clone(runtime)));
     let pending: std::sync::Arc<dyn girder_core::PendingInputs> =
-        std::sync::Arc::new(move |session_id: &str| {
-            let waiting = open_questions.pending().into_iter().any(|record| {
-                record.state.is_open() && record.session_id.as_deref() == Some(session_id)
-            });
-            if waiting {
-                vec!["question".to_owned()]
-            } else {
-                Vec::new()
-            }
+        std::sync::Arc::new(RuntimePending {
+            runtime: std::sync::Arc::clone(runtime),
+            questions: Arc::clone(questions),
         });
     girder_core::register_session_state_method_observing(
         remote,
@@ -927,6 +1029,7 @@ fn register_lifecycle_surface(
         projections,
         &turns,
         &pending,
+        queues,
     );
     // Scheduled tasks are stored in memory: a restart forgets them, and the module says so rather than implying a
     // durability it does not have. Nothing triggers them yet -- the trigger needs a runtime loop, which is a separate
@@ -1023,9 +1126,9 @@ fn register_workspace_file_surface(
         mcp_servers,
         Some(Arc::clone(mcp_live)),
     );
-    // `pluginManager.*`: the seven reads answer from an explicit entry registry -- the replacement
-    // for the Cordis tree -- and the mutations refuse with `no_installer`, because this build mounts
-    // plugins at compile time.
+    // `pluginManager.*`: the reads answer from an explicit entry registry. `setPluginEnabled` and
+    // `setVersionExemption` record the choice beside the sessions and report that it takes effect
+    // at the next start. Install, update, and remove still refuse with `no_installer`.
     girder_core::boot::plugin_manager_rpc::register_plugin_manager_methods(remote, &{
         // The plugins this build actually mounts, as entries.
         let mut entries = girder_core::boot::plugin_entries::Registry::new();
@@ -1035,6 +1138,7 @@ fn register_workspace_file_surface(
             options_id: "@deepseek-ai/dsh".to_owned(),
         });
         entries.set_owner("cli");
+        entries.load_enablement(sessions_root().join("plugin-enablement.json"));
         Arc::new(entries)
     });
     girder_core::boot::plugin_manager_rpc::register_plugin_inventory_methods(remote, &{
@@ -1071,9 +1175,8 @@ fn register_workspace_file_surface(
         remote,
         &girder_core::preset::agent_presets::default_registry(),
     );
-    // `messageFeedback.*`: feedback is a log event, so `list` replays and `put`/`delete` need a
-    // store this deployment's catalog does not hold -- they answer `store_unavailable` rather than
-    // claiming a write.
+    // `messageFeedback.*` and `sessionFeedback.record`: both append to the session log. A catalog
+    // that can name a session but cannot open it still answers `store_unavailable`.
     girder_core::feedback::message_feedback::register_message_feedback_methods(
         remote,
         &session_catalog(),
@@ -1096,7 +1199,10 @@ fn register_workspace_file_surface(
         &session_catalog(),
         &bus,
     );
-    girder_core::interaction::action_cards_rpc::register_action_card_methods(remote);
+    let action_cards = std::sync::Arc::new(
+        girder_core::interaction::action_cards_rpc::ActionCardLog::new(session_catalog()),
+    );
+    girder_core::interaction::action_cards_rpc::register_action_card_log(remote, &action_cards);
     girder_core::extensions::plugin_recommendations_rpc::register_plugin_recommendation_methods(
         remote,
     );
@@ -1119,8 +1225,9 @@ fn register_workspace_file_surface(
         Some(sessions_root()),
         girder_core::now_millis(),
     );
-    let preferences: Arc<dyn girder_core::WorkspacePreferences> =
-        Arc::new(girder_core::InMemoryPreferences::new());
+    let preferences: Arc<dyn girder_core::WorkspacePreferences> = Arc::new(
+        girder_core::FilePreferences::open(sessions_root().join("workspace-preferences.json")),
+    );
     let feed = Arc::new(girder_core::WorkspaceFeed::new(
         workspaces.as_ref(),
         preferences.as_ref(),
@@ -1138,10 +1245,6 @@ fn register_workspace_file_surface(
     questions
 }
 
-/// Registers the settings methods.
-///
-/// The store is process-local: a restart forgets it, which the module says plainly rather than implying a durability
-/// it does not have. A deployment that wants settings to survive supplies its own store to the same registration.
 /// Registers the surfaces that belong to things the server is already running: projections, jobs, extensions.
 ///
 /// Named because `serve` has been over the length limit four times, and each time the fix was to move a registration
@@ -2125,9 +2228,7 @@ fn register_question_surface(
 }
 
 fn register_settings_surface(remote: &mut girder_core::RemoteRegistry) {
-    // A file, not the in-memory store. `MemorySettingsStore` was the only shipped implementation, so every setting a
-    // deployment wrote was gone at the next restart -- `settings.set` changed a value until the process exited, which is
-    // not what any caller means by a setting. The store lives beside the sessions because both are this deployment's data.
+    // A file, not the in-memory store, so a restart preserves the values the browser configured.
     let path = sessions_root().join("settings.json");
     let settings: Arc<dyn girder_core::SettingsStore> =
         Arc::new(girder_core::FileSettingsStore::open(path));

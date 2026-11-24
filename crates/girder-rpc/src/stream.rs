@@ -10,28 +10,13 @@
 //! sends a frame then; a client-paced stream would need the client to know when to ask, which is the
 //! same knowledge the host has and the client does not.
 //!
-//! # Polling, not events (a documented gap)
+//! # Streaming sources and compatibility polling
 //!
-//! The transport is real — frames travel the mux socket, a client can open and close a subscription,
-//! and an end is visible — but the *source* of values is a timer, not a notification. Each
-//! subscription re-invokes its method every [`DEFAULT_POLL_INTERVAL`] and forwards whatever came
-//! back. That is not the design this module wants; it is what the layers below can express today:
-//!
-//! - A unary Remote method is `Fn(RemoteCall) -> BoxFut<Result<Value>>`. A method registered with
-//!   `register_stream` can push a series on the mux, and this hub does not use that path: it still
-//!   re-invokes the unary method on a timer.
-//! - [`SUBSCRIBABLE_METHODS`] is still a list of names. The mux uses `RemoteRegistry::is_streaming`
-//!   for the browser carrier; this hub has not moved onto that registry flag.
-//! - The event bus (`girder_core::EventBus`) can notify the host, and the mux already forwards emits,
-//!   but there is no mapping from a bus dispatch to "which subscription wants it": the arguments of
-//!   `agent/turn` are not the return value of `session.observeEvent`.
-//!
-//! Making this event-driven needs one change in the method layer, which this crate does not own: a
-//! streaming flag on the descriptor plus a handler that returns a receiver. Until then, polling is the
-//! honest implementation, and the costs are visible in the protocol rather than hidden: a value can
-//! repeat between polls, a burst of changes can be collapsed into one, and a client's view can lag by
-//! up to one interval. `seq` is what lets a client detect the second case; the first case is why
-//! [`SubscriptionHub`] does not forward an unchanged result — "nothing changed" is not a value.
+//! The legacy subscription carrier accepts the same method names as the standard mux. When a
+//! method has a registered streaming handler, this hub now runs that handler directly and forwards
+//! every item. Unary-only methods retain the compatibility poller, including its unchanged-value
+//! suppression. This keeps older clients working without making live stream methods degrade into a
+//! timer.
 //!
 //! # The protocol in one screen
 //!
@@ -466,6 +451,7 @@ pub enum SubscriptionControl {
 /// One running poller, kept so a close can stop it.
 struct Poller {
     task: tokio::task::JoinHandle<()>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// Turns `subscribe` requests into a stream of frames.
@@ -565,6 +551,26 @@ impl SubscriptionHub {
             return;
         }
 
+        // Run the same access/method lookup before acknowledging a streaming subscription. A
+        // policy refusal must be a rejected subscribe, not an accepted subscription followed by
+        // an immediate failed end frame.
+        if self
+            .remote
+            .is_streaming(&request.namespace, &request.method)
+        {
+            let call = girder_core::RemoteCall {
+                args: serde_json::Value::Object(request.args.clone()),
+                peer: request.peer.clone(),
+            };
+            if let Err(error) =
+                self.remote
+                    .stream_method(&request.namespace, &request.method, &call)
+            {
+                self.refuse(&request.id, &error.to_string());
+                return;
+            }
+        }
+
         if let Err(error) = self.subscriptions.open(id.clone(), request.qualified()) {
             self.refuse(&request.id, &error.to_string());
             return;
@@ -578,9 +584,16 @@ impl SubscriptionHub {
             error: None,
         });
 
-        let poller = Poller {
-            task: self.spawn_poller(id, request),
+        let (task, cancel) = if self
+            .remote
+            .is_streaming(&request.namespace, &request.method)
+        {
+            let (task, cancel) = self.spawn_stream(id.clone(), request);
+            (task, Some(cancel))
+        } else {
+            (self.spawn_poller(id.clone(), request), None)
         };
+        let poller = Poller { task, cancel };
         if let Some(replaced) = self.lock_pollers().insert(request.id.clone(), poller) {
             // A duplicate id is refused above, so this is unreachable; aborting anyway keeps the
             // invariant true if a future check is relaxed.
@@ -596,6 +609,9 @@ impl SubscriptionHub {
     pub fn close(&self, id: &str, reason: EndReason) {
         let ended = self.subscriptions.close(id, reason);
         if let Some(poller) = self.lock_pollers().remove(id) {
+            if let Some(cancel) = poller.cancel {
+                cancel.cancel();
+            }
             poller.task.abort();
         }
         if let Some(frame) = ended {
@@ -612,6 +628,9 @@ impl SubscriptionHub {
         for id in self.subscriptions.ids() {
             self.subscriptions.close(&id, reason.clone());
             if let Some(poller) = self.lock_pollers().remove(&id) {
+                if let Some(cancel) = poller.cancel {
+                    cancel.cancel();
+                }
                 poller.task.abort();
             }
         }
@@ -699,6 +718,98 @@ impl SubscriptionHub {
         })
     }
 
+    /// Runs a registered streaming Remote method for the legacy subscription carrier.
+    ///
+    /// The legacy wire has no uplink item, so the method receives an inbox that can only be
+    /// half-closed by cancellation. The session observe streams use the inbox as a wake/cancel
+    /// channel and therefore retain their normal lifetime semantics.
+    fn spawn_stream(
+        &self,
+        id: SubscriptionId,
+        request: &SubscribeRequest,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio_util::sync::CancellationToken,
+    ) {
+        let remote = Arc::clone(&self.remote);
+        let outbound = self.outbound.clone();
+        let subscriptions = Arc::clone(&self.subscriptions);
+        let namespace = request.namespace.clone();
+        let method = request.method.clone();
+        let endpoint = request.qualified();
+        let args = serde_json::Value::Object(request.args.clone());
+        let peer = request.peer.clone();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let call = girder_core::RemoteCall { args, peer };
+        let handler = match remote.stream_method(&namespace, &method, &call) {
+            Ok(handler) => handler,
+            Err(error) => {
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let task = tokio::spawn(async move {
+                    if let Some(frame) = subscriptions.close(
+                        id.as_str(),
+                        EndReason::Failed {
+                            reason: error.to_string(),
+                        },
+                    ) {
+                        let _ = outbound.send(crate::DownlinkFrame::Subscription { frame });
+                    }
+                });
+                return (task, cancel);
+            }
+        };
+        let uplink = Arc::new(girder_core::api::extra::UplinkInbox::new(0, endpoint));
+        let (open, mut items) =
+            girder_core::StreamOpen::pair(call, Arc::clone(&uplink), cancel.clone());
+        let producer = tokio::spawn(async move {
+            handler(open).await;
+        });
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = task_cancel.cancelled() => {
+                        producer.abort();
+                        uplink.close();
+                        return;
+                    }
+                    item = items.recv() => {
+                        match item {
+                            Some(Ok(value)) => {
+                                let Some(frame) = subscriptions.push(id.as_str(), value) else {
+                                    producer.abort();
+                                    return;
+                                };
+                                if outbound.send(crate::DownlinkFrame::Subscription { frame }).is_closed() {
+                                    producer.abort();
+                                    return;
+                                }
+                            }
+                            Some(Err(error)) => {
+                                producer.abort();
+                                if let Some(frame) = subscriptions.close(
+                                    id.as_str(),
+                                    EndReason::Failed { reason: error.to_string() },
+                                ) {
+                                    let _ = outbound.send(crate::DownlinkFrame::Subscription { frame });
+                                }
+                                return;
+                            }
+                            None => {
+                                producer.abort();
+                                if let Some(frame) = subscriptions.close(id.as_str(), EndReason::Completed) {
+                                    let _ = outbound.send(crate::DownlinkFrame::Subscription { frame });
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        (task, cancel)
+    }
+
     /// Tells the client a subscription was refused.
     fn refuse(&self, id: &str, reason: &str) {
         self.send(crate::DownlinkFrame::SubscribeResult {
@@ -721,5 +832,60 @@ impl SubscriptionHub {
         self.pollers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SubscribeRequest, SubscriptionFrame, SubscriptionHub};
+
+    #[tokio::test]
+    async fn legacy_subscription_uses_a_registered_stream_handler() {
+        let mut registry = girder_core::RemoteRegistry::new();
+        registry.register("session", "observeState", |_call| {
+            Box::pin(async { Ok(serde_json::json!({ "source": "unary" })) })
+        });
+        registry.register_stream("session", "observeState", |open| {
+            Box::pin(async move {
+                assert_eq!(open.call.args["sessionId"], "s1");
+                assert!(open.push(serde_json::json!({ "source": "stream" })));
+            })
+        });
+        let remote = std::sync::Arc::new(registry);
+        let (outbound, mut inbound) = crate::bounded_transport::Outbound::new(8);
+        let hub = SubscriptionHub::new(remote, outbound, 4);
+        hub.open(&SubscribeRequest {
+            id: "sub-1".to_owned(),
+            namespace: "session".to_owned(),
+            method: "observeState".to_owned(),
+            args: serde_json::json!({ "sessionId": "s1" })
+                .as_object()
+                .cloned()
+                .expect("object"),
+            peer: String::new(),
+            interval_ms: None,
+        });
+
+        assert!(matches!(
+            inbound.recv().await,
+            Some(crate::DownlinkFrame::SubscribeResult {
+                id,
+                ok: true,
+                ..
+            }) if id == "sub-1"
+        ));
+        assert!(matches!(
+            inbound.recv().await,
+            Some(crate::DownlinkFrame::Subscription {
+                frame: SubscriptionFrame::Value { value, .. }
+            }) if value["source"] == "stream"
+        ));
+        assert!(matches!(
+            inbound.recv().await,
+            Some(crate::DownlinkFrame::Subscription {
+                frame: SubscriptionFrame::End { .. }
+            })
+        ));
+        hub.shutdown(&super::EndReason::Unsubscribed);
     }
 }

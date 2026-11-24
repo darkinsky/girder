@@ -634,40 +634,68 @@ async fn follow_changes(open: girder_core::StreamOpen, workspaces: &WorkspaceReg
         return;
     }
     let mut previous = fingerprint(&plan.process_path);
+    let native = girder_core::workspace::native_watch::NativeWatcher::open(
+        &plan.process_path,
+        plan.kind == girder_core::FsType::Directory,
+    );
+    let (_native_guard, mut native_rx) = native.map_or((None, None), |(guard, receiver)| {
+        (Some(guard), Some(receiver))
+    });
     loop {
-        tokio::select! {
-            () = open.cancel.cancelled() => return,
-            incoming = open.uplink.recv() => {
-                if !matches!(incoming, Ok(Some(_))) {
-                    return;
+        let notified = if let Some(receiver) = native_rx.as_mut() {
+            tokio::select! {
+                () = open.cancel.cancelled() => return,
+                incoming = open.uplink.recv() => {
+                    if !matches!(incoming, Ok(Some(_))) {
+                        return;
+                    }
+                    false
+                }
+                notification = receiver.recv() => {
+                    if notification.is_none() {
+                        native_rx = None;
+                    }
+                    true
                 }
             }
-            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                let next = fingerprint(&plan.process_path);
-                if next == previous {
-                    continue;
+        } else {
+            tokio::select! {
+                () = open.cancel.cancelled() => return,
+                incoming = open.uplink.recv() => {
+                    if !matches!(incoming, Ok(Some(_))) {
+                        return;
+                    }
+                    false
                 }
-                let frame = match &next {
-                    Some(version) => json!({
-                        "kind": "change",
-                        "change": {
-                            "absolutePath": plan.process_path,
-                            "version": version,
-                        },
-                    }),
-                    None => json!({
-                        "kind": "change",
-                        "change": {
-                            "absolutePath": plan.process_path,
-                            "absent": true,
-                        },
-                    }),
-                };
-                previous = next;
-                if !open.push(frame) {
-                    return;
-                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(250)) => true
             }
+        };
+        if !notified {
+            continue;
+        }
+        let next = fingerprint(&plan.process_path);
+        if next == previous {
+            continue;
+        }
+        let frame = match &next {
+            Some(version) => json!({
+                "kind": "change",
+                "change": {
+                    "absolutePath": plan.process_path,
+                    "version": version,
+                },
+            }),
+            None => json!({
+                "kind": "change",
+                "change": {
+                    "absolutePath": plan.process_path,
+                    "absent": true,
+                }
+            }),
+        };
+        previous = next;
+        if !open.push(frame) {
+            return;
         }
     }
 }

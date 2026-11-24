@@ -54,8 +54,16 @@ pub enum Rating {
     Negative,
 }
 
-/// The categories upstream accepts.
-pub const CATEGORIES: &[&str] = &["incorrect", "incomplete", "unhelpful", "unsafe", "other"];
+/// The categories upstream accepts, in the order a product surface presents them.
+pub const CATEGORIES: &[&str] = &[
+    "task-result",
+    "instruction-following",
+    "product-interaction",
+    "service-stability",
+    "resource-cost",
+    "security-privacy-permission",
+    "other",
+];
 
 /// One message's current feedback.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,9 +217,262 @@ fn item_to_wire(item: &Item) -> Value {
     value
 }
 
-/// Renders a refusal the way upstream does: a successful call carrying `ok: false`.
-fn refusal_to_wire(refusal: Refusal) -> Value {
-    json!({ "ok": false, "code": refusal.code(), "message": refusal.message() })
+/// A successful call, with the value nested the way the client reads it.
+fn success(value: Value) -> Value {
+    json!({ "ok": true, "value": value })
+}
+
+/// A business refusal. The call reached the server; `error.code` is what the client branches on.
+fn rejected(error: Value) -> Value {
+    json!({ "ok": false, "error": error })
+}
+
+/// The catalog can name the session but cannot append to it.
+fn store_unavailable() -> Value {
+    json!({
+        "ok": false,
+        "code": "store_unavailable",
+        "message": "this deployment's session catalog cannot append; supply a store to enable feedback",
+    })
+}
+
+/// Current items in the order they were first recorded.
+fn ordered_items(events: &[SessionEvent]) -> Vec<Item> {
+    let mut order = Vec::new();
+    let mut items = BTreeMap::new();
+    for event in events {
+        match event {
+            SessionEvent::MessageFeedbackPut {
+                message_id,
+                rating,
+                note,
+                category,
+                version,
+                created_at,
+                updated_at,
+            } => {
+                if !items.contains_key(message_id) {
+                    order.push(message_id.clone());
+                }
+                items.insert(
+                    message_id.clone(),
+                    Item {
+                        message_id: message_id.clone(),
+                        rating: *rating,
+                        note: note.clone(),
+                        category: category.clone(),
+                        version: version.clone(),
+                        created_at: *created_at,
+                        updated_at: *updated_at,
+                    },
+                );
+            }
+            SessionEvent::MessageFeedbackDelete { message_id } => {
+                items.remove(message_id);
+                order.retain(|id| id != message_id);
+            }
+            _ => {}
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|id| items.remove(&id))
+        .collect()
+}
+
+fn has_assistant_message(events: &[SessionEvent], message_id: &str) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            SessionEvent::AssistantMessage { message } if message.id.as_str() == message_id
+        )
+    })
+}
+
+fn observed_version<'a>(args: &'a Value, method: &str) -> Result<Option<&'a str>, RemoteError> {
+    match args.get("ifVersion") {
+        None => Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: method.to_owned(),
+            message: "`ifVersion` is required".to_owned(),
+        }),
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(version)) if !version.is_empty() => Ok(Some(version.as_str())),
+        Some(_) => Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: method.to_owned(),
+            message: "`ifVersion` must be a version string or null".to_owned(),
+        }),
+    }
+}
+
+fn note_refusal(note: &str) -> Option<Value> {
+    if note.trim().is_empty() {
+        return Some(rejected(json!({ "code": "note-blank" })));
+    }
+    if note.len() > MAX_NOTE_BYTES {
+        return Some(rejected(json!({
+            "code": "note-too-large",
+            "maxBytes": MAX_NOTE_BYTES,
+            "actualBytes": note.len(),
+        })));
+    }
+    None
+}
+
+fn version_conflict(current: Option<&Item>) -> Value {
+    rejected(json!({
+        "code": "version-conflict",
+        "current": current.map(item_to_wire),
+    }))
+}
+
+fn next_version() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let millis = crate::now_millis();
+    format!(
+        "{:08x}-{:04x}-4{:03x}-8{:03x}-{:012x}",
+        (millis & 0xffff_ffff) as u32,
+        ((millis >> 32) & 0xffff) as u16,
+        (n & 0xfff) as u16,
+        ((n >> 12) & 0xfff) as u16,
+        n & 0xffff_ffff_ffff
+    )
+}
+
+async fn put_feedback(
+    catalog: &std::sync::Arc<dyn crate::api::remote::SessionCatalog>,
+    args: &Value,
+) -> Result<Value, RemoteError> {
+    let session_id = string_arg(args, "sessionId", NAMESPACE, "put")?;
+    let message_id = string_arg(args, "messageId", NAMESPACE, "put")?;
+    if message_id.trim().is_empty() {
+        return Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: "put".to_owned(),
+            message: Refusal::MessageIdBlank.message().to_owned(),
+        });
+    }
+    let rating = match args.get("rating").and_then(Value::as_str) {
+        Some("positive") => Rating::Positive,
+        Some("negative") => Rating::Negative,
+        other => {
+            return Err(RemoteError::InvalidArguments {
+                namespace: NAMESPACE.to_owned(),
+                method: "put".to_owned(),
+                message: format!("`rating` must be positive or negative, got {other:?}"),
+            });
+        }
+    };
+    let note = args.get("note").and_then(Value::as_str).map(str::to_owned);
+    if let Some(note) = note.as_deref() {
+        if let Some(refusal) = note_refusal(note) {
+            return Ok(refusal);
+        }
+    }
+    let category = args
+        .get("category")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(category) = category.as_deref() {
+        if !CATEGORIES.contains(&category) {
+            return Err(RemoteError::InvalidArguments {
+                namespace: NAMESPACE.to_owned(),
+                method: "put".to_owned(),
+                message: format!("`category` {category:?} is not one this build recognises"),
+            });
+        }
+    }
+    let observed = observed_version(args, "put")?;
+    let Some(record) = catalog.read(&session_id).await else {
+        return Ok(rejected(json!({
+            "code": "session-not-found",
+            "sessionId": session_id,
+        })));
+    };
+    if !has_assistant_message(&record.events, &message_id) {
+        return Ok(rejected(json!({
+            "code": "target-not-found",
+            "sessionId": session_id,
+            "messageId": message_id,
+        })));
+    }
+    let existing = current_items(&record.events).remove(&message_id);
+    if observed != existing.as_ref().map(|item| item.version.as_str()) {
+        return Ok(version_conflict(existing.as_ref()));
+    }
+    if let Some(existing) = existing.as_ref() {
+        if existing.rating == rating && existing.note == note && existing.category == category {
+            return Ok(success(item_to_wire(existing)));
+        }
+    }
+    let now = i64::try_from(crate::now_millis()).unwrap_or(i64::MAX);
+    let item = Item {
+        message_id: message_id.clone(),
+        rating,
+        note: note.clone(),
+        category: category.clone(),
+        version: next_version(),
+        created_at: existing.as_ref().map_or(now, |item| item.created_at),
+        updated_at: existing
+            .as_ref()
+            .map_or(now, |item| item.updated_at.max(now)),
+    };
+    let Some(session) = catalog.open(&session_id) else {
+        return Ok(store_unavailable());
+    };
+    session
+        .append(SessionEvent::MessageFeedbackPut {
+            message_id,
+            rating,
+            note,
+            category,
+            version: item.version.clone(),
+            created_at: item.created_at,
+            updated_at: item.updated_at,
+        })
+        .await
+        .map_err(|error| RemoteError::Failed(error.to_string()))?;
+    Ok(success(item_to_wire(&item)))
+}
+
+async fn delete_feedback(
+    catalog: &std::sync::Arc<dyn crate::api::remote::SessionCatalog>,
+    args: &Value,
+) -> Result<Value, RemoteError> {
+    let session_id = string_arg(args, "sessionId", NAMESPACE, "delete")?;
+    let message_id = string_arg(args, "messageId", NAMESPACE, "delete")?;
+    if message_id.trim().is_empty() {
+        return Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: "delete".to_owned(),
+            message: Refusal::MessageIdBlank.message().to_owned(),
+        });
+    }
+    let Some(record) = catalog.read(&session_id).await else {
+        return Ok(rejected(json!({
+            "code": "session-not-found",
+            "sessionId": session_id,
+        })));
+    };
+    let existing = current_items(&record.events).remove(&message_id);
+    if let Some(existing) = existing {
+        let observed = observed_version(args, "delete")?;
+        if observed != Some(existing.version.as_str()) {
+            return Ok(version_conflict(Some(&existing)));
+        }
+        let Some(session) = catalog.open(&session_id) else {
+            return Ok(store_unavailable());
+        };
+        session
+            .append(SessionEvent::MessageFeedbackDelete {
+                message_id: message_id.clone(),
+            })
+            .await
+            .map_err(|error| RemoteError::Failed(error.to_string()))?;
+    }
+    Ok(success(json!({ "absent": true })))
 }
 
 /// The catalogue of categories, so a client can offer them rather than guess.
@@ -232,68 +493,31 @@ pub fn register_message_feedback_methods(
     registry.register(NAMESPACE, "list", move |call: RemoteCall| {
         let catalog = std::sync::Arc::clone(&listing);
         Box::pin(async move {
-            let session_id = string_arg(&call.args, "sessionId", "list")?;
+            let session_id = string_arg(&call.args, "sessionId", NAMESPACE, "list")?;
             let Some(record) = catalog.read(&session_id).await else {
-                // Upstream's `session_not_found` refusal, which is a result rather than an error:
-                // the call reached a server that knows nothing about that session.
-                return Ok(json!({ "ok": false, "code": "session_not_found" }));
+                return Ok(rejected(json!({
+                    "code": "session-not-found",
+                    "sessionId": session_id,
+                })));
             };
-            let items: Vec<Value> = current_items(&record.events)
-                .values()
+            let items: Vec<Value> = ordered_items(&record.events)
+                .iter()
                 .map(item_to_wire)
                 .collect();
-            Ok(json!({ "ok": true, "items": items }))
+            Ok(success(json!({ "items": items })))
         })
     });
 
-    // `put` and `delete` append to a session log, which needs a store. Registered here so the
-    // surface is complete; `SessionCatalog` on its own is a reader, so these answer the store's
-    // absence rather than pretending to have written.
+    let putting = std::sync::Arc::clone(catalog);
     registry.register(NAMESPACE, "put", move |call: RemoteCall| {
-        Box::pin(async move {
-            let message_id = string_arg(&call.args, "messageId", "put")?;
-            let note = call.args.get("note").and_then(Value::as_str);
-            let category = call.args.get("category").and_then(Value::as_str);
-            let rating = match call.args.get("rating").and_then(Value::as_str) {
-                Some("positive") => Rating::Positive,
-                Some("negative") => Rating::Negative,
-                other => {
-                    return Err(RemoteError::InvalidArguments {
-                        namespace: NAMESPACE.to_owned(),
-                        method: "put".to_owned(),
-                        message: format!(
-                            "`rating` must be positive or negative, got {other:?}"
-                        ),
-                    });
-                }
-            };
-            if let Err(refusal) = validate(&message_id, note, category) {
-                return Ok(refusal_to_wire(refusal));
-            }
-            // A `SessionCatalog` reads; appending needs a store this registration does not hold.
-            // Answered rather than claimed: a caller that received `ok: true` here would believe a
-            // rating was saved.
-            let _ = rating;
-            Ok(json!({
-                "ok": false,
-                "code": "store_unavailable",
-                "message": "this deployment's session catalog cannot append; supply a store to enable feedback",
-            }))
-        })
+        let catalog = std::sync::Arc::clone(&putting);
+        Box::pin(async move { put_feedback(&catalog, &call.args).await })
     });
 
+    let deleting = std::sync::Arc::clone(catalog);
     registry.register(NAMESPACE, "delete", move |call: RemoteCall| {
-        Box::pin(async move {
-            let message_id = string_arg(&call.args, "messageId", "delete")?;
-            if message_id.trim().is_empty() {
-                return Ok(refusal_to_wire(Refusal::MessageIdBlank));
-            }
-            Ok(json!({
-                "ok": false,
-                "code": "store_unavailable",
-                "message": "this deployment's session catalog cannot append; supply a store to enable feedback",
-            }))
-        })
+        let catalog = std::sync::Arc::clone(&deleting);
+        Box::pin(async move { delete_feedback(&catalog, &call.args).await })
     });
 }
 
@@ -307,43 +531,79 @@ pub fn register_session_feedback_methods(
     catalog: &std::sync::Arc<dyn crate::api::remote::SessionCatalog>,
 ) {
     let listing = std::sync::Arc::clone(catalog);
-    registry.register(SESSION_FEEDBACK_NAMESPACE, "record", move |call: RemoteCall| {
-        let catalog = std::sync::Arc::clone(&listing);
-        Box::pin(async move {
-            let session_id = string_arg(&call.args, "sessionId", "record")?;
-            // Upstream answers `session-not-found` as a result rather than an error: the call
-            // reached a server that does not have that session, which is an answer.
-            if catalog.read(&session_id).await.is_none() {
-                return Ok(json!({
-                    "ok": false,
-                    "error": { "code": "session-not-found", "sessionId": session_id },
-                }));
-            }
-            let text = call.args.get("text").and_then(Value::as_str);
-            let category = call.args.get("category").and_then(Value::as_str);
-            if let Err(refusal) = validate(&session_id, text, category) {
-                return Ok(refusal_to_wire(refusal));
-            }
-            // Appending needs a store the catalogue does not hold; answered rather than claimed.
-            Ok(json!({
-                "ok": false,
-                "code": "store_unavailable",
-                "message": "this deployment's session catalog cannot append; supply a store to enable feedback",
-            }))
-        })
-    });
+    registry.register(
+        SESSION_FEEDBACK_NAMESPACE,
+        "record",
+        move |call: RemoteCall| {
+            let catalog = std::sync::Arc::clone(&listing);
+            Box::pin(async move {
+                let session_id = string_arg(
+                    &call.args,
+                    "sessionId",
+                    SESSION_FEEDBACK_NAMESPACE,
+                    "record",
+                )?;
+                if catalog.read(&session_id).await.is_none() {
+                    return Ok(rejected(json!({
+                        "code": "session-not-found",
+                        "sessionId": session_id,
+                    })));
+                }
+                let text = call
+                    .args
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned);
+                let category = call
+                    .args
+                    .get("category")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                if let Some(category) = category.as_deref() {
+                    if !CATEGORIES.contains(&category) {
+                        return Err(RemoteError::InvalidArguments {
+                            namespace: SESSION_FEEDBACK_NAMESPACE.to_owned(),
+                            method: "record".to_owned(),
+                            message: format!(
+                                "`category` {category:?} is not one this build recognises"
+                            ),
+                        });
+                    }
+                }
+                let Some(session) = catalog.open(&session_id) else {
+                    return Ok(store_unavailable());
+                };
+                session
+                    .append(SessionEvent::SessionFeedbackRecord {
+                        text: text.clone(),
+                        category: category.clone(),
+                    })
+                    .await
+                    .map_err(|error| RemoteError::Failed(error.to_string()))?;
+                Ok(success(json!({ "recorded": true })))
+            })
+        },
+    );
 }
 
 /// The namespace session-level feedback registers under.
 pub const SESSION_FEEDBACK_NAMESPACE: &str = "sessionFeedback";
 
 /// Reads a required string argument.
-fn string_arg(args: &Value, key: &str, method: &str) -> Result<String, RemoteError> {
+fn string_arg(
+    args: &Value,
+    key: &str,
+    namespace: &str,
+    method: &str,
+) -> Result<String, RemoteError> {
     args.get(key)
         .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| RemoteError::InvalidArguments {
-            namespace: NAMESPACE.to_owned(),
+            namespace: namespace.to_owned(),
             method: method.to_owned(),
             message: format!("`{key}` is required"),
         })
@@ -428,5 +688,103 @@ mod tests {
             validate("  ", None, None).expect_err("blank id"),
             Refusal::MessageIdBlank
         );
+    }
+
+    #[test]
+    fn a_rating_is_appended_and_still_there_after_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "girder-feedback-{}-{}",
+            std::process::id(),
+            crate::now_millis()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let catalog = std::sync::Arc::new(crate::api::remote::DirectoryCatalog::new(&dir));
+            let shared: std::sync::Arc<dyn crate::api::remote::SessionCatalog> = catalog.clone();
+            crate::api::remote::SessionCatalog::create(catalog.as_ref(), "s1")
+                .await
+                .expect("created");
+            let session =
+                crate::api::remote::SessionCatalog::open(catalog.as_ref(), "s1").expect("open");
+            session
+                .append(SessionEvent::assistant_text("m1", "answer", "model"))
+                .await
+                .expect("assistant");
+            let mut registry = crate::api::remote::RemoteRegistry::new();
+            register_message_feedback_methods(&mut registry, &shared);
+            register_session_feedback_methods(&mut registry, &shared);
+            let created = registry
+                .dispatch(
+                    "messageFeedback",
+                    "put",
+                    crate::api::remote::RemoteCall {
+                        args: json!({
+                            "sessionId": "s1",
+                            "messageId": "m1",
+                            "rating": "positive",
+                            "ifVersion": null,
+                        }),
+                        peer: String::new(),
+                    },
+                )
+                .await
+                .expect("put");
+            assert_eq!(created["ok"], true);
+            let version = created["value"]["version"].as_str().expect("version");
+            let listed = registry
+                .dispatch(
+                    "messageFeedback",
+                    "list",
+                    crate::api::remote::RemoteCall {
+                        args: json!({ "sessionId": "s1" }),
+                        peer: String::new(),
+                    },
+                )
+                .await
+                .expect("list");
+            assert_eq!(listed["value"]["items"][0]["messageId"], "m1");
+            let removed = registry
+                .dispatch(
+                    "messageFeedback",
+                    "delete",
+                    crate::api::remote::RemoteCall {
+                        args: json!({
+                            "sessionId": "s1",
+                            "messageId": "m1",
+                            "ifVersion": version,
+                        }),
+                        peer: String::new(),
+                    },
+                )
+                .await
+                .expect("delete");
+            assert_eq!(removed["value"]["absent"], true);
+            registry
+                .dispatch(
+                    "sessionFeedback",
+                    "record",
+                    crate::api::remote::RemoteCall {
+                        args: json!({ "sessionId": "s1", "text": "  helpful  " }),
+                        peer: String::new(),
+                    },
+                )
+                .await
+                .expect("record");
+        });
+        let reopened = crate::api::remote::DirectoryCatalog::new(&dir);
+        let record = runtime
+            .block_on(crate::api::remote::SessionCatalog::read(&reopened, "s1"))
+            .expect("reopened");
+        assert!(ordered_items(&record.events).is_empty());
+        assert!(record.events.iter().any(|event| matches!(
+            event,
+            SessionEvent::SessionFeedbackRecord { text: Some(text), .. } if text == "helpful"
+        )));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
