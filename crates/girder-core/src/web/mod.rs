@@ -520,17 +520,12 @@ impl Web {
 #[must_use]
 pub fn build_web_from_env() -> Web {
     let web = Web::new();
-    if let Ok(endpoint) = std::env::var("GIRDER_FETCH_ENDPOINT")
-        && !endpoint.trim().is_empty()
-    {
-        // A single provider serves both when one endpoint is configured: the common shape is one service that
-        // searches and fetches.
-        let provider = Arc::new(EndpointProvider {
-            name: "env".to_owned(),
-            endpoint: endpoint.clone(),
-        });
-        let _ = web.register_fetch(Arc::clone(&provider) as Arc<dyn FetchProvider>);
-        let _ = web.register_search(provider);
+    let (fetch, search) = rpc::configured_endpoints_from_env();
+    if let Some(provider) = fetch {
+        let _ = web.register_fetch(Arc::new(provider) as Arc<dyn FetchProvider>);
+    }
+    if let Some(provider) = search {
+        let _ = web.register_search(Arc::new(provider));
     }
     web
 }
@@ -539,6 +534,7 @@ pub fn build_web_from_env() -> Web {
 ///
 /// Deliberately minimal: it posts a JSON request and reads a JSON answer. A deployment with a real search service
 /// implements [`SearchProvider`] and [`FetchProvider`] itself, and this exists so the tools are usable without one.
+#[derive(Clone)]
 pub struct EndpointProvider {
     /// Its name, for an error message.
     pub name: String,

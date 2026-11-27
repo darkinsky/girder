@@ -96,6 +96,27 @@ impl RemoteError {
             Self::Failed(_) => "FAILED",
         }
     }
+
+    /// The code carried on the wire.
+    ///
+    /// A typed filesystem or gateway failure keeps its upstream code in the message, because this
+    /// enum has one `Failed` variant. The transport reads that prefix so a client branching on
+    /// `workspace-file/not-found` does not see a generic `FAILED`.
+    #[must_use]
+    pub fn wire_code(&self) -> std::borrow::Cow<'_, str> {
+        if let Self::Failed(message) = self {
+            if let Some(code) = message.split(':').next() {
+                let typed = code.contains('/')
+                    && code.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || character == '/' || character == '-'
+                    });
+                if typed {
+                    return std::borrow::Cow::Borrowed(code);
+                }
+            }
+        }
+        std::borrow::Cow::Borrowed(self.code())
+    }
 }
 
 /// One session list row.
@@ -144,6 +165,24 @@ pub struct SessionSummary {
     /// Creation origin, when the session was not opened directly by a person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Summary projections the list can render before the session is opened.
+    ///
+    /// Upstream's `SessionProjectionHints`. A cold listing is `cached`: its watermark belongs to
+    /// the stored log and must not compete with a live control baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projections: Option<SessionProjectionHints>,
+}
+
+/// Summary projection block carried by one `session.list` row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionProjectionHints {
+    /// `cached` for a log folded at list time. `sequenced` is reserved for a live registry.
+    pub kind: String,
+    /// Sequence of the last folded event. `0` when the log is empty.
+    #[serde(rename = "asOfSeq")]
+    pub as_of_seq: u64,
+    /// Summary-key values. Units that opt out of summaries are absent.
+    pub values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl SessionSummary {
@@ -175,6 +214,7 @@ impl SessionSummary {
             cwd: None,
             parent_session_id: None,
             origin: None,
+            projections: None,
         }
     }
 
@@ -194,6 +234,7 @@ impl SessionSummary {
             cwd: None,
             parent_session_id: None,
             origin: None,
+            projections: None,
         }
     }
 }
@@ -246,6 +287,37 @@ pub struct RemoteCall {
 /// `Arc<dyn Fn>` rather than an `async fn` in a trait: methods are stored by name in a map, so the
 /// callable must be object-safe. That is migration-plan §1.3 constraint one again.
 pub type RemoteMethod = Arc<dyn Fn(RemoteCall) -> BoxFut<Result<Value, RemoteError>> + Send + Sync>;
+
+/// One JSON path occupied by a byte attachment in a Connection RPC result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteAttachmentSegment {
+    /// An object property.
+    Key(String),
+    /// An array index.
+    Index(usize),
+}
+
+/// Bytes projected out of a Remote result before JSON transport framing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteAttachment {
+    /// The result-relative path whose JSON value is replaced by `null`.
+    pub path: Vec<RemoteAttachmentSegment>,
+    /// The exact bytes carried in the multipart part.
+    pub bytes: Vec<u8>,
+}
+
+/// A Remote result with optional out-of-band byte fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryRemoteResult {
+    /// JSON-safe result metadata.
+    pub value: Value,
+    /// Native byte fields that must not be JSON-decoded.
+    pub attachments: Vec<RemoteAttachment>,
+}
+
+/// A Remote method that owns one or more out-of-band byte fields.
+pub type BinaryRemoteMethod =
+    Arc<dyn Fn(RemoteCall) -> BoxFut<Result<BinaryRemoteResult, RemoteError>> + Send + Sync>;
 
 /// The sink a streaming Remote method pushes values through.
 ///
@@ -319,6 +391,7 @@ pub type RemoteStreamMethod = Arc<dyn Fn(StreamOpen) -> BoxFut<()> + Send + Sync
 #[derive(Default)]
 pub struct RemoteRegistry {
     methods: BTreeMap<(String, String), RemoteMethod>,
+    binary_methods: BTreeMap<(String, String), BinaryRemoteMethod>,
     streams: BTreeMap<(String, String), RemoteStreamMethod>,
     /// Methods the upstream API defines that this build does not implement.
     ///
@@ -416,6 +489,18 @@ impl RemoteRegistry {
             .insert((namespace.to_owned(), method.to_owned()), Arc::new(handler));
     }
 
+    /// Registers a unary method whose result may contain raw byte attachments.
+    pub fn register_binary<F>(&mut self, namespace: &str, method: &str, handler: F)
+    where
+        F: Fn(RemoteCall) -> BoxFut<Result<BinaryRemoteResult, RemoteError>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.binary_methods
+            .insert((namespace.to_owned(), method.to_owned()), Arc::new(handler));
+    }
+
     /// Registers a method whose result is a series of items on the stream mux.
     pub fn register_stream<F>(&mut self, namespace: &str, method: &str, handler: F)
     where
@@ -484,11 +569,47 @@ impl RemoteRegistry {
             .cloned()
     }
 
+    /// Dispatches a unary call and preserves any byte attachments.
+    pub async fn dispatch_binary(
+        &self,
+        namespace: &str,
+        method: &str,
+        call: RemoteCall,
+    ) -> Result<BinaryRemoteResult, RemoteError> {
+        let key = (namespace.to_owned(), method.to_owned());
+        self.authorise(namespace, method, &call)?;
+        if self.streams.contains_key(&key) {
+            return Err(RemoteError::Failed(format!(
+                "{namespace}.{method} is a stream and must be opened on the mux"
+            )));
+        }
+        if let Some(handler) = self.binary_methods.get(&key) {
+            return handler(call).await;
+        }
+        if let Some(handler) = self.methods.get(&key) {
+            return Ok(BinaryRemoteResult {
+                value: handler(call).await?,
+                attachments: Vec::new(),
+            });
+        }
+        if self.known_unimplemented.contains(&key) {
+            return Err(RemoteError::NotImplemented {
+                namespace: namespace.to_owned(),
+                method: method.to_owned(),
+            });
+        }
+        Err(RemoteError::UnknownMethod {
+            namespace: namespace.to_owned(),
+            method: method.to_owned(),
+        })
+    }
+
     pub fn names(&self) -> Vec<(String, String)> {
         let mut names: Vec<(String, String)> = self
             .methods
             .keys()
             .cloned()
+            .chain(self.binary_methods.keys().cloned())
             .chain(self.streams.keys().cloned())
             .collect();
         names.sort();
@@ -505,7 +626,7 @@ impl RemoteRegistry {
     /// Whether nothing is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.methods.is_empty() && self.streams.is_empty()
+        self.methods.is_empty() && self.binary_methods.is_empty() && self.streams.is_empty()
     }
 
     /// Dispatches one call.
@@ -530,6 +651,11 @@ impl RemoteRegistry {
         if self.streams.contains_key(&key) {
             return Err(RemoteError::Failed(format!(
                 "{namespace}.{method} is a stream and must be opened on the mux"
+            )));
+        }
+        if self.binary_methods.contains_key(&key) {
+            return Err(RemoteError::Failed(format!(
+                "{namespace}.{method} returns binary attachments and must use binary dispatch"
             )));
         }
         if let Some(handler) = self.methods.get(&key) {
@@ -1110,6 +1236,26 @@ impl SessionCatalog for DirectoryCatalog {
             .map_err(|error| RemoteError::Failed(format!("cannot persist session header: {error}")))
     }
 
+    fn working_directory(&self, id: &str) -> Option<String> {
+        let header = self.session_header(id).and_then(|header| header.cwd);
+        let moved = log_path(&self.root, id).ok().and_then(|path| {
+            crate::session::SessionStore::new(path)
+                .read_all()
+                .ok()
+                .and_then(|events| {
+                    events.into_iter().rev().find_map(|event| match event {
+                        crate::session::SessionEvent::WorkspaceRootChange { cwd }
+                            if crate::shell::working_dir::is_absolute(&cwd) =>
+                        {
+                            Some(cwd)
+                        }
+                        _ => None,
+                    })
+                })
+        });
+        moved.or(header).filter(|cwd| !cwd.is_empty())
+    }
+
     fn set_working_directory(&self, id: &str, cwd: &str) -> Result<(), RemoteError> {
         let mut header = self.session_header(id).unwrap_or_default();
         header.cwd = Some(cwd.to_owned());
@@ -1469,7 +1615,12 @@ fn register_session_core(
     register_list(registry, catalog, runtime, &places);
     register_create(registry, catalog, &places, None);
     register_history(registry, catalog);
-    register_follow(registry, catalog, &places);
+    register_follow(
+        registry,
+        catalog,
+        &places,
+        runtime.map(|runtime| runtime.assistant()),
+    );
     // The version handshake. A client that speaks an older shape asks once and learns it is old, instead of discovering it
     // from an argument error it cannot interpret -- and a client newer than this build is told to upgrade rather than
     // silently degraded, which is the one failure a version check exists to prevent.
@@ -1521,10 +1672,12 @@ fn register_list(
     let shared: Arc<dyn SessionCatalog> = Arc::clone(catalog);
     let runtime = runtime.cloned();
     let places = Arc::clone(places);
+    let projections = crate::session::projection_setup::assemble().ok();
     registry.register("session", "list", move |call| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&shared);
         let runtime = runtime.clone();
         let places = Arc::clone(&places);
+        let projections = projections.clone();
         Box::pin(async move {
             // `session.list` takes an empty request upstream; a null or missing body is the common
             // case, so it is accepted rather than rejected as invalid arguments.
@@ -1535,31 +1688,44 @@ fn register_list(
             };
 
             let records = catalog.list().await;
-            let items: Vec<SessionSummary> = records
-                .iter()
-                .map(|record| {
-                    // `from_record`, not `from_events`: `list` deliberately leaves `events` empty, so reading them here
-                    // reported every session as blank -- a conversation with seven messages listed as unused. The
-                    // constructor written for this case existed and had no caller.
-                    let mut summary = SessionSummary::from_record(record);
-                    // Girder attaches an agent for the turn that is in flight. Upstream separates an idle
-                    // attached agent from a running one; this build has the agent only while the turn runs.
-                    if runtime
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.is_running(&record.id))
-                    {
-                        summary.running = true;
-                        summary.agent_available = true;
+            let mut items = Vec::with_capacity(records.len());
+            for record in records {
+                // `from_record`, not `from_events`: `list` deliberately leaves `events` empty, so reading them here
+                // reported every session as blank -- a conversation with seven messages listed as unused. The
+                // constructor written for this case existed and had no caller.
+                let mut summary = SessionSummary::from_record(&record);
+                // Girder attaches an agent for the turn that is in flight. Upstream separates an idle
+                // attached agent from a running one; this build has the agent only while the turn runs.
+                if runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.is_running(&record.id))
+                {
+                    summary.running = true;
+                    summary.agent_available = true;
+                }
+                if let Some(header) = catalog.session_header(&record.id) {
+                    summary.cwd = header.cwd.clone();
+                    summary.parent_session_id = header.parent_session.clone();
+                    summary.origin = header.origin.clone();
+                }
+                summary.cwd = summary.cwd.or_else(|| recorded_cwd(&places, &record.id));
+                if let Some(registry) = &projections {
+                    if let Some(full) = catalog.read(&record.id).await {
+                        let directory = catalog.working_directory(&record.id);
+                        let projected = registry
+                            .project_summary(&full.events)
+                            .with_header_directory(directory.as_deref());
+                        if !projected.values.is_empty() {
+                            summary.projections = Some(SessionProjectionHints {
+                                kind: "cached".to_owned(),
+                                as_of_seq: projected.as_of,
+                                values: projected.values,
+                            });
+                        }
                     }
-                    if let Some(header) = catalog.session_header(&record.id) {
-                        summary.cwd = header.cwd.clone();
-                        summary.parent_session_id = header.parent_session.clone();
-                        summary.origin = header.origin.clone();
-                    }
-                    summary.cwd = summary.cwd.or_else(|| recorded_cwd(&places, &record.id));
-                    summary
-                })
-                .collect();
+                }
+                items.push(summary);
+            }
             serde_json::to_value(SessionListValue { items })
                 .map_err(|error| RemoteError::Failed(error.to_string()))
         })
@@ -1629,7 +1795,12 @@ pub fn bind_session_places(
 ) {
     register_list(registry, catalog, runtime, places);
     register_create(registry, catalog, places, workspaces);
-    register_follow(registry, catalog, places);
+    register_follow(
+        registry,
+        catalog,
+        places,
+        runtime.map(|runtime| runtime.assistant()),
+    );
 }
 
 fn create_invalid(message: impl Into<String>) -> RemoteError {
@@ -1832,15 +2003,18 @@ fn register_follow(
     registry: &mut RemoteRegistry,
     catalog: &Arc<dyn SessionCatalog>,
     places: &Arc<std::sync::Mutex<crate::session::workspace::Index>>,
+    assistant: Option<&std::sync::Arc<crate::core::assistant_live::AssistantHub>>,
 ) {
     let catalog: Arc<dyn SessionCatalog> = Arc::clone(catalog);
     let places = Arc::clone(places);
+    let assistant = assistant.cloned();
     let projections = crate::session::projection_setup::assemble()
         .expect("built-in session projections have unique keys");
     registry.register_stream("session", "follow", move |open| {
         let catalog: Arc<dyn SessionCatalog> = Arc::clone(&catalog);
         let places = Arc::clone(&places);
         let projections = Arc::clone(&projections);
+        let assistant = assistant.clone();
         Box::pin(async move {
             let Some(session_id) = follow_session_id(&open.call.args) else {
                 let _ = open.fail(RemoteError::InvalidArguments {
@@ -1857,12 +2031,20 @@ fn register_follow(
                 .and_then(Value::as_u64)
                 .and_then(|value| usize::try_from(value).ok())
                 .filter(|value| *value > 0);
+            let assistant = if open.call.args.get("assistantStream") == Some(&Value::Bool(true)) {
+                assistant
+            } else {
+                None
+            };
             let mut cursor = 0_u64;
             let mut opened = false;
+            let mut sent_revision = 0_u64;
+            let assistant_notify = assistant.as_ref().map(|hub| hub.notifier());
             loop {
                 if open.cancel.is_cancelled() {
                     return;
                 }
+                let assistant_wait = assistant_notify.as_ref().map(|notify| notify.notified());
                 if let Some(record) = catalog.read(&session_id).await {
                     if !opened {
                         let page = page_of(
@@ -1898,7 +2080,9 @@ fn register_follow(
                                 session_wire_record(&record.event, seq)
                             })
                             .collect::<Vec<_>>();
-                        let projected = projections.project(&record.events);
+                        let projected = projections.project(&record.events).with_header_directory(
+                            catalog.working_directory(&session_id).as_deref(),
+                        );
                         let stored = catalog.session_header(&session_id);
                         let mut header = serde_json::json!({
                             "version": 4,
@@ -1937,7 +2121,7 @@ fn register_follow(
                         {
                             header["agentPreset"] = serde_json::Value::String(preset);
                         }
-                        if !open.push(serde_json::json!({
+                        let mut snapshot = serde_json::json!({
                             "type": "snapshot",
                             "header": header,
                             "cursor": wire_cursor,
@@ -1947,26 +2131,31 @@ fn register_follow(
                                 "asOfSeq": projected.as_of,
                                 "values": projected.values,
                             },
-                        })) {
+                        });
+                        sent_revision = attach_assistant_baseline(
+                            &mut snapshot,
+                            &open.call.args,
+                            assistant.as_ref(),
+                            &session_id,
+                        );
+                        if !open.push(snapshot) {
                             return;
                         }
                         opened = true;
                     } else {
-                        let len = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
-                        let start = usize::try_from(cursor).unwrap_or(usize::MAX);
-                        for (offset, event) in record.events.iter().enumerate().skip(start) {
-                            let seq = u64::try_from(offset).unwrap_or(u64::MAX);
-                            let Some(frame) = session_wire_record(event, seq) else {
-                                continue;
-                            };
-                            if !open.push(frame) {
-                                return;
-                            }
+                        if !forward_follow_progress(
+                            &open,
+                            assistant.as_ref(),
+                            &session_id,
+                            &mut sent_revision,
+                            &record.events,
+                            &mut cursor,
+                        ) {
+                            return;
                         }
-                        cursor = len;
                     }
                 } else if !opened {
-                    if !open.push(serde_json::json!({
+                    let mut snapshot = serde_json::json!({
                         "type": "snapshot",
                         "header": {
                             "version": 4,
@@ -1979,10 +2168,28 @@ fn register_follow(
                         "records": [],
                         "hasMore": false,
                         "projections": {},
-                    })) {
+                    });
+                    sent_revision = attach_assistant_baseline(
+                        &mut snapshot,
+                        &open.call.args,
+                        assistant.as_ref(),
+                        &session_id,
+                    );
+                    if !open.push(snapshot) {
                         return;
                     }
                     opened = true;
+                } else {
+                    if !forward_follow_progress(
+                        &open,
+                        assistant.as_ref(),
+                        &session_id,
+                        &mut sent_revision,
+                        &[],
+                        &mut cursor,
+                    ) {
+                        return;
+                    }
                 }
                 tokio::select! {
                     () = open.cancel.cancelled() => return,
@@ -1991,11 +2198,153 @@ fn register_follow(
                             return;
                         }
                     }
-                    () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+                    () = async {
+                        if let Some(wait) = assistant_wait {
+                            tokio::select! {
+                                _ = wait => {}
+                                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+                            }
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                    } => {}
                 }
             }
         })
     });
+}
+
+/// Adds the assistant baseline when the Web client opted into live output.
+///
+/// The browser opens every session with `assistantStream: true` and refuses a snapshot that omits
+/// the baseline. An idle hub is revision 0 with the attempt field absent. A generation already in
+/// progress reports that revision and the chunks the late follower has to fold in itself.
+fn attach_assistant_baseline(
+    snapshot: &mut Value,
+    args: &Value,
+    assistant: Option<&std::sync::Arc<crate::core::assistant_live::AssistantHub>>,
+    session_id: &str,
+) -> u64 {
+    if args.get("assistantStream") != Some(&Value::Bool(true)) {
+        return 0;
+    }
+    let baseline = assistant
+        .map(|hub| hub.baseline(session_id))
+        .unwrap_or_else(|| serde_json::json!({ "revision": 0 }));
+    let revision = baseline
+        .get("revision")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    snapshot["assistantStream"] = baseline;
+    revision
+}
+
+/// Forwards one follow iteration while preserving assistant attempt boundaries.
+///
+/// A committed end carries the durable sequence that must be visible before it. Processing one
+/// end at a time also keeps an older end ahead of a later attempt's start when a tool turn
+/// produces several model attempts before the follower wakes up.
+fn forward_follow_progress(
+    open: &StreamOpen,
+    assistant: Option<&std::sync::Arc<crate::core::assistant_live::AssistantHub>>,
+    session_id: &str,
+    sent: &mut u64,
+    durable: &[SessionEvent],
+    cursor: &mut u64,
+) -> bool {
+    let Some(hub) = assistant else {
+        return push_follow_events(open, durable, cursor, None);
+    };
+
+    let frames = hub.frames_after(session_id, *sent);
+    let mut index = 0;
+    loop {
+        while index < frames.len() {
+            let frame = &frames[index];
+            let kind = frame
+                .get("frame")
+                .and_then(|frame| frame.get("type"))
+                .and_then(Value::as_str);
+            if kind == Some("end") {
+                break;
+            }
+            if !push_assistant_frame(open, frame, sent) {
+                return false;
+            }
+            index += 1;
+        }
+        if index == frames.len() {
+            return push_follow_events(open, durable, cursor, None);
+        }
+
+        let end = &frames[index];
+        let ready = assistant_end_is_durable(end, durable);
+        let until = end
+            .get("frame")
+            .and_then(|frame| frame.get("outcome"))
+            .filter(|outcome| outcome.get("kind").and_then(Value::as_str) == Some("committed"))
+            .and_then(|outcome| outcome.get("seq").and_then(Value::as_u64));
+        if !push_follow_events(open, durable, cursor, until) {
+            return false;
+        }
+        if !ready {
+            return true;
+        }
+        if !push_assistant_frame(open, end, sent) {
+            return false;
+        }
+        index += 1;
+    }
+}
+
+fn push_follow_events(
+    open: &StreamOpen,
+    events: &[SessionEvent],
+    cursor: &mut u64,
+    until: Option<u64>,
+) -> bool {
+    let len = u64::try_from(events.len()).unwrap_or(u64::MAX);
+    let requested_end = until.and_then(|seq| seq.checked_add(1)).unwrap_or(len);
+    let end = requested_end.min(len);
+    let start = usize::try_from((*cursor).min(end)).unwrap_or(usize::MAX);
+    let end_index = usize::try_from(end).unwrap_or(events.len());
+    for (offset, event) in events.iter().enumerate().take(end_index).skip(start) {
+        let seq = u64::try_from(offset).unwrap_or(u64::MAX);
+        let Some(frame) = session_wire_record(event, seq) else {
+            continue;
+        };
+        if !open.push(frame) {
+            return false;
+        }
+    }
+    *cursor = end;
+    true
+}
+
+fn push_assistant_frame(open: &StreamOpen, frame: &Value, sent: &mut u64) -> bool {
+    if let Some(revision) = frame
+        .get("frame")
+        .and_then(|frame| frame.get("revision"))
+        .and_then(Value::as_u64)
+    {
+        *sent = (*sent).max(revision);
+    }
+    open.push(frame.clone())
+}
+
+fn assistant_end_is_durable(frame: &Value, durable: &[SessionEvent]) -> bool {
+    let Some(outcome) = frame.get("frame").and_then(|frame| frame.get("outcome")) else {
+        return false;
+    };
+    if outcome.get("kind").and_then(Value::as_str) != Some("committed") {
+        return true;
+    }
+    let Some(seq) = outcome.get("seq").and_then(Value::as_u64) else {
+        return false;
+    };
+    durable
+        .get(usize::try_from(seq).unwrap_or(usize::MAX))
+        .is_some_and(|event| matches!(event, SessionEvent::AssistantMessage { .. }))
 }
 
 fn follow_session_id(args: &Value) -> Option<String> {

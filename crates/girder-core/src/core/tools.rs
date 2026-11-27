@@ -58,6 +58,11 @@ pub struct ToolRunContext {
     /// means. It is not a default that quietly permits: a tool that needs the state and finds none refuses, because a
     /// write that proceeded because nobody configured a policy is the failure mode the policy exists to prevent.
     pub permissions: Option<Arc<PermissionState>>,
+    /// The sandbox mode recorded in this session's log.
+    ///
+    /// `None` when the session never switched. A tool whose path policy was fixed at startup uses
+    /// this to follow the session instead of that startup mode.
+    pub session_sandbox: Option<crate::shell::SandboxMode>,
     /// Where the session's workspace is, for a tool that must decide whether a path is inside it.
     pub workspace: Option<std::path::PathBuf>,
     /// The directory relative paths start from.
@@ -66,6 +71,12 @@ pub struct ToolRunContext {
     /// this is where `src/a.rs` is looked up after `working_directory` moved the session. Absent
     /// means the tool's own root, which is the workspace.
     pub cwd: Option<std::path::PathBuf>,
+    /// The per-session working-directory state used by the `working_directory` tool.
+    ///
+    /// The context carries this because a runtime may serve multiple sessions concurrently; a
+    /// process-wide tool closure must not let one session's `cd` affect another.
+    pub working_directory:
+        Option<Arc<tokio::sync::Mutex<crate::shell::working_dir::WorkingDirectory>>>,
     /// What this session has seen, so a write does not clobber a change nobody looked at.
     pub observations: Option<Arc<ObservationSession>>,
     /// The person already approved this call, so a path outside the workspace may proceed.
@@ -92,8 +103,10 @@ impl Default for ToolRunContext {
             },
             cancel: CancellationToken::new(),
             permissions: None,
+            session_sandbox: None,
             workspace: None,
             cwd: None,
+            working_directory: None,
             observations: None,
             outside_granted: false,
             escalation: None,
@@ -109,8 +122,10 @@ impl ToolRunContext {
             execution,
             cancel,
             permissions: None,
+            session_sandbox: None,
             workspace: None,
             cwd: None,
+            working_directory: None,
             observations: None,
             outside_granted: false,
             escalation: None,

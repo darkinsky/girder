@@ -324,6 +324,16 @@ pub enum SessionEvent {
         active: bool,
     },
 
+    /// A host move of the session's working directory.
+    ///
+    /// Upstream's `workspace-root/change`. The header keeps the original project. This event is
+    /// the directory file views and the `workingDirectory` projection use from here on.
+    #[serde(rename = "workspace-root/change")]
+    WorkspaceRootChange {
+        /// Absolute directory the session works in from this event on.
+        cwd: String,
+    },
+
     /// The sandbox mode in force.
     #[serde(rename = "sandbox/mode")]
     SandboxMode {
@@ -537,6 +547,7 @@ impl SessionEvent {
             Self::ModelSelection { .. } => "model/selection",
             Self::PermissionPreset { .. } => "permission/preset",
             Self::PlanMode { .. } => "plan/mode",
+            Self::WorkspaceRootChange { .. } => "workspace-root/change",
             Self::SandboxMode { .. } => "sandbox/mode",
             Self::ApprovalPolicy { .. } => "approval/policy",
             Self::RequestContext { .. } => "request/context",
@@ -572,6 +583,7 @@ impl SessionEvent {
             | Self::ModelSelection { .. }
             | Self::PermissionPreset { .. }
             | Self::PlanMode { .. }
+            | Self::WorkspaceRootChange { .. }
             | Self::SandboxMode { .. }
             | Self::ApprovalPolicy { .. }
             | Self::RequestContext { .. }
@@ -1091,6 +1103,15 @@ pub trait Session: Send + Sync {
     /// Reads every event.
     fn replay(&self) -> BoxFut<Result<Vec<SessionEvent>, SessionError>>;
 
+    /// Returns the original working directory from the durable session header, when present.
+    ///
+    /// The runtime combines this with replayed `workspace-root/change` events to construct a
+    /// per-session working-directory owner. Keeping it on the session seam prevents concurrent
+    /// sessions from sharing mutable directory state.
+    fn working_directory(&self) -> Option<String> {
+        None
+    }
+
     /// Makes every event written so far durable.
     ///
     /// Called before a model request and before a tool body. A failure stops that work: a request
@@ -1130,6 +1151,19 @@ impl Session for SessionStore {
             }
             .read_all()
         })
+    }
+
+    fn working_directory(&self) -> Option<String> {
+        crate::session::read_session_header(&self.path)
+            .ok()
+            .flatten()
+            .and_then(|header| {
+                header
+                    .get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|cwd| crate::shell::working_dir::is_absolute(cwd))
+                    .map(str::to_owned)
+            })
     }
 
     fn flush(&self) -> BoxFut<Result<(), SessionError>> {
@@ -1655,6 +1689,19 @@ mod flush_tests {
             crate::api::remote::SessionCatalog::session_header(&reopened, "s1")
                 .and_then(|header| header.cwd),
             Some("/workspace".to_owned())
+        );
+        assert_eq!(
+            crate::api::remote::SessionCatalog::working_directory(&reopened, "s1"),
+            Some("/workspace".to_owned())
+        );
+        SessionStore::new(dir.join("s1.jsonl.zst"))
+            .append(&SessionEvent::WorkspaceRootChange {
+                cwd: "/moved".to_owned(),
+            })
+            .expect("move");
+        assert_eq!(
+            crate::api::remote::SessionCatalog::working_directory(&reopened, "s1"),
+            Some("/moved".to_owned())
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

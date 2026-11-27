@@ -441,7 +441,9 @@ pub fn register_session_state_method_observing(
                 let Some(full) = catalog.read(&record.id).await else {
                     continue;
                 };
-                let projected = projections.project(&full.events);
+                let projected = projections
+                    .project(&full.events)
+                    .with_header_directory(catalog.working_directory(&full.id).as_deref());
                 blocks.insert(
                     full.id,
                     serde_json::json!({
@@ -481,7 +483,9 @@ pub fn register_session_state_method_observing(
                         let Some(full) = catalog.read(&record.id).await else {
                             continue;
                         };
-                        let projected = projections.project(&full.events);
+                        let projected = projections
+                            .project(&full.events)
+                            .with_header_directory(catalog.working_directory(&full.id).as_deref());
                         blocks.insert(
                             full.id.clone(),
                             serde_json::json!({
@@ -529,8 +533,13 @@ async fn push_control_diffs(
         if start < full.events.len() {
             for index in start..full.events.len() {
                 let seq = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-                let before = projections.project(&full.events[..index]);
-                let after = projections.project(&full.events[..=index]);
+                let directory = catalog.working_directory(&full.id);
+                let before = projections
+                    .project(&full.events[..index])
+                    .with_header_directory(directory.as_deref());
+                let after = projections
+                    .project(&full.events[..=index])
+                    .with_header_directory(directory.as_deref());
                 let changes = changed_projection_keys(&before.values, &after.values);
                 if changes.is_empty() {
                     continue;
@@ -642,8 +651,13 @@ async fn observe_projections_stream(
         if start < record.events.len() {
             for index in start..record.events.len() {
                 let seq = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-                let before = projections.project(&record.events[..index]);
-                let after = projections.project(&record.events[..=index]);
+                let directory = catalog.working_directory(&session_id);
+                let before = projections
+                    .project(&record.events[..index])
+                    .with_header_directory(directory.as_deref());
+                let after = projections
+                    .project(&record.events[..=index])
+                    .with_header_directory(directory.as_deref());
                 let changes = changed_projection_keys(&before.values, &after.values);
                 if changes.is_empty() {
                     continue;
@@ -1208,7 +1222,9 @@ async fn state(
     // Folded from this session's log, not from the registry's stored map. The registry holds the
     // definitions; its stored map is whatever the last caller wrote, which is another session when
     // two are open. The sequence matches `last_seq`: one-based, empty is 0.
-    let projected = projections.project(&record.events);
+    let projected = projections
+        .project(&record.events)
+        .with_header_directory(catalog.working_directory(session_id).as_deref());
     let mut folded = serde_json::Map::new();
     for (key, value) in projected.values {
         folded.insert(key, value);

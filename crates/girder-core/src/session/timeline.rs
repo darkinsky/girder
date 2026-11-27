@@ -278,6 +278,7 @@ pub fn outline(events: &[SessionEvent]) -> Vec<Segment> {
             | SessionEvent::ModelSelection { .. }
             | SessionEvent::PermissionPreset { .. }
             | SessionEvent::PlanMode { .. }
+            | SessionEvent::WorkspaceRootChange { .. }
             | SessionEvent::SandboxMode { .. }
             | SessionEvent::ApprovalPolicy { .. }
             | SessionEvent::RequestContext { .. } | SessionEvent::RequestHeader { .. }

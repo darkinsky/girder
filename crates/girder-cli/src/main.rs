@@ -1239,9 +1239,24 @@ fn register_workspace_file_surface(
         &preferences,
         &session_catalog(),
     );
-    girder_core::register_workspace_file_methods(remote, fs, workspaces);
+    let file_sessions = session_catalog();
+    // Upstream's sandbox policy uses the process directory when a session never recorded one.
+    let file_fallback = std::env::current_dir().ok();
+    girder_core::register_workspace_file_methods_with_sessions(
+        remote,
+        fs,
+        workspaces,
+        Some(Arc::clone(&file_sessions)),
+        file_fallback.clone(),
+    );
     // One directory at a time, one entry's metadata, one file's text: what a browser does on every click.
-    girder_core::register_workspace_file_extras(remote, fs, workspaces);
+    girder_core::register_workspace_file_extras_with_sessions(
+        remote,
+        fs,
+        workspaces,
+        Some(file_sessions),
+        file_fallback,
+    );
     questions
 }
 

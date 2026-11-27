@@ -610,9 +610,10 @@ async fn rpc_call(
             }
         }
     };
-    match remote.dispatch(namespace, method_name, call).await {
-        Ok(value) => rpc_success_response(rpc_id, value),
-        Err(error) => rpc_error_response(rpc_id, error.code(), &error.to_string()),
+    match remote.dispatch_binary(namespace, method_name, call).await {
+        Ok(result) if result.attachments.is_empty() => rpc_success_response(rpc_id, result.value),
+        Ok(result) => rpc_binary_response(rpc_id, result),
+        Err(error) => rpc_error_response(rpc_id, &error.wire_code(), &error.to_string()),
     }
 }
 
@@ -623,6 +624,86 @@ fn rpc_success_response(rpc_id: &str, value: serde_json::Value) -> Response {
         "result": {"ok": true, "value": value},
     }))
     .into_response()
+}
+
+fn rpc_binary_response(rpc_id: &str, result: girder_core::BinaryRemoteResult) -> Response {
+    let boundary = format!("girder-rpc-{rpc_id}");
+    let mut metadata = serde_json::json!({
+        "type": "server-response",
+        "rpcId": rpc_id,
+        "result": {"ok": true, "value": result.value},
+        "attachments": [],
+    });
+    let attachments = metadata
+        .get_mut("attachments")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("binary response creates an attachment array");
+    for (index, attachment) in result.attachments.iter().enumerate() {
+        let path = attachment
+            .path
+            .iter()
+            .map(|segment| match segment {
+                girder_core::RemoteAttachmentSegment::Key(key) => {
+                    serde_json::Value::String(key.clone())
+                }
+                girder_core::RemoteAttachmentSegment::Index(index) => serde_json::json!(index),
+            })
+            .collect::<Vec<_>>();
+        attachments.push(serde_json::json!({
+            "path": path,
+            "codec": "bytes",
+            "part": format!("bytes-{index}"),
+        }));
+    }
+    let mut body = Vec::new();
+    append_multipart_part(
+        &mut body,
+        &boundary,
+        "metadata",
+        "application/json",
+        serde_json::to_vec(&metadata).expect("binary response metadata is serializable"),
+    );
+    for (index, attachment) in result.attachments.into_iter().enumerate() {
+        append_multipart_part(
+            &mut body,
+            &boundary,
+            &format!("bytes-{index}"),
+            "application/octet-stream",
+            attachment.bytes,
+        );
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Response::builder()
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(axum::body::Body::from(body))
+        .expect("binary response headers are valid")
+        .into_response()
+}
+
+fn append_multipart_part(
+    body: &mut Vec<u8>,
+    boundary: &str,
+    name: &str,
+    content_type: &str,
+    content: Vec<u8>,
+) {
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    let filename = if content_type == "application/octet-stream" {
+        format!("; filename=\"{name}\"")
+    } else {
+        String::new()
+    };
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{name}\"{filename}\r\nContent-Type: {content_type}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&content);
+    body.extend_from_slice(b"\r\n");
 }
 
 fn rpc_error_response(rpc_id: &str, code: &str, message: &str) -> Response {
@@ -1003,7 +1084,7 @@ async fn invoke(
             error: crate::RemoteEventRejection {
                 name: "RemoteError".to_owned(),
                 message: error.to_string(),
-                code: Some(error.code().to_owned()),
+                code: Some(error.wire_code().into_owned()),
                 details: None,
             },
         },

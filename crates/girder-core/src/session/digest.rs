@@ -286,6 +286,7 @@ pub fn digest(events: &[SessionEvent]) -> Digest {
             | SessionEvent::ModelSelection { .. }
             | SessionEvent::PermissionPreset { .. }
             | SessionEvent::PlanMode { .. }
+            | SessionEvent::WorkspaceRootChange { .. }
             | SessionEvent::SandboxMode { .. }
             | SessionEvent::ApprovalPolicy { .. }
             | SessionEvent::RequestContext { .. } | SessionEvent::RequestHeader { .. }

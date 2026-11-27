@@ -61,19 +61,18 @@ impl WebProviders {
 
     /// The set this deployment's environment names.
     ///
-    /// `GIRDER_FETCH_ENDPOINT` is the variable the web tools already read, so the provider list and
-    /// the tools cannot disagree about what is configured. A search endpoint has no such variable in
-    /// this build, so that list is empty -- reported as empty rather than hidden.
+    /// The names and endpoints are the same ones [`crate::web::build_web_from_env`] registers for
+    /// the tools. A fetch endpoint also answers search, because that is the service the tools call.
+    /// `GIRDER_SEARCH_ENDPOINT` replaces only the search address when a deployment splits the two.
     #[must_use]
     pub fn from_environment() -> Self {
+        let (fetch, search) = configured_endpoints_from_env();
         let mut providers = Self::new();
-        if let Ok(endpoint) = std::env::var("GIRDER_FETCH_ENDPOINT") {
-            if !endpoint.is_empty() {
-                providers.push_fetch(EndpointProvider {
-                    name: "fetch".to_owned(),
-                    endpoint,
-                });
-            }
+        if let Some(provider) = fetch {
+            providers.push_fetch(provider);
+        }
+        if let Some(provider) = search {
+            providers.push_search(provider);
         }
         providers
     }
@@ -94,6 +93,47 @@ impl WebProviders {
 /// `description` is omitted when there is none, matching the spread-of-undefined upstream uses. The
 /// `id` is the provider's name, because upstream keys its map by name and reads it back into the
 /// same field.
+/// The fetch and search providers named by the process environment.
+#[must_use]
+pub fn configured_endpoints_from_env() -> (Option<EndpointProvider>, Option<EndpointProvider>) {
+    configured_endpoints(
+        std::env::var("GIRDER_FETCH_ENDPOINT").ok().as_deref(),
+        std::env::var("GIRDER_SEARCH_ENDPOINT").ok().as_deref(),
+    )
+}
+
+/// Decides the two provider lists from the endpoint strings, without reading the environment.
+///
+/// One fetch address is also the search address. A separate search address stays on the search
+/// list under its own name, so a picker can tell the two calls apart.
+#[must_use]
+pub fn configured_endpoints(
+    fetch: Option<&str>,
+    search: Option<&str>,
+) -> (Option<EndpointProvider>, Option<EndpointProvider>) {
+    let fetch = nonempty(fetch).map(|endpoint| EndpointProvider {
+        name: "env".to_owned(),
+        endpoint,
+    });
+    let search = match (nonempty(search), fetch.as_ref()) {
+        (Some(endpoint), Some(fetch)) if endpoint == fetch.endpoint => Some(fetch.clone()),
+        (Some(endpoint), _) => Some(EndpointProvider {
+            name: "search".to_owned(),
+            endpoint,
+        }),
+        (None, Some(fetch)) => Some(fetch.clone()),
+        (None, None) => None,
+    };
+    (fetch, search)
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn provider_info(provider: &EndpointProvider) -> Value {
     json!({
         "id": provider.name,
@@ -153,5 +193,31 @@ mod tests {
         });
         assert_eq!(info["id"], "search");
         assert_eq!(info["endpoint"], "https://search.example");
+    }
+
+    #[test]
+    fn one_fetch_endpoint_is_also_offered_for_search() {
+        let (fetch, search) = configured_endpoints(Some(" https://web.example "), None);
+        let fetch = fetch.expect("fetch");
+        let search = search.expect("search");
+        assert_eq!(fetch.name, "env");
+        assert_eq!(fetch.endpoint, "https://web.example");
+        assert_eq!(search.name, "env");
+        assert_eq!(search.endpoint, fetch.endpoint);
+    }
+
+    #[test]
+    fn a_distinct_search_endpoint_keeps_its_own_name() {
+        let (fetch, search) = configured_endpoints(
+            Some("https://fetch.example"),
+            Some("https://search.example"),
+        );
+        assert_eq!(fetch.expect("fetch").endpoint, "https://fetch.example");
+        let search = search.expect("search");
+        assert_eq!(search.name, "search");
+        assert_eq!(search.endpoint, "https://search.example");
+        let (none, only_search) = configured_endpoints(None, Some("  "));
+        assert!(none.is_none());
+        assert!(only_search.is_none());
     }
 }

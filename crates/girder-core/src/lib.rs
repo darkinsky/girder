@@ -123,11 +123,12 @@ pub use api::openapi_full::{
     document_from_names as openapi_document_from_names, operations as openapi_operations,
 };
 pub use api::remote::{
-    DirectoryCatalog, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry, RemoteStreamMethod,
-    SessionAddress, SessionCatalog, SessionCreateRequest, SessionCreateValue, SessionEventsPage,
-    SessionHistoryRecord, SessionListValue, SessionPageRequest, SessionPromptRequest,
-    SessionPromptValue, SessionRecord, SessionSummary, StreamOpen, StreamYield,
-    bind_session_places, declared_gaps, default_registry, register_attachment_method,
+    BinaryRemoteMethod, BinaryRemoteResult, DirectoryCatalog, RemoteAttachment,
+    RemoteAttachmentSegment, RemoteCall, RemoteError, RemoteMethod, RemoteRegistry,
+    RemoteStreamMethod, SessionAddress, SessionCatalog, SessionCreateRequest, SessionCreateValue,
+    SessionEventsPage, SessionHistoryRecord, SessionListValue, SessionPageRequest,
+    SessionPromptRequest, SessionPromptValue, SessionRecord, SessionSummary, StreamOpen,
+    StreamYield, bind_session_places, declared_gaps, default_registry, register_attachment_method,
     register_command_methods, register_extension_methods, register_job_methods,
     register_model_catalog, register_projection_methods, register_select_model,
     register_session_methods, register_workspace_methods, registered_method_names,
@@ -985,8 +986,11 @@ pub use workspace::diff::{
 pub use workspace::files_extra::{
     DEFAULT_READ_BYTES as WORKSPACE_READ_BYTES, DEFAULT_SEARCH_HITS as WORKSPACE_SEARCH_HITS,
     MAX_READ_BYTES as WORKSPACE_MAX_READ_BYTES, register_workspace_file_extras,
+    register_workspace_file_extras_with_sessions, workspace_file_root,
 };
-pub use workspace::files_rpc::register_workspace_file_methods;
+pub use workspace::files_rpc::{
+    register_workspace_file_methods, register_workspace_file_methods_with_sessions,
+};
 pub use workspace::open_rpc::register_open_workspace_path;
 pub use workspace::path::{
     contains as workspace_contains, display as workspace_display, has_drive_prefix, is_absolute,

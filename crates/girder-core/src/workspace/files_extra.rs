@@ -10,15 +10,20 @@
 //! has no depth to choose, and `stat` answers about one thing. Trying to serve all three through `tree` with a depth of
 //! one would make the caller pay for the walk to build its budget machinery and would lose the entry's own metadata.
 //!
-//! # Why `read` is bounded
+//! # Why `read` is a page of lines
 //!
-//! A file can be a gigabyte. `read` takes a limit and reports whether the content was cut, because a client that
-//! received the first megabyte of a large file with no indication it was truncated would render half a file as if it
-//! were whole.
+//! The document preview asks for a 1-based line offset and renders `text`, `lines`, and `eof` together with the
+//! same file identity `stat` returns. A byte cut would split a line and would reuse `bytes` for the page length,
+//! which is the file's total size. A page that would exceed the byte cap, or a file that contains a NUL, is refused.
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+use tokio::process::Command;
 
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
 use crate::fs::FileSystem;
@@ -32,20 +37,53 @@ use girder_core::api::config::WorkspaceRegistry;
 /// registered workspaces rather than about the files inside one.
 pub const NAMESPACE: &str = "workspaceFiles";
 
-/// How much of a file `read` returns when the caller names no limit.
+/// How many lines `read` returns when the caller names no limit.
 ///
-/// One megabyte: enough for a source file a person would read and small enough that a frame carrying it is still a
-/// frame. A caller that wants more asks for more, which is the point of the parameter.
+/// The same default upstream uses for one text page. The page is cut on line boundaries, not bytes.
+pub const DEFAULT_READ_LINES: u64 = 5_000;
+
+/// The most lines one `read` accepts.
+pub const MAX_READ_LINES: u64 = 5_000;
+
+/// The most bytes one text page may contain.
+///
+/// A page above this is refused. Shortening it would make a cut page look complete.
+const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
+
+/// The byte budget previously applied to `read`.
+///
+/// `read` now pages by line. The constants stay exported because callers still name them.
 pub const DEFAULT_READ_BYTES: u64 = 1024 * 1024;
 
-/// The most a single `read` may return.
+/// The former ceiling on one `read`.
 ///
-/// Eight megabytes: a ceiling rather than a preference, so one call cannot ask for a file that would not fit in a
-/// message. A caller that needs more reads in ranges.
+/// Line pages are capped by [`MAX_READ_LINES`] and the page byte cap instead.
 pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 
-/// How many search hits a call returns by default.
-pub const DEFAULT_SEARCH_HITS: usize = 50;
+/// How many directory entries `list` returns when the caller names no cap.
+///
+/// The same default upstream uses for one listing. The rest is dropped and reported with `truncated`.
+pub const DEFAULT_LIST_ENTRIES: usize = 2_000;
+
+/// The most entries one `list` call may return.
+const MAX_LIST_ENTRIES: usize = 5_000;
+
+/// How many search matches a call returns when the caller names no cap.
+///
+/// The same default upstream's workspace search uses (`search.maxResults`).
+pub const DEFAULT_SEARCH_HITS: usize = 512;
+
+/// How many files one search may list before it stops and reports itself incomplete.
+const DEFAULT_MAX_ENTRIES: usize = 100_000;
+
+/// Hard ceiling on a caller-supplied result cap.
+const MAX_RESULTS_CAP: usize = 10_000;
+
+/// How long one `rg --files` may run.
+const SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// VCS metadata directories. They never contribute files or inferred parents.
+const VCS_NAMES: [&str; 6] = [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"];
 
 /// Registers `workspace.stat`, `list`, `read`, and `search`.
 pub fn register_workspace_file_extras(
@@ -53,10 +91,147 @@ pub fn register_workspace_file_extras(
     fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
 ) {
-    register_stat(registry, fs, workspaces);
-    register_list(registry, fs, workspaces);
-    register_read(registry, fs, workspaces);
-    register_search(registry, fs, workspaces);
+    register_workspace_file_extras_with_sessions(registry, fs, workspaces, None, None);
+}
+
+/// Registers the file browser methods and resolves `workspaceFileScopeId` through a session catalog.
+///
+/// `fallback` is the deployment workspace root. A stored session with no working directory uses it.
+/// A session id that does not exist still fails, because the fallback is not a substitute for a session.
+pub fn register_workspace_file_extras_with_sessions(
+    registry: &mut RemoteRegistry,
+    fs: &Arc<dyn FileSystem>,
+    workspaces: &Arc<WorkspaceRegistry>,
+    sessions: Option<Arc<dyn crate::api::remote::SessionCatalog>>,
+    fallback: Option<PathBuf>,
+) {
+    register_stat(registry, workspaces, &sessions, &fallback);
+    register_list(registry, fs, workspaces, &sessions, &fallback);
+    register_read(registry, workspaces, &sessions, &fallback);
+    register_search(registry, fs, workspaces, &sessions, &fallback);
+}
+
+/// The directory a file call is rooted at.
+///
+/// `workspaceId` keeps the registry path used by existing callers. The browser sends
+/// `workspaceFileScopeId`, which is a session id. The recorded working directory wins; a session
+/// that never recorded one uses `fallback`, the deployment workspace root.
+pub fn workspace_file_root(
+    workspaces: &WorkspaceRegistry,
+    sessions: Option<&dyn crate::api::remote::SessionCatalog>,
+    fallback: Option<&Path>,
+    args: &Value,
+    method: &str,
+) -> Result<std::path::PathBuf, RemoteError> {
+    if let Some(id) = nonempty(args, "workspaceId") {
+        return registered_root(workspaces, id, method);
+    }
+    if let Some(id) = nonempty(args, "workspaceFileScopeId").or_else(|| nonempty(args, "sessionId"))
+    {
+        if let Some(root) = registered_root(workspaces, id, method).ok() {
+            return Ok(root);
+        }
+        if let Some(sessions) = sessions {
+            if sessions.session_header(id).is_some() {
+                if let Some(cwd) = sessions.working_directory(id).filter(|cwd| !cwd.is_empty()) {
+                    return Ok(std::path::PathBuf::from(cwd));
+                }
+                if let Some(root) = deployment_root(fallback) {
+                    return Ok(root);
+                }
+                return Err(RemoteError::Failed(format!(
+                    "gateway/lookup-not-found: session `{id}` has no workspace"
+                )));
+            }
+        }
+        return Err(RemoteError::Failed(format!(
+            "gateway/lookup-not-found: no session `{id}`"
+        )));
+    }
+    Err(RemoteError::InvalidArguments {
+        namespace: NAMESPACE.to_owned(),
+        method: method.to_owned(),
+        message: "`workspaceId` is required".to_owned(),
+    })
+}
+
+fn deployment_root(fallback: Option<&Path>) -> Option<PathBuf> {
+    let path = fallback?;
+    let spelled = path.to_string_lossy();
+    crate::is_execution_world_path(spelled.as_ref()).then(|| path.to_path_buf())
+}
+
+fn outside_workspace(requested: &str) -> RemoteError {
+    RemoteError::Failed(format!(
+        "workspace-file/outside-workspace: `{requested}` is outside the workspace"
+    ))
+}
+
+async fn list_failure(requested: &str, target: &Path, error: std::io::Error) -> RemoteError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return RemoteError::Failed(format!(
+            "workspace-file/not-found: no entry at `{requested}`"
+        ));
+    }
+    let kind = tokio::fs::symlink_metadata(target)
+        .await
+        .ok()
+        .map(|metadata| {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                "symlink"
+            } else if file_type.is_dir() {
+                "directory"
+            } else if file_type.is_file() {
+                "file"
+            } else {
+                "other"
+            }
+        });
+    if error.kind() == std::io::ErrorKind::NotADirectory
+        || kind.is_some_and(|kind| kind != "directory")
+    {
+        let kind = kind.unwrap_or("other");
+        return RemoteError::Failed(format!(
+            "workspace-file/not-directory: `{requested}` is a {kind}"
+        ));
+    }
+    RemoteError::Failed(format!("cannot list `{requested}`: {error}"))
+}
+
+fn nonempty<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn registered_root(
+    workspaces: &WorkspaceRegistry,
+    id: &str,
+    method: &str,
+) -> Result<std::path::PathBuf, RemoteError> {
+    workspaces
+        .list()
+        .into_iter()
+        .find(|workspace| workspace.id == id)
+        .map(|workspace| workspace.path)
+        .ok_or_else(|| RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: method.to_owned(),
+            message: format!("unknown workspace `{id}`"),
+        })
+}
+
+fn request_fields<'a>(args: &'a Value) -> &'a Value {
+    args.get("request")
+        .filter(|value| value.is_object())
+        .unwrap_or(args)
+}
+
+fn range_fields<'a>(args: &'a Value) -> &'a Value {
+    args.get("range")
+        .filter(|value| value.is_object())
+        .unwrap_or(args)
 }
 
 /// Resolves a request path against the workspace it names.
@@ -66,49 +241,25 @@ pub fn register_workspace_file_extras(
 async fn confine(
     fs: &dyn FileSystem,
     workspaces: &WorkspaceRegistry,
+    sessions: Option<&dyn crate::api::remote::SessionCatalog>,
+    fallback: Option<&Path>,
     args: &Value,
     method: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, String), RemoteError> {
-    let workspace_id = args
-        .get("workspaceId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| RemoteError::InvalidArguments {
-            namespace: NAMESPACE.to_owned(),
-            method: method.to_owned(),
-            message: "`workspaceId` is required".to_owned(),
-        })?;
     let requested = args.get("path").and_then(Value::as_str).unwrap_or_default();
-
-    let root = workspaces
-        .list()
-        .into_iter()
-        .find(|workspace| workspace.id == workspace_id)
-        .map(|workspace| workspace.path)
-        .ok_or_else(|| RemoteError::InvalidArguments {
-            namespace: NAMESPACE.to_owned(),
-            method: method.to_owned(),
-            message: format!("no workspace `{workspace_id}`"),
-        })?;
+    let root = workspace_file_root(workspaces, sessions, fallback, args, method)?;
 
     let resolved = crate::workspace::path::resolve(Some(&root), requested);
     let normalized = normalize_path(&resolved);
     if !crate::workspace::path::contains(&root, &normalized) {
-        return Err(RemoteError::Refused {
-            namespace: NAMESPACE.to_owned(),
-            method: method.to_owned(),
-            reason: format!("`{requested}` is outside the workspace"),
-        });
+        return Err(outside_workspace(requested));
     }
     // Canonicalised so a symlink inside the workspace cannot point outside it past the lexical check above. Only when
     // the path exists: `stat` on a missing path must answer that it is missing, not fail to canonicalise it.
     let target = match tokio::fs::canonicalize(&normalized).await {
         Ok(canonical) => {
             if !crate::workspace::path::contains(&root, &canonical) {
-                return Err(RemoteError::Refused {
-                    namespace: NAMESPACE.to_owned(),
-                    method: method.to_owned(),
-                    reason: format!("`{requested}` resolves outside the workspace"),
-                });
+                return Err(outside_workspace(requested));
             }
             canonical
         }
@@ -121,38 +272,36 @@ async fn confine(
     Ok((root, target, relative))
 }
 
-/// Registers `workspace.stat`.
+/// Registers `workspaceFiles.stat`.
 fn register_stat(
     registry: &mut RemoteRegistry,
-    fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
+    sessions: &Option<Arc<dyn crate::api::remote::SessionCatalog>>,
+    fallback: &Option<PathBuf>,
 ) {
-    let fs = Arc::clone(fs);
     let workspaces = Arc::clone(workspaces);
+    let sessions = sessions.clone();
+    let fallback = fallback.clone();
     registry.register(NAMESPACE, "stat", move |call: RemoteCall| {
-        let fs = Arc::clone(&fs);
         let workspaces = Arc::clone(&workspaces);
+        let sessions = sessions.clone();
+        let fallback = fallback.clone();
         Box::pin(async move {
-            let (_root, target, relative) =
-                confine(fs.as_ref(), &workspaces, &call.args, "stat").await?;
-            // A missing path is an answer, not a failure: a browser stat-ing a deleted file needs to hear "gone" rather
-            // than a transport error it would show as a crash.
-            let Ok(metadata) = tokio::fs::metadata(&target).await else {
-                return Ok(json!({
-                    "exists": false,
-                    "path": relative,
-                }));
-            };
-            Ok(json!({
-                "exists": true,
-                "path": relative,
-                "isFile": metadata.is_file(),
-                "isDirectory": metadata.is_dir(),
-                "isSymlink": metadata.file_type().is_symlink(),
-                // Only meaningful for a file; a directory's size is a platform artifact rather than an answer.
-                "size": if metadata.is_file() { metadata.len() } else { 0 },
-                "modifiedMs": modified_ms(&metadata),
-            }))
+            let target = resolve_file_target(
+                &workspaces,
+                sessions.as_deref(),
+                fallback.as_deref(),
+                &call.args,
+                "stat",
+            )
+            .await?;
+            let metadata = tokio::fs::metadata(&target).await.map_err(|error| {
+                RemoteError::Failed(format!(
+                    "workspace-file/not-found: cannot stat `{}`: {error}",
+                    target.display()
+                ))
+            })?;
+            Ok(stat_value(&target, &metadata))
         })
     });
     registry.declare(
@@ -162,13 +311,18 @@ fn register_stat(
     );
 }
 
-/// A file's modification time in milliseconds since the epoch, when the platform reports one.
-fn modified_ms(metadata: &std::fs::Metadata) -> Option<u64> {
-    metadata
+/// The identity and freshness fields shared by `stat`, `read`, and `readBytes`.
+fn stat_value(path: &Path, metadata: &std::fs::Metadata) -> Value {
+    let modified = metadata
         .modified()
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    json!({
+        "absolutePath": path.to_string_lossy().replace('\\', "/"),
+        "version": format!("{}:{}", metadata.len(), modified),
+        "bytes": metadata.len(),
+    })
 }
 
 /// Registers `workspace.list`: the entries of one directory.
@@ -176,46 +330,63 @@ fn register_list(
     registry: &mut RemoteRegistry,
     fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
+    sessions: &Option<Arc<dyn crate::api::remote::SessionCatalog>>,
+    fallback: &Option<PathBuf>,
 ) {
     let fs = Arc::clone(fs);
     let workspaces = Arc::clone(workspaces);
+    let sessions = sessions.clone();
+    let fallback = fallback.clone();
     registry.register(NAMESPACE, "list", move |call: RemoteCall| {
         let fs = Arc::clone(&fs);
         let workspaces = Arc::clone(&workspaces);
+        let sessions = sessions.clone();
+        let fallback = fallback.clone();
         Box::pin(async move {
-            let (_root, target, relative) = confine(fs.as_ref(), &workspaces, &call.args, "list").await?;
+            let (_root, target, relative) = confine(
+                fs.as_ref(),
+                &workspaces,
+                sessions.as_deref(),
+                fallback.as_deref(),
+                &call.args,
+                "list",
+            )
+            .await?;
+            let max_entries = match bounded_count(
+                &call.args,
+                "list",
+                &["maxEntries"],
+                DEFAULT_LIST_ENTRIES,
+                MAX_LIST_ENTRIES,
+            ) {
+                Ok(count) => count,
+                Err(error) => return Err(error),
+            };
+            let requested = call
+                .args
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or(relative.as_str());
             let mut entries = Vec::new();
             let mut reader = match tokio::fs::read_dir(&target).await {
                 Ok(reader) => reader,
-                Err(error) => {
-                    return Err(RemoteError::Failed(format!(
-                        "cannot list `{relative}`: {error}"
-                    )));
-                }
+                Err(error) => return Err(list_failure(requested, &target, error).await),
             };
             while let Ok(Some(entry)) = reader.next_entry().await {
-                let metadata = entry.metadata().await.ok();
-                let is_dir = metadata.as_ref().is_some_and(std::fs::Metadata::is_dir);
-                entries.push(json!({
-                    "name": entry.file_name().to_string_lossy(),
-                    "path": format!("{relative}/{}", entry.file_name().to_string_lossy()).trim_start_matches('/').to_owned(),
-                    "isDirectory": is_dir,
-                    "size": metadata.as_ref().filter(|m| m.is_file()).map_or(0, std::fs::Metadata::len),
-                }));
+                entries.push(directory_entry(&entry).await);
             }
-            // Sorted by name with directories first: a browser showing a random order and mixing files into folders
-            // is the one thing every file manager agrees not to do.
-            entries.sort_by(|a, b| {
-                let a_dir = a["isDirectory"].as_bool().unwrap_or(false);
-                let b_dir = b["isDirectory"].as_bool().unwrap_or(false);
-                b_dir.cmp(&a_dir).then_with(|| {
-                    a["name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .cmp(b["name"].as_str().unwrap_or_default())
-                })
+            // Name order, the same order upstream's listing keeps. The file tree tells a directory
+            // from a file by `type`, so putting directories first would hide a name the client sorts
+            // against this answer.
+            entries.sort_by(|left, right| {
+                left["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["name"].as_str().unwrap_or_default())
             });
-            Ok(json!({ "path": relative, "entries": entries }))
+            let truncated = entries.len() > max_entries;
+            entries.truncate(max_entries);
+            Ok(json!({ "path": relative, "entries": entries, "truncated": truncated }))
         })
     });
     registry.declare(
@@ -225,52 +396,36 @@ fn register_list(
     );
 }
 
-/// Registers `workspace.read`.
+/// Registers `workspaceFiles.read`: one page of lines from a UTF-8 file.
+///
+/// `offset` is the 1-based first line and `limit` is how many lines the page may hold. The answer
+/// carries the same `absolutePath`, `version`, and `bytes` as `stat`, plus the page itself.
 fn register_read(
     registry: &mut RemoteRegistry,
-    fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
+    sessions: &Option<Arc<dyn crate::api::remote::SessionCatalog>>,
+    fallback: &Option<PathBuf>,
 ) {
-    let fs = Arc::clone(fs);
     let workspaces = Arc::clone(workspaces);
+    let sessions = sessions.clone();
+    let fallback = fallback.clone();
     registry.register(NAMESPACE, "read", move |call: RemoteCall| {
-        let fs = Arc::clone(&fs);
         let workspaces = Arc::clone(&workspaces);
+        let sessions = sessions.clone();
+        let fallback = fallback.clone();
         Box::pin(async move {
-            let (_root, target, relative) =
-                confine(fs.as_ref(), &workspaces, &call.args, "read").await?;
-            let limit = call
-                .args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(DEFAULT_READ_BYTES)
-                .min(MAX_READ_BYTES);
-            let bytes = match tokio::fs::read(&target).await {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    return Err(RemoteError::Failed(format!(
-                        "cannot read `{relative}`: {error}"
-                    )));
-                }
-            };
-            let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-            let truncated = total > limit;
-            let cut = usize::try_from(limit.min(total)).unwrap_or(usize::MAX);
-            // A cut inside a multi-byte character would produce a string with a replacement character, which a client
-            // would display as corruption. Walking back to a boundary costs at most three bytes.
-            let mut end = cut;
-            while end > 0 && !is_boundary(&bytes, end) {
-                end -= 1;
-            }
-            Ok(json!({
-                "path": relative,
-                // Lossy on purpose: the method is for text a person reads, and a file with a stray byte should show
-                // what it says rather than fail. `readBytes` is the method for exact content.
-                "text": String::from_utf8_lossy(&bytes[..end]),
-                "bytes": end,
-                "totalBytes": total,
-                "truncated": truncated,
-            }))
+            let target = resolve_file_target(
+                &workspaces,
+                sessions.as_deref(),
+                fallback.as_deref(),
+                &call.args,
+                "read",
+            )
+            .await?;
+            let range = range_fields(&call.args);
+            let offset = page_bound(range, "offset", 1, 1, u64::MAX)?;
+            let limit = page_bound(range, "limit", DEFAULT_READ_LINES, 1, MAX_READ_LINES)?;
+            read_page(&target, offset, limit).await
         })
     });
     registry.declare(
@@ -280,80 +435,313 @@ fn register_read(
     );
 }
 
-/// Whether `index` begins a UTF-8 character.
-fn is_boundary(bytes: &[u8], index: usize) -> bool {
-    index == bytes.len() || (bytes[index] & 0b1100_0000) != 0b1000_0000
+/// Resolves a regular file for `stat`/`read`.
+///
+/// Relative paths stay inside the registered workspace. Absolute paths are allowed by the
+/// upstream file API, but a symlink is still rejected before canonicalization so its target
+/// cannot silently change the file identity.
+async fn resolve_file_target(
+    workspaces: &WorkspaceRegistry,
+    sessions: Option<&dyn crate::api::remote::SessionCatalog>,
+    fallback: Option<&Path>,
+    args: &Value,
+    method: &str,
+) -> Result<PathBuf, RemoteError> {
+    let workspace_root = workspace_file_root(workspaces, sessions, fallback, args, method)?;
+    let requested =
+        args.get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RemoteError::InvalidArguments {
+                namespace: NAMESPACE.to_owned(),
+                method: method.to_owned(),
+                message: "`path` is required".to_owned(),
+            })?;
+    if requested.contains('\0') {
+        return Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: method.to_owned(),
+            message: "`path` contains a NUL byte".to_owned(),
+        });
+    }
+    let absolute = Path::new(requested).is_absolute();
+    let candidate = if absolute {
+        PathBuf::from(requested)
+    } else {
+        workspace_root.join(requested)
+    };
+    let normalized = normalize_path(&candidate);
+    if !absolute && !crate::workspace::path::contains(&workspace_root, &normalized) {
+        return Err(RemoteError::Refused {
+            namespace: NAMESPACE.to_owned(),
+            method: method.to_owned(),
+            reason: format!("`{requested}` escapes the workspace"),
+        });
+    }
+    let link_metadata = tokio::fs::symlink_metadata(&normalized)
+        .await
+        .map_err(|error| {
+            RemoteError::Failed(format!(
+                "workspace-file/not-found: cannot stat `{requested}`: {error}"
+            ))
+        })?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(RemoteError::Failed(format!(
+            "workspace-file/not-regular-file: `{requested}` is a symlink"
+        )));
+    }
+    let target = tokio::fs::canonicalize(&normalized)
+        .await
+        .map_err(|error| {
+            RemoteError::Failed(format!(
+                "workspace-file/not-found: cannot stat `{requested}`: {error}"
+            ))
+        })?;
+    let metadata = tokio::fs::metadata(&target).await.map_err(|error| {
+        RemoteError::Failed(format!(
+            "workspace-file/not-found: cannot stat `{requested}`: {error}"
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(RemoteError::Failed(format!(
+            "workspace-file/not-regular-file: `{requested}` is not a regular file"
+        )));
+    }
+    Ok(target)
 }
 
-/// Registers `workspace.search`: a filename search across a workspace.
+fn page_bound(
+    args: &Value,
+    name: &str,
+    default: u64,
+    min: u64,
+    max: u64,
+) -> Result<u64, RemoteError> {
+    let Some(value) = args.get(name) else {
+        return Ok(default);
+    };
+    let Some(count) = value.as_u64() else {
+        return Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: "read".to_owned(),
+            message: format!("`{name}` must be an integer of at least {min}"),
+        });
+    };
+    if count < min || count > max {
+        return Err(RemoteError::InvalidArguments {
+            namespace: NAMESPACE.to_owned(),
+            method: "read".to_owned(),
+            message: format!("`{name}` must be from {min} to {max}"),
+        });
+    }
+    Ok(count)
+}
+
+async fn read_page(target: &Path, offset: u64, limit: u64) -> Result<Value, RemoteError> {
+    let symlink = tokio::fs::symlink_metadata(target).await.map_err(|error| {
+        RemoteError::Failed(format!(
+            "workspace-file/not-found: cannot read `{}`: {error}",
+            target.display()
+        ))
+    })?;
+    if symlink.file_type().is_symlink() || !symlink.is_file() {
+        return Err(RemoteError::Failed(format!(
+            "workspace-file/not-regular-file: `{}` is not a regular file",
+            target.display()
+        )));
+    }
+    let file = tokio::fs::File::open(target).await.map_err(|error| {
+        RemoteError::Failed(format!(
+            "workspace-file/not-found: cannot read `{}`: {error}",
+            target.display()
+        ))
+    })?;
+    let metadata = file.metadata().await.map_err(|error| {
+        RemoteError::Failed(format!(
+            "workspace-file/not-found: cannot read `{}`: {error}",
+            target.display()
+        ))
+    })?;
+    let mut value = stat_value(target, &metadata);
+    let mut reader = tokio::io::BufReader::new(file);
+    let mut number = 1_u64;
+    let last = offset.saturating_add(limit).saturating_sub(1);
+    let mut lines = Vec::new();
+    let mut page_bytes = 0_usize;
+    let mut eof = true;
+    loop {
+        let Some(line) = take_line(&mut reader, target).await? else {
+            break;
+        };
+        if number >= offset {
+            let content = line.trim_end_matches(['\n', '\r']);
+            page_bytes = page_bytes.saturating_add(content.len());
+            if !lines.is_empty() {
+                page_bytes = page_bytes.saturating_add(1);
+            }
+            if page_bytes > MAX_PAGE_BYTES {
+                return Err(RemoteError::Failed(format!(
+                    "workspace-file/too-large: lines {offset}-{last} of `{}` exceed the {MAX_PAGE_BYTES} byte cap",
+                    target.display()
+                )));
+            }
+            lines.push(content.to_owned());
+        }
+        if number == last {
+            let peeked = reader.fill_buf().await.map_err(|error| {
+                RemoteError::Failed(format!(
+                    "workspace-file/not-text: `{}` is not valid UTF-8 ({error})",
+                    target.display()
+                ))
+            })?;
+            eof = peeked.is_empty();
+            break;
+        }
+        number += 1;
+    }
+    value["offset"] = json!(offset);
+    value["text"] = json!(lines.join("\n"));
+    value["lines"] = json!(lines.len());
+    value["eof"] = json!(eof);
+    Ok(value)
+}
+
+/// One line, including its newline, or nothing at the end of the file.
 ///
-/// Filenames rather than contents: searching content is what `grep` is for and what the model already has a tool for,
-/// while a file browser's search box looks for names. Doing both here would make one method answer two questions and
-/// make the slow one the default.
+/// The read stops at the page cap. A longer line is refused instead of being buffered whole.
+async fn take_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    target: &Path,
+) -> Result<Option<String>, RemoteError> {
+    let mut buf = Vec::new();
+    loop {
+        let available = reader.fill_buf().await.map_err(|error| {
+            RemoteError::Failed(format!(
+                "workspace-file/not-text: `{}` is not valid UTF-8 ({error})",
+                target.display()
+            ))
+        })?;
+        if available.is_empty() {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(available.len(), |index| index + 1);
+        if buf.len().saturating_add(take) > MAX_PAGE_BYTES {
+            return Err(RemoteError::Failed(format!(
+                "workspace-file/too-large: a line of `{}` exceeds the {MAX_PAGE_BYTES} byte cap",
+                target.display()
+            )));
+        }
+        buf.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if buf.contains(&0) {
+        return Err(RemoteError::Failed(format!(
+            "workspace-file/not-text: `{}` contains NUL bytes",
+            target.display()
+        )));
+    }
+    String::from_utf8(buf).map(Some).map_err(|_| {
+        RemoteError::Failed(format!(
+            "workspace-file/not-text: `{}` is not valid UTF-8",
+            target.display()
+        ))
+    })
+}
+
+/// Registers `workspaceFiles.search`: name and path discovery through `rg --files`.
+///
+/// The browser searches names, not file contents. `rg --files` is what upstream runs, so ignore
+/// rules, hidden files, and VCS directories follow ripgrep. A machine without `rg` fails with
+/// `workspace-file/search-failed` rather than walking the tree and pretending the same filters ran.
 fn register_search(
     registry: &mut RemoteRegistry,
     fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
+    sessions: &Option<Arc<dyn crate::api::remote::SessionCatalog>>,
+    fallback: &Option<PathBuf>,
 ) {
     let fs = Arc::clone(fs);
     let workspaces = Arc::clone(workspaces);
+    let sessions = sessions.clone();
+    let fallback = fallback.clone();
     registry.register(NAMESPACE, "search", move |call: RemoteCall| {
         let fs = Arc::clone(&fs);
         let workspaces = Arc::clone(&workspaces);
+        let sessions = sessions.clone();
+        let fallback = fallback.clone();
         Box::pin(async move {
-            let (_root, target, _relative) = confine(fs.as_ref(), &workspaces, &call.args, "search").await?;
-            let query = call
-                .args
+            let (_root, target, _relative) = confine(
+                fs.as_ref(),
+                &workspaces,
+                sessions.as_deref(),
+                fallback.as_deref(),
+                &call.args,
+                "search",
+            )
+            .await?;
+            let fields = request_fields(&call.args);
+            let query = fields
                 .get("query")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-                .to_lowercase();
+                .trim()
+                .to_owned();
             if query.is_empty() {
-                return Err(RemoteError::InvalidArguments {
-                    namespace: NAMESPACE.to_owned(),
-                    method: "search".to_owned(),
-                    message: "`query` is required".to_owned(),
-                });
+                return Err(RemoteError::Failed(
+                    "gateway/bad-request: `query` is required".to_owned(),
+                ));
             }
-            let limit = call
-                .args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(DEFAULT_SEARCH_HITS);
-            let root = target.clone();
-            let mut hits = Vec::new();
-            let mut truncated = false;
-            let mut stack = vec![target];
-            while let Some(directory) = stack.pop() {
-                let Ok(mut reader) = tokio::fs::read_dir(&directory).await else {
-                    continue;
-                };
-                while let Ok(Some(entry)) = reader.next_entry().await {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    let path = entry.path();
-                    // The query matches the name anywhere, which is what a search box does; a prefix-only match would
-                    // miss `main.rs` for `rs`.
-                    if name.contains(&query) {
-                        if hits.len() >= limit {
-                            truncated = true;
-                            break;
-                        }
-                        hits.push(json!({
-                            "name": entry.file_name().to_string_lossy(),
-                            "path": relative_to(&root, &path).map_or_else(String::new, |p| p.to_string_lossy().replace('\\', "/")),
-                            "isDirectory": entry.metadata().await.is_ok_and(|m| m.is_dir()),
-                        }));
-                    }
-                    if entry.metadata().await.is_ok_and(|m| m.is_dir()) {
-                        stack.push(path);
-                    }
-                }
-                if truncated {
-                    break;
-                }
+            if !tokio::fs::metadata(&target)
+                .await
+                .is_ok_and(|metadata| metadata.is_dir())
+            {
+                return Err(RemoteError::Failed(format!(
+                    "workspace-file/not-directory: `{target}` is not a directory",
+                    target = target.display()
+                )));
             }
-            Ok(json!({ "query": query, "hits": hits, "truncated": truncated }))
+            let max_results = bounded_count(
+                fields,
+                "search",
+                &["maxResults", "limit"],
+                DEFAULT_SEARCH_HITS,
+                MAX_RESULTS_CAP,
+            )?;
+            let max_entries = bounded_count(
+                fields,
+                "search",
+                &["maxEntries"],
+                DEFAULT_MAX_ENTRIES,
+                DEFAULT_MAX_ENTRIES,
+            )?;
+            let include_hidden = flag(fields, "includeHidden", false);
+            let respect_gitignore = flag(fields, "respectGitignore", true);
+            let excluded = string_list(fields, "excludedPaths");
+            match tokio::time::timeout(
+                SEARCH_TIMEOUT,
+                search_with_rg(
+                    &target,
+                    &query,
+                    &excluded,
+                    include_hidden,
+                    respect_gitignore,
+                    max_results,
+                    max_entries,
+                ),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(RemoteError::Failed(
+                    "workspace-file/search-failed: Workspace file search timed out".to_owned(),
+                )),
+            }
         })
     });
     registry.declare(
@@ -361,4 +749,239 @@ fn register_search(
         "search",
         crate::guard::access::Declaration::read("workspace"),
     );
+}
+
+fn flag(args: &Value, name: &str, default: bool) -> bool {
+    args.get(name).and_then(Value::as_bool).unwrap_or(default)
+}
+
+fn string_list(args: &Value, name: &str) -> Vec<String> {
+    args.get(name)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .filter(|item| !item.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn bounded_count(
+    args: &Value,
+    method: &str,
+    names: &[&str],
+    default: usize,
+    cap: usize,
+) -> Result<usize, RemoteError> {
+    for name in names {
+        if let Some(value) = args.get(*name) {
+            let Some(count) = value.as_u64().and_then(|count| usize::try_from(count).ok()) else {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: method.to_owned(),
+                    message: format!("`{name}` must be a positive integer"),
+                });
+            };
+            if count == 0 || count > cap {
+                return Err(RemoteError::InvalidArguments {
+                    namespace: NAMESPACE.to_owned(),
+                    method: method.to_owned(),
+                    message: format!("`{name}` must be from 1 to {cap}"),
+                });
+            }
+            return Ok(count);
+        }
+    }
+    Ok(default)
+}
+
+/// One child in the shape the file tree reads: `type`, and `size` only for a regular file.
+///
+/// `metadata` follows a symlink, so a link is reported as its target. A dangling link has no
+/// target and is `other`.
+async fn directory_entry(entry: &tokio::fs::DirEntry) -> Value {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    let Ok(metadata) = entry.metadata().await else {
+        return json!({ "name": name, "type": "other" });
+    };
+    if metadata.is_dir() {
+        return json!({ "name": name, "type": "directory" });
+    }
+    if metadata.is_file() {
+        return json!({ "name": name, "type": "file", "size": metadata.len() });
+    }
+    json!({ "name": name, "type": "other" })
+}
+
+/// One literal exclusion, escaped so ripgrep treats it as a name rather than a glob.
+fn exclusion(path: &str) -> String {
+    let mut literal = String::new();
+    for character in path.chars() {
+        if matches!(character, '\\' | '*' | '?' | '[' | ']' | '{' | '}' | '!') {
+            literal.push('\\');
+        }
+        literal.push(character);
+    }
+    if path.contains('/') {
+        format!("--glob=!/{literal}")
+    } else {
+        format!("--glob=!{literal}")
+    }
+}
+
+async fn search_with_rg(
+    root: &std::path::Path,
+    query: &str,
+    excluded: &[String],
+    include_hidden: bool,
+    respect_gitignore: bool,
+    max_results: usize,
+    max_entries: usize,
+) -> Result<Value, RemoteError> {
+    let mut command = Command::new("rg");
+    command
+        .arg("--files")
+        .arg("--sort=path")
+        .arg("--null")
+        .arg("--path-separator=/")
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if include_hidden {
+        command.arg("--hidden");
+    }
+    if !respect_gitignore {
+        command.arg("--no-ignore");
+    }
+    for name in VCS_NAMES {
+        command.arg(exclusion(name));
+    }
+    for path in excluded {
+        command.arg(exclusion(path));
+    }
+    let mut child = command.spawn().map_err(|error| {
+        RemoteError::Failed(format!(
+            "workspace-file/search-failed: Could not launch workspace file search ({error})"
+        ))
+    })?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        RemoteError::Failed(
+            "workspace-file/search-failed: workspace file search produced no output".to_owned(),
+        )
+    })?;
+    let stderr = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        let mut sink = Vec::new();
+        let Some(mut stderr) = stderr else {
+            return sink;
+        };
+        let mut chunk = [0_u8; 1024];
+        while let Ok(read) = stderr.read(&mut chunk).await {
+            if read == 0 {
+                break;
+            }
+            if sink.len() < 65_536 {
+                let room = 65_536 - sink.len();
+                sink.extend_from_slice(&chunk[..read.min(room)]);
+            }
+        }
+        sink
+    });
+    let needle = query.to_lowercase();
+    let by_path = query.contains('/');
+    let mut entries: BTreeMap<String, &'static str> = BTreeMap::new();
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    let mut listed = 0_usize;
+    let mut stopped = false;
+    loop {
+        let read = stdout.read(&mut chunk).await.map_err(|error| {
+            RemoteError::Failed(format!(
+                "workspace-file/search-failed: Could not read workspace file search ({error})"
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        while let Some(end) = buffer.iter().position(|byte| *byte == 0) {
+            let path = String::from_utf8_lossy(&buffer[..end]).into_owned();
+            buffer.drain(..=end);
+            if path.is_empty() {
+                continue;
+            }
+            if listed == max_entries {
+                stopped = true;
+                break;
+            }
+            admit(&mut entries, &path, "file", &needle, by_path);
+            let mut slash = path.rfind('/');
+            while let Some(end) = slash {
+                admit(&mut entries, &path[..end], "directory", &needle, by_path);
+                slash = path[..end].rfind('/');
+            }
+            listed += 1;
+        }
+        if stopped {
+            break;
+        }
+    }
+    if stopped {
+        let _ = child.kill().await;
+    }
+    let status = child.wait().await.map_err(|error| {
+        RemoteError::Failed(format!(
+            "workspace-file/search-failed: workspace file search did not exit ({error})"
+        ))
+    })?;
+    let code = status.code();
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_owned();
+    if !stopped && !matches!(code, Some(0 | 1 | 2)) {
+        let detail = if stderr_text.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr_text}")
+        };
+        return Err(RemoteError::Failed(format!(
+            "workspace-file/search-failed: workspace file search exited with code {}{detail}",
+            code.map_or_else(|| "none".to_owned(), |code| code.to_string())
+        )));
+    }
+    let mut matches: Vec<(String, &'static str)> = entries.into_iter().collect();
+    matches.sort_by(|left, right| {
+        left.0
+            .split('/')
+            .count()
+            .cmp(&right.0.split('/').count())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let truncated = matches.len() > max_results;
+    let listed_matches = matches
+        .into_iter()
+        .take(max_results)
+        .map(|(path, kind)| json!({ "path": path, "type": kind }))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "matches": listed_matches,
+        "truncated": truncated,
+        "incomplete": stopped || code == Some(2),
+    }))
+}
+
+fn admit(
+    entries: &mut BTreeMap<String, &'static str>,
+    path: &str,
+    kind: &'static str,
+    needle: &str,
+    by_path: bool,
+) {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let haystack = if by_path { path } else { name };
+    if haystack.to_lowercase().contains(needle) {
+        entries.entry(path.to_owned()).or_insert(kind);
+    }
 }

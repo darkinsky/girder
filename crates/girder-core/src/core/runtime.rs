@@ -212,6 +212,8 @@ pub struct AgentRuntime {
     running: Mutex<BTreeMap<String, Running>>,
     /// Wakes `observeState` and `session.wait` after a turn, approval, or inbox change.
     activity: std::sync::Arc<tokio::sync::Notify>,
+    /// Live assistant frames `session.follow` forwards while a model step is open.
+    assistant: std::sync::Arc<crate::core::assistant_live::AssistantHub>,
 }
 
 /// How many read results one conversation remembers.
@@ -320,7 +322,14 @@ impl AgentRuntime {
             context_window: None,
             max_output_tokens: None,
             accepts_images: false,
+            assistant: std::sync::Arc::new(crate::core::assistant_live::AssistantHub::new()),
         })
+    }
+
+    /// The assistant frames a follow connection reads while this runtime is generating.
+    #[must_use]
+    pub fn assistant(&self) -> &std::sync::Arc<crate::core::assistant_live::AssistantHub> {
+        &self.assistant
     }
 
     /// States what the model accepts, so a request is refused before it is sent rather than after.
@@ -652,6 +661,28 @@ impl AgentRuntime {
         first_turn: u64,
         agent: std::sync::Arc<Agent>,
     ) {
+        let events = session.replay().await.unwrap_or_default();
+        let working_directory = match &self.working_directory {
+            Some(template) => {
+                let default_directory = template.lock().await.default_directory().to_owned();
+                let state = crate::shell::working_dir::WorkingDirectory::new(default_directory)
+                    .ok()
+                    .and_then(|state| state.with_original(session.working_directory()).ok())
+                    .map(|mut state| {
+                        for event in &events {
+                            if let SessionEvent::WorkspaceRootChange { cwd } = event {
+                                if crate::shell::working_dir::is_absolute(cwd) {
+                                    state.commit(cwd.clone(), false);
+                                }
+                            }
+                        }
+                        Arc::new(tokio::sync::Mutex::new(state))
+                    });
+                state
+            }
+            None => None,
+        };
+        let session_for_live = Arc::clone(&session);
         let mut context = LoopContext::new(
             Arc::clone(&self.config.provider),
             Arc::clone(&self.config.tools),
@@ -683,10 +714,18 @@ impl AgentRuntime {
         context.compaction = self.compaction.clone();
         context.approver = self.approver.clone();
         context.approval_rules = self.approval_rules.clone();
-        context.permissions = self.permissions.clone();
+        let base = self.permissions.as_deref().cloned().unwrap_or_default();
+        let (applied, logged_mode) =
+            crate::sandbox::policy::permissions_for_session(&base, &events);
+        context.permissions = if applied.knobs() == base.knobs() {
+            self.permissions.clone()
+        } else {
+            Some(Arc::new(applied))
+        };
+        context.session_sandbox = logged_mode;
         context.pending_approvals = Some(Arc::clone(&self.pending_approvals));
         context.activity = Some(std::sync::Arc::clone(&self.activity));
-        context.working_directory = self.working_directory.clone();
+        context.working_directory = working_directory;
         if let Some(store) = self.tool_settings.clone() {
             context = context.with_tool_budget(store);
         }
@@ -712,19 +751,68 @@ impl AgentRuntime {
             .map(|parents| parents.publish(session_id, Arc::clone(&context)));
 
         let mut stream = Box::pin(crate::core::agent_loop::run(context, text, cancel));
+        let mut assistant_turn = first_turn;
+        let mut assistant_step = 0_u64;
+        let mut assistant_open = false;
         while let Some(step) = stream.next().await {
             match step {
-                Ok(LoopStep::Chunk(StreamChunk::TextDelta { text, .. })) => {
-                    self.publish(AgentEvent::TextDelta {
-                        session_id: session_id.to_owned(),
-                        text,
-                    });
-                }
                 Ok(LoopStep::TurnStarted { turn }) => {
+                    assistant_turn = turn;
+                    assistant_step = 0;
                     self.publish(AgentEvent::TurnStarted {
                         session_id: session_id.to_owned(),
                         turn,
                     });
+                }
+                Ok(LoopStep::Chunk(chunk)) => {
+                    if let Some(visible) = visible_chunk(&chunk) {
+                        if !assistant_open {
+                            let cursor = session_for_live
+                                .replay()
+                                .await
+                                .unwrap_or_default()
+                                .len()
+                                .checked_sub(1)
+                                .and_then(|index| i64::try_from(index).ok())
+                                .unwrap_or(-1);
+                            self.assistant.begin(
+                                session_id,
+                                assistant_turn,
+                                assistant_step,
+                                cursor,
+                            );
+                            assistant_open = true;
+                        }
+                        self.assistant.push_chunk(session_id, visible);
+                    }
+                    if let StreamChunk::TextDelta { text, .. } = chunk {
+                        self.publish(AgentEvent::TextDelta {
+                            session_id: session_id.to_owned(),
+                            text,
+                        });
+                    }
+                }
+                Ok(LoopStep::AssistantMessage(_)) => {
+                    if assistant_open {
+                        let seq = session_for_live
+                            .replay()
+                            .await
+                            .unwrap_or_default()
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .find_map(|(index, event)| {
+                                matches!(event, SessionEvent::AssistantMessage { .. })
+                                    .then_some(u64::try_from(index).unwrap_or(u64::MAX))
+                            });
+                        if let Some(seq) = seq {
+                            self.assistant.commit(session_id, seq);
+                        } else {
+                            self.assistant.abandon(session_id);
+                        }
+                        assistant_open = false;
+                        assistant_step = assistant_step.saturating_add(1);
+                    }
                 }
                 Ok(LoopStep::ToolStarted { name, .. }) => {
                     self.publish(AgentEvent::ToolStarted {
@@ -762,6 +850,9 @@ impl AgentRuntime {
                             message: error.to_string(),
                         }
                     };
+                    if assistant_open {
+                        self.assistant.abandon(session_id);
+                    }
                     self.publish(AgentEvent::TurnEnded {
                         session_id: session_id.to_owned(),
                         turn: 0,
@@ -771,9 +862,11 @@ impl AgentRuntime {
                 }
             }
         }
+        if assistant_open {
+            self.assistant.abandon(session_id);
+        }
     }
 
-    /// Publishes one event on the bus.
     /// The context window and output limit the configured model declares.
     ///
     /// `None` for either when the catalogue is silent, which is the honest answer: a budget check against an invented
@@ -785,6 +878,7 @@ impl AgentRuntime {
         (self.context_window, self.max_output_tokens)
     }
 
+    /// Publishes one event on the bus.
     fn publish(&self, event: AgentEvent) {
         self.config.bus.emit::<AgentTurn>(event);
     }
@@ -793,6 +887,26 @@ impl AgentRuntime {
         self.running
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn visible_chunk(chunk: &StreamChunk) -> Option<serde_json::Value> {
+    match chunk {
+        StreamChunk::TextDelta { index, text } => Some(serde_json::json!({
+            "type": "text-delta",
+            "index": index,
+            "text": text,
+        })),
+        StreamChunk::ReasoningDelta { index, text } => Some(serde_json::json!({
+            "type": "reasoning-delta",
+            "index": index,
+            "text": text,
+        })),
+        StreamChunk::BlockStart { .. }
+        | StreamChunk::ToolCallDelta { .. }
+        | StreamChunk::BlockEnd { .. }
+        | StreamChunk::Usage(_)
+        | StreamChunk::Finish { .. } => None,
     }
 }
 

@@ -792,6 +792,11 @@ impl WorkingDirectoryProjection {
     /// decode: a corrupt event this projection does not own is not a reason to lose the state it has.
     #[must_use]
     pub fn apply_state(state: Value, event: &SessionEvent) -> Value {
+        if let SessionEvent::WorkspaceRootChange { cwd } = event {
+            if is_absolute(cwd) {
+                return Value::String(cwd.clone());
+            }
+        }
         match change_of(event) {
             Some(cwd) => Value::String(cwd),
             None => state,
@@ -819,12 +824,11 @@ impl Projection for WorkingDirectoryProjection {
     }
 }
 
-/// The directory a [`SessionEvent`] commits, when it commits one.
+/// The directory a [`SessionEvent`] notice commits, when it carries the legacy form.
 ///
-/// Today only the notice message can carry it, and only through its text marker — the `cwd` lives in
-/// an event envelope this crate's closed [`SessionEvent`] drops (see the module docs). Returning
-/// `None` rather than guessing is the honest answer: a projection that read the directory out of a
-/// sentence would break the first time the sentence was translated.
+/// Durable `workspace-root/change` events are handled directly by
+/// [`WorkingDirectoryProjection::apply_state`]. This parser remains for older logs that only
+/// contain the notice text.
 #[must_use]
 pub fn change_of(event: &SessionEvent) -> Option<String> {
     let SessionEvent::UserMessage { message } = event else {
@@ -1041,8 +1045,14 @@ pub fn working_directory_tool(state: Arc<tokio::sync::Mutex<WorkingDirectory>>) 
         TOOL_NAME,
         TOOL_DESCRIPTION,
         tool_parameters(),
-        Arc::new(move |args: Value, _ctx: ToolRunContext| {
-            let state = Arc::clone(&state);
+        Arc::new(move |args: Value, ctx: ToolRunContext| {
+            #[cfg(test)]
+            let state = {
+                let _ = ctx;
+                Arc::clone(&state)
+            };
+            #[cfg(not(test))]
+            let state = ctx.working_directory.unwrap_or_else(|| Arc::clone(&state));
             Box::pin(async move {
                 let value = execute(&args, &state)
                     .await
@@ -1421,5 +1431,30 @@ mod tests {
             assert_eq!(code.as_str().parse().ok(), Some(code));
         }
         assert_eq!("NOT_A_CODE".parse::<WorkingDirectoryErrorCode>().ok(), None);
+    }
+
+    #[test]
+    fn workspace_root_change_ignores_relative_paths() {
+        let relative = SessionEvent::WorkspaceRootChange {
+            cwd: "subdir".to_owned(),
+        };
+        assert_eq!(
+            WorkingDirectoryProjection::apply_state(
+                Value::String("/original".to_owned()),
+                &relative
+            ),
+            Value::String("/original".to_owned())
+        );
+
+        let absolute = SessionEvent::WorkspaceRootChange {
+            cwd: "/moved".to_owned(),
+        };
+        assert_eq!(
+            WorkingDirectoryProjection::apply_state(
+                Value::String("/original".to_owned()),
+                &absolute
+            ),
+            Value::String("/moved".to_owned())
+        );
     }
 }

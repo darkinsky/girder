@@ -6,6 +6,7 @@ pub mod agent_scope;
 pub mod argument_infer;
 pub mod argument_limits;
 pub mod ask;
+pub mod assistant_live;
 pub mod assistant_output;
 pub mod cache_invalidate;
 pub mod cancel_orchestra;

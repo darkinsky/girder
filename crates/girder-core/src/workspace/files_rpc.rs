@@ -1,4 +1,4 @@
-//! The `workspace.tree` and `workspace.readFile` Remote methods: browsing one registered workspace.
+//! The `workspaceFiles.tree` and `workspaceFiles.readBytes` Remote methods: browsing one registered workspace.
 //!
 //! `fs.*` answers questions about a path a client can already name, and it deliberately has no notion
 //! of a workspace: it will list `/` if asked. A file browser needs the opposite guarantee — every path
@@ -6,9 +6,9 @@
 //! and every path handed to the filesystem is confined to it before the first syscall.
 //!
 //! Upstream's `packages/api/workspace-files` is the reference for the semantics: a bounded directory
-//! listing, a page of text with an explicit `truncated`/`eof` marker, and a refusal for anything that
-//! is not text. It offers more than these two methods (`readBytes`, `stat`, and a `changes` stream);
-//! what is here is the read-only subset a tree view and a preview pane need.
+//! listing, a page of text, and a raw-byte read with an explicit range and EOF marker. The byte
+//! endpoint deliberately does not decode UTF-8 or reject NUL bytes; text paging lives in
+//! `files_extra.rs`.
 //!
 //! # Why a workspace id rather than a session scope
 //!
@@ -28,25 +28,12 @@
 //! not warnings, because a preview that leaked one file outside the project would make the whole
 //! boundary untrustworthy.
 //!
-//! # Why truncation is a fact in the response and not a quiet cut
+//! # Why byte ranges are explicit
 //!
-//! A page that stopped at a byte cap reads exactly like a complete file unless it says otherwise, and
-//! a caller cannot recover the difference by inspecting the text. So a cut page carries `truncated`,
-//! the number of bytes returned, the file's full size, and a human-readable `notice`. A caller that
-//! ignores the flags still sees a sentence saying the page is incomplete.
-//!
-//! The seam has no ranged read: `FileSystem::read_bytes` reads a whole file or refuses it. A preview
-//! therefore reads the file whole up to [`MAX_PREVIEW_BYTES`] and cuts the text afterwards. A file
-//! above that ceiling is *refused* with its size named rather than read whole to be cut, because
-//! reading a multi-gigabyte file to show its first paragraph is not a preview.
-//!
-//! # Why binary content is an error
-//!
-//! Decoding arbitrary bytes as UTF-8 either fails or produces replacement characters that look like
-//! content. Upstream throws `workspace-file/not-text`, and this does the same thing in the vocabulary
-//! this build has: a failed call whose message carries the `workspace-file/not-text:` marker. Bytes
-//! containing a NUL are rejected too — a NUL is what a binary file usually announces itself with, and
-//! a text file never legitimately contains one.
+//! A complete read is bounded before allocation. A ranged read is bounded by the requested window,
+//! returns fewer bytes at EOF, and carries the file's total byte count separately from the returned
+//! attachment. That lets a renderer distinguish an empty range from an empty file without reading
+//! or decoding the entire content.
 //!
 //! # Why the paths go through [`girder_core`]
 //!
@@ -58,12 +45,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::sync::CancellationToken;
 
 use girder_core::api::config::{Workspace, WorkspaceRegistry};
 use girder_core::{
-    FileSystem, FsType, RemoteCall, RemoteError, RemoteRegistry, normalize_path, relative_to,
-    resolve_in_workspace, target_at, workspace_contains,
+    BinaryRemoteResult, FileSystem, FsType, RemoteAttachment, RemoteAttachmentSegment, RemoteCall,
+    RemoteError, RemoteRegistry, normalize_path, relative_to, resolve_in_workspace, target_at,
+    workspace_contains,
 };
 
 /// The namespace both methods live under.
@@ -102,29 +91,52 @@ pub const DEFAULT_TREE_DEPTH: u32 = 1;
 /// `node_modules` shaped tree is how a preview turns into a denial of service against its own host.
 pub const MAX_TREE_DEPTH: u32 = 8;
 
-/// How many bytes of text `workspace.readFile` returns when the caller does not say.
+/// The legacy preview budget retained for compatibility with older callers.
 ///
 /// 256 KiB is several thousand lines of code — more than a preview needs and small enough that a JSON
 /// response carrying it stays pleasant to parse.
 pub const DEFAULT_READ_MAX_BYTES: u64 = 256 * 1024;
 
-/// The largest file `workspace.readFile` will read at all.
+/// The largest complete binary file read accepted by this endpoint.
 ///
-/// The seam has no ranged read, so a preview must read the file whole before cutting it. This is the
-/// ceiling on that read; above it the method refuses and names the size instead, which is honest and
-/// does not risk the host's memory.
+/// A complete `readBytes` call is refused above this ceiling before the file is read.
 pub const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Registers `workspace.tree` and `workspace.readFile` over one filesystem and workspace registry.
+/// Registers the workspace tree, raw byte read, and change stream over one filesystem and workspace registry.
 pub fn register_workspace_file_methods(
     registry: &mut RemoteRegistry,
     fs: &Arc<dyn FileSystem>,
     workspaces: &Arc<WorkspaceRegistry>,
 ) {
+    register_workspace_file_methods_with_sessions(registry, fs, workspaces, None, None);
+}
+
+/// Registers the file methods and resolves a browser `workspaceFileScopeId` through sessions.
+///
+/// `fallback` is the deployment workspace root used when a known session has no working directory.
+pub fn register_workspace_file_methods_with_sessions(
+    registry: &mut RemoteRegistry,
+    fs: &Arc<dyn FileSystem>,
+    workspaces: &Arc<WorkspaceRegistry>,
+    sessions: Option<Arc<dyn girder_core::SessionCatalog>>,
+    fallback: Option<std::path::PathBuf>,
+) {
     let changes_workspaces = Arc::clone(workspaces);
+    let changes_sessions = sessions.clone();
+    let changes_fallback = fallback.clone();
     registry.register_stream(NAMESPACE, "changes", move |open| {
         let workspaces = Arc::clone(&changes_workspaces);
-        Box::pin(async move { follow_changes(open, workspaces.as_ref()).await })
+        let sessions = changes_sessions.clone();
+        let fallback = changes_fallback.clone();
+        Box::pin(async move {
+            follow_changes(
+                open,
+                workspaces.as_ref(),
+                sessions.as_deref(),
+                fallback.as_deref(),
+            )
+            .await
+        })
     });
     registry.declare(
         NAMESPACE,
@@ -134,16 +146,41 @@ pub fn register_workspace_file_methods(
 
     let read_fs = Arc::clone(fs);
     let read_workspaces = Arc::clone(workspaces);
-    registry.register(NAMESPACE, "readBytes", move |call: RemoteCall| {
+    let read_sessions = sessions.clone();
+    let read_fallback = fallback.clone();
+    registry.register_binary(NAMESPACE, "readBytes", move |call: RemoteCall| {
         let fs = Arc::clone(&read_fs);
         let workspaces = Arc::clone(&read_workspaces);
-        Box::pin(async move { read_file(&call, fs.as_ref(), workspaces.as_ref()).await })
+        let sessions = read_sessions.clone();
+        let fallback = read_fallback.clone();
+        Box::pin(async move {
+            read_file(
+                &call,
+                fs.as_ref(),
+                workspaces.as_ref(),
+                sessions.as_deref(),
+                fallback.as_deref(),
+            )
+            .await
+        })
     });
 
     let watch_workspaces = Arc::clone(workspaces);
+    let watch_sessions = sessions;
+    let watch_fallback = fallback;
     registry.register(NAMESPACE, "watch", move |call: RemoteCall| {
         let workspaces = Arc::clone(&watch_workspaces);
-        Box::pin(async move { watch(&call, workspaces.as_ref()).await })
+        let sessions = watch_sessions.clone();
+        let fallback = watch_fallback.clone();
+        Box::pin(async move {
+            watch(
+                &call,
+                workspaces.as_ref(),
+                sessions.as_deref(),
+                fallback.as_deref(),
+            )
+            .await
+        })
     });
 }
 
@@ -371,106 +408,189 @@ pub async fn tree(
     }))
 }
 
-/// Implements `workspace.readFile`.
+/// Implements the binary `workspaceFiles.readBytes` endpoint.
 async fn read_file(
     call: &RemoteCall,
-    fs: &dyn FileSystem,
+    _fs: &dyn FileSystem,
     workspaces: &WorkspaceRegistry,
-) -> Result<Value, RemoteError> {
+    sessions: Option<&dyn girder_core::SessionCatalog>,
+    fallback: Option<&std::path::Path>,
+) -> Result<BinaryRemoteResult, RemoteError> {
     const METHOD: &str = "readBytes";
 
-    let workspace_id = required_str(&call.args, "workspaceId", METHOD)?;
-    let workspace = registered(workspaces, workspace_id, METHOD)?;
+    let root =
+        girder_core::workspace_file_root(workspaces, sessions, fallback, &call.args, METHOD)?;
     let requested = required_path(&call.args, METHOD)?;
-    let max_bytes = read_cap(&call.args)?;
-
-    let confined = confine(&workspace.path, requested, METHOD).await?;
-    let cancel = CancellationToken::new();
-    let target = target_at(confined.target.clone());
-    let info = fs
-        .stat(&target, cancel.clone())
+    let options = call.args.get("options").unwrap_or(&call.args);
+    let target = resolve_binary_target(&root, requested, options, METHOD).await?;
+    let link_metadata = tokio::fs::symlink_metadata(&target)
         .await
-        .map_err(|error| failed(error.to_string()))?
-        .ok_or_else(|| missing(&confined.relative, workspace_id))?;
-
-    match info.file_type {
-        FsType::File => {}
-        FsType::Directory => {
-            return Err(failed(format!(
-                "`{}` is a directory",
-                display_of(&confined.relative)
-            )));
-        }
-        FsType::Other => {
-            return Err(failed(format!(
-                "`{}` is not a regular file",
-                display_of(&confined.relative)
-            )));
-        }
-    }
-
-    let size = info.size;
-    if size > MAX_PREVIEW_BYTES {
+        .map_err(|error| {
+            failed(format!(
+                "workspace-file/not-found: cannot stat `{}`: {error}",
+                target.display()
+            ))
+        })?;
+    if link_metadata.file_type().is_symlink() || !link_metadata.is_file() {
         return Err(failed(format!(
-            "`{}` is {size} bytes, above the {MAX_PREVIEW_BYTES}-byte preview ceiling; it is refused \
-             rather than read whole",
-            display_of(&confined.relative)
+            "workspace-file/not-regular-file: `{}` is not a regular file",
+            target.display()
         )));
     }
-
-    // The limit is the file's own stat'd size: anything already observed is admitted, and a file that
-    // grew between the stat and the read is refused by the seam rather than read unbounded.
-    let bytes = fs
-        .read_bytes(&target, size, cancel)
-        .await
-        .map_err(|error| failed(error.to_string()))?;
-
-    // The scan runs over the whole buffer, not just the page: a file with a NUL past the byte cap is
-    // still a binary file, and reporting its prefix as text would be the same lie with a smaller page.
-    if bytes.contains(&0) {
-        return Err(not_text(&confined.relative, "contains a NUL byte"));
+    let metadata = tokio::fs::metadata(&target).await.map_err(|error| {
+        failed(format!(
+            "workspace-file/not-found: cannot stat `{}`: {error}",
+            target.display()
+        ))
+    })?;
+    let size = metadata.len();
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let max_file_bytes = options
+        .get("maxFileBytes")
+        .or_else(|| options.get("maxBytes"))
+        .and_then(Value::as_u64)
+        .unwrap_or(MAX_PREVIEW_BYTES);
+    if max_file_bytes == 0 || max_file_bytes > MAX_PREVIEW_BYTES {
+        return Err(invalid(
+            METHOD,
+            format!("`maxFileBytes` must be between 1 and {MAX_PREVIEW_BYTES}"),
+        ));
     }
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| not_text(&confined.relative, "is not valid UTF-8"))?;
 
-    let kept = char_boundary_at(text, max_bytes);
-    let truncated = kept < text.len();
-    let page = &text[..kept];
-    let notice = if truncated {
-        Some(format!("truncated: showed {kept} of {size} bytes"))
+    let range = options.get("range");
+    let (offset, eof, bytes) = if let Some(range) = range {
+        let offset = range.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let length = range
+            .get("length")
+            .and_then(Value::as_u64)
+            .unwrap_or(max_file_bytes);
+        if length > max_file_bytes {
+            return Err(invalid(
+                METHOD,
+                format!("`range.length` must be at most {max_file_bytes}"),
+            ));
+        }
+        let bytes = read_byte_range(&target, offset, length).await?;
+        let eof = offset.saturating_add(bytes.len() as u64) >= size;
+        (offset, eof, bytes)
     } else {
-        None
+        if size > max_file_bytes {
+            return Err(failed(format!(
+                "workspace-file/too-large: `{requested}` exceeds the {max_file_bytes}-byte full-file cap"
+            )));
+        }
+        let bytes = tokio::fs::read(&target).await.map_err(|error| {
+            failed(format!(
+                "workspace-file/read-failed: cannot read `{}`: {error}",
+                target.display()
+            ))
+        })?;
+        (0, true, bytes)
     };
-    let version = info.version.0;
 
-    Ok(json!({
-        "workspaceId": workspace_id,
-        "path": confined.relative,
-        "kind": "file",
-        "size": size,
-        "version": version,
-        "text": page,
-        "returnedBytes": kept,
-        // An explicit pair rather than one flag: `truncated` is what a client branches on, and
-        // `notice` is what a person reads when the client does not.
-        "truncated": truncated,
-        "eof": !truncated,
-        "maxBytes": max_bytes,
-        "lines": page.lines().count(),
-        "notice": notice,
-    }))
+    let value = json!({
+        "absolutePath": target.to_string_lossy().replace('\\', "/"),
+        "version": format!("{size}:{modified}"),
+        "bytes": size,
+        "offset": offset,
+        "data": Value::Null,
+        "eof": eof,
+    });
+    Ok(BinaryRemoteResult {
+        value,
+        attachments: vec![RemoteAttachment {
+            path: vec![RemoteAttachmentSegment::Key("data".to_owned())],
+            bytes,
+        }],
+    })
 }
 
-/// The last character boundary at or below `limit`.
-///
-/// Cutting at an arbitrary byte would panic on slicing a multi-byte character, and cutting at a
-/// replacement-character boundary would put `�` at the end of a page that is otherwise the file.
-fn char_boundary_at(text: &str, limit: u64) -> usize {
-    let mut cut = usize::try_from(limit).unwrap_or(usize::MAX).min(text.len());
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
+/// Resolves a byte-read path. Absolute targets are allowed, while relative targets use the
+/// registered workspace. A `baseFile` is itself workspace-scoped and supplies the directory for
+/// a relative target.
+async fn resolve_binary_target(
+    root: &Path,
+    requested: &str,
+    options: &Value,
+    method: &str,
+) -> Result<PathBuf, RemoteError> {
+    if requested.contains('\0') {
+        return Err(invalid(method, "`path` contains a NUL byte"));
     }
-    cut
+    let path = if let Some(base) = options.get("baseFile").and_then(Value::as_str) {
+        let base = confine(root, base, method).await?;
+        if Path::new(requested).is_absolute() {
+            PathBuf::from(requested)
+        } else {
+            base.target
+                .parent()
+                .unwrap_or_else(|| Path::new(root))
+                .join(requested)
+        }
+    } else if Path::new(requested).is_absolute() {
+        PathBuf::from(requested)
+    } else {
+        root.join(requested)
+    };
+    let normalized = normalize_path(&path);
+    if !Path::new(requested).is_absolute() && !workspace_contains(root, &normalized) {
+        return Err(invalid(
+            method,
+            format!("`{requested}` escapes the workspace root"),
+        ));
+    }
+    let link_metadata = tokio::fs::symlink_metadata(&normalized)
+        .await
+        .map_err(|error| {
+            failed(format!(
+                "workspace-file/not-found: cannot resolve `{requested}`: {error}"
+            ))
+        })?;
+    if link_metadata.file_type().is_symlink() {
+        return Ok(normalized);
+    }
+    let target = tokio::fs::canonicalize(&normalized)
+        .await
+        .map_err(|error| {
+            failed(format!(
+                "workspace-file/not-found: cannot resolve `{requested}`: {error}"
+            ))
+        })?;
+    Ok(target)
+}
+
+async fn read_byte_range(target: &Path, offset: u64, length: u64) -> Result<Vec<u8>, RemoteError> {
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    let mut file = tokio::fs::File::open(target).await.map_err(|error| {
+        failed(format!(
+            "workspace-file/read-failed: cannot read `{}`: {error}",
+            target.display()
+        ))
+    })?;
+    file.seek(std::io::SeekFrom::Start(offset))
+        .await
+        .map_err(|error| {
+            failed(format!(
+                "workspace-file/read-failed: cannot seek `{}`: {error}",
+                target.display()
+            ))
+        })?;
+    let capacity = usize::try_from(length).unwrap_or(usize::MAX);
+    let mut bytes = vec![0_u8; capacity];
+    let read = file.read(&mut bytes).await.map_err(|error| {
+        failed(format!(
+            "workspace-file/read-failed: cannot read `{}`: {error}",
+            target.display()
+        ))
+    })?;
+    bytes.truncate(read);
+    Ok(bytes)
 }
 
 /// The wire name of a file type.
@@ -579,57 +699,35 @@ fn limit_arg(args: &Value) -> Result<usize, RemoteError> {
     }
 }
 
-/// The `maxBytes` argument of a preview, bounded and refused rather than clamped.
-fn read_cap(args: &Value) -> Result<u64, RemoteError> {
-    match args.get("maxBytes") {
-        None | Some(Value::Null) => Ok(DEFAULT_READ_MAX_BYTES),
-        Some(value) => {
-            let cap = value
-                .as_u64()
-                .ok_or_else(|| invalid("readFile", "`maxBytes` must be a positive integer"))?;
-            if cap == 0 || cap > MAX_PREVIEW_BYTES {
-                return Err(invalid(
-                    "readFile",
-                    format!("`maxBytes` must be between 1 and {MAX_PREVIEW_BYTES}"),
-                ));
-            }
-            Ok(cap)
+async fn follow_changes(
+    open: girder_core::StreamOpen,
+    workspaces: &WorkspaceRegistry,
+    sessions: Option<&dyn girder_core::SessionCatalog>,
+    fallback: Option<&std::path::Path>,
+) {
+    let root = match girder_core::workspace_file_root(
+        workspaces,
+        sessions,
+        fallback,
+        &open.call.args,
+        "changes",
+    ) {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = open.fail(error);
+            return;
         }
-    }
-}
-
-async fn follow_changes(open: girder_core::StreamOpen, workspaces: &WorkspaceRegistry) {
-    let workspace_id = open
-        .call
-        .args
-        .get("workspaceId")
-        .or_else(|| open.call.args.get("sessionId"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
-    let Some(workspace_id) = workspace_id else {
-        let _ = open.fail(invalid("changes", "`workspaceId` is required"));
-        return;
-    };
-    let Ok(workspace) = registered(workspaces, workspace_id, "changes") else {
-        let _ = open.fail(invalid(
-            "changes",
-            format!("unknown workspace `{workspace_id}`; it is not registered"),
-        ));
-        return;
     };
     let requested = optional_str(&open.call.args, "path").unwrap_or(".");
-    let initial = target_info(&workspace.path.join(requested));
-    let Ok(plan) = girder_core::workspace::watch::plan_watch(
-        Some(&workspace.path),
-        requested,
-        initial.as_ref(),
-    ) else {
-        let _ = open.fail(invalid(
-            "changes",
-            format!("`{requested}` is outside the workspace"),
-        ));
-        return;
-    };
+    let initial = target_info(&root.join(requested));
+    let plan =
+        match girder_core::workspace::watch::plan_watch(Some(&root), requested, initial.as_ref()) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let _ = open.fail(failed(format!("{}: {error}", error.code())));
+                return;
+            }
+        };
     if !open.push(json!({ "kind": "ready" })) {
         return;
     }
@@ -751,11 +849,16 @@ fn fingerprint(path: &str) -> Option<String> {
 /// The first poll of a path is the baseline and reports nothing. Later polls scan again. This is a
 /// directory walk, not an operating-system notifier: a file that appears and disappears between two
 /// polls is never reported.
-async fn watch(call: &RemoteCall, workspaces: &WorkspaceRegistry) -> Result<Value, RemoteError> {
-    let workspace_id = required_str(&call.args, "workspaceId", "watch")?;
-    let workspace = registered(workspaces, workspace_id, "watch")?;
+async fn watch(
+    call: &RemoteCall,
+    workspaces: &WorkspaceRegistry,
+    sessions: Option<&dyn girder_core::SessionCatalog>,
+    fallback: Option<&std::path::Path>,
+) -> Result<Value, RemoteError> {
+    let root =
+        girder_core::workspace_file_root(workspaces, sessions, fallback, &call.args, "watch")?;
     let requested = optional_str(&call.args, "path").unwrap_or(".");
-    let target = workspace.path.join(requested);
+    let target = root.join(requested);
     let info = std::fs::metadata(&target).ok().map(|metadata| {
         let file_type = if metadata.is_dir() {
             girder_core::FsType::Directory
@@ -770,9 +873,8 @@ async fn watch(call: &RemoteCall, workspaces: &WorkspaceRegistry) -> Result<Valu
             size: metadata.len(),
         }
     });
-    let plan =
-        girder_core::workspace::watch::plan_watch(Some(&workspace.path), requested, info.as_ref())
-            .map_err(|error| invalid("watch", error.to_string()))?;
+    let plan = girder_core::workspace::watch::plan_watch(Some(&root), requested, info.as_ref())
+        .map_err(|error| invalid("watch", error.to_string()))?;
     // A file is not a directory. The scan walks its parent and keeps the one name, so a save of
     // that file is reported and a sibling edit is not.
     let target_path = std::path::PathBuf::from(&plan.process_path);
@@ -847,21 +949,9 @@ fn invalid(method: &str, message: impl Into<String>) -> RemoteError {
 ///
 /// `RemoteError` has no data-carrying variant, so the message is the whole failure. Upstream's
 /// structured codes are not reproduced, and the messages that a client may want to branch on carry a
-/// stable prefix instead (see [`not_text`]).
+/// stable prefix instead.
 fn failed(message: impl Into<String>) -> RemoteError {
     RemoteError::Failed(message.into())
-}
-
-/// A refusal for content that is not text.
-///
-/// The `workspace-file/not-text:` prefix is this build's stand-in for upstream's error code: a client
-/// that wants to branch on "this is binary, stop previewing it" matches the prefix, and a person
-/// reading the message gets the same sentence either way.
-fn not_text(relative: &str, reason: &str) -> RemoteError {
-    failed(format!(
-        "workspace-file/not-text: `{}` {reason}",
-        display_of(relative)
-    ))
 }
 
 /// A refusal for a path that names nothing.

@@ -640,7 +640,10 @@ pub fn bash_tool(policy: PathPolicy) -> crate::core::tools::ToolDefinition {
                         return Ok(crate::core::tools::ToolResult::error("no command given"));
                     }
 
-                    let escalated = match escalate_bash(&args, policy.confine, &ctx).await {
+                    // A mode the session log recorded outranks the mode this tool was built with.
+                    // The deployment default remains in force for a session that never switched.
+                    let effective = ctx.session_sandbox.or(policy.confine);
+                    let escalated = match escalate_bash(&args, effective, &ctx).await {
                         Ok(mode) => mode,
                         Err(message) => {
                             return Ok(crate::core::tools::ToolResult::error(message));
@@ -667,7 +670,7 @@ pub fn bash_tool(policy: PathPolicy) -> crate::core::tools::ToolDefinition {
                         // A command a model asked to run must not inherit the harness's own credentials, but it does
                         // need the baseline that lets any command run at all.
                         .with_baseline_environment();
-                    if let Some(mode) = escalated.or(policy.confine) {
+                    if let Some(mode) = escalated.or(effective) {
                         options = options.with_confine(mode);
                     }
                     // The command runs in the session's workspace, which is what "this project" means to a model. A

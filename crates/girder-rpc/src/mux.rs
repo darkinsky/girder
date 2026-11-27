@@ -780,7 +780,7 @@ async fn send_remote_error(
     let _ = out_tx
         .send(Outbound::Frame(ServerMessage::Error {
             stream_id: stream_id.to_owned(),
-            error: StreamFailure::new(error.code(), error.to_string(), details),
+            error: StreamFailure::new(error.wire_code(), error.to_string(), details),
         }))
         .await;
 }

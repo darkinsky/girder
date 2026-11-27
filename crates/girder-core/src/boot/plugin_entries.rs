@@ -361,6 +361,7 @@ impl Registry {
                     "entryId": entry.entry_id,
                     "moduleName": entry.module_name,
                     "enabled": enabled,
+                    "fiberPhase": serde_json::Value::Null,
                 });
                 match self.patch_id(entry) {
                     Ok(patch_id) => row["patchId"] = serde_json::json!(patch_id),

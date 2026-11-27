@@ -320,6 +320,31 @@ pub struct Projected {
     pub values: BTreeMap<String, serde_json::Value>,
 }
 
+impl Projected {
+    /// Fills `workingDirectory` from the session header when the log has not recorded one.
+    ///
+    /// The fold starts at null: `init` cannot see the header. Upstream's projection starts at
+    /// `header.cwd`, and a directory a later event committed replaces that start. A still-null
+    /// value is the start, so the header supplies it. A recorded directory stays.
+    #[must_use]
+    pub fn with_header_directory(mut self, header_cwd: Option<&str>) -> Self {
+        let Some(cwd) = header_cwd.filter(|cwd| !cwd.is_empty()) else {
+            return self;
+        };
+        if self
+            .values
+            .get("workingDirectory")
+            .is_some_and(serde_json::Value::is_null)
+        {
+            self.values.insert(
+                "workingDirectory".to_owned(),
+                serde_json::Value::String(cwd.to_owned()),
+            );
+        }
+        self
+    }
+}
+
 /// A projection over the turn boundaries in a log.
 ///
 /// The reference definition: small enough to read in one screen, and it exercises the shape every
@@ -564,5 +589,29 @@ mod tests {
         assert_eq!(first.as_of, 1);
         assert_eq!(first.values["turnBoundary"]["lastTurn"], 4);
         assert_eq!(second.values["turnBoundary"]["lastTurn"], 9);
+    }
+
+    #[test]
+    fn a_header_directory_fills_only_a_null_working_directory() {
+        let empty = Projected {
+            as_of: 0,
+            values: BTreeMap::from([("workingDirectory".to_owned(), serde_json::Value::Null)]),
+        };
+        let filled = empty.with_header_directory(Some("/work/app"));
+        assert_eq!(filled.values["workingDirectory"], "/work/app");
+
+        let moved = Projected {
+            as_of: 2,
+            values: BTreeMap::from([(
+                "workingDirectory".to_owned(),
+                serde_json::Value::String("/work/moved".to_owned()),
+            )]),
+        };
+        let kept = moved.with_header_directory(Some("/work/app"));
+        assert_eq!(kept.values["workingDirectory"], "/work/moved");
+        assert_eq!(
+            kept.with_header_directory(None).values["workingDirectory"],
+            "/work/moved"
+        );
     }
 }

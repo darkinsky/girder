@@ -114,7 +114,9 @@ pub async fn observe_projections(
             "no session `{session_id}` is known to this deployment"
         )));
     };
-    let projected = projections.project_summary(&record.events);
+    let projected = projections
+        .project_summary(&record.events)
+        .with_header_directory(catalog.working_directory(&session_id).as_deref());
     Ok(json!({
         "frames": [{
             "sessionId": session_id,

@@ -322,6 +322,14 @@ pub struct LoopContext {
     /// workspace.
     pub permissions: Option<Arc<crate::credentials::permissions::State>>,
 
+    /// The sandbox mode the session log named, when it named one.
+    ///
+    /// Distinct from [`Self::permissions`]: those knobs also carry the deployment default, and a tool
+    /// registered before the session switched still has that default baked into its path policy.
+    /// `bash` uses this field to replace that baked mode. `None` means the log never switched, so the
+    /// tool keeps the policy it was built with.
+    pub session_sandbox: Option<crate::shell::SandboxMode>,
+
     /// The session directory `working_directory` reads and the next tool call starts from.
     ///
     /// Shared with the tool: the loop snapshots it at the start of a call, and the tool commits
@@ -452,6 +460,7 @@ impl LoopContext {
             pending_approvals: None,
             activity: None,
             permissions: None,
+            session_sandbox: None,
             working_directory: None,
             approval_rules: None,
             tool_trace: None,
@@ -1700,6 +1709,7 @@ fn tool_calls<'a>(
                 }
             }
 
+            let directory_before = recorded_directory(context).await;
             let result = match dispatch(context, execution, cancel.clone()).await {
                 Ok(result) => result,
                 Err(error) => {
@@ -1707,6 +1717,7 @@ fn tool_calls<'a>(
                     return;
                 }
             };
+            record_directory_move(context, directory_before.as_deref()).await;
             let is_error = result.is_error;
 
             // An oversized result is saved and replaced by a locator. The decision is made here rather than inside
@@ -1765,6 +1776,31 @@ fn tool_calls<'a>(
             ));
         }
     }
+}
+
+async fn recorded_directory(context: &LoopContext) -> Option<String> {
+    let state = context.working_directory.as_ref()?;
+    Some(state.lock().await.current().to_owned())
+}
+
+/// Writes `workspace-root/change` when a tool moved the session directory.
+///
+/// The header keeps the original project. File views and the working-directory
+/// projection read this event, so a move survives the turn that made it.
+async fn record_directory_move(context: &LoopContext, before: Option<&str>) {
+    let Some(before) = before else {
+        return;
+    };
+    let Some(after) = recorded_directory(context).await else {
+        return;
+    };
+    if before == after || !crate::shell::working_dir::is_absolute(&after) {
+        return;
+    }
+    let _ = context
+        .session
+        .append(SessionEvent::WorkspaceRootChange { cwd: after })
+        .await;
 }
 
 /// Runs the three-waterfall pipeline for one call.
@@ -1909,6 +1945,8 @@ async fn run_with_deadline(
 ) -> Option<ToolResult> {
     let call = execution.clone();
     let permissions = context.permissions.clone();
+    let session_sandbox = context.session_sandbox;
+    let working_directory = context.working_directory.clone();
     let cwd = match &context.working_directory {
         Some(state) => {
             let current = state.lock().await.current().to_owned();
@@ -1930,6 +1968,7 @@ async fn run_with_deadline(
                 let cancel = cancel.clone();
                 let permissions = permissions.clone();
                 let escalation = escalation.clone();
+                let working_directory = working_directory.clone();
                 let cwd = cwd.clone();
                 Box::pin(async move {
                     run_body(
@@ -1937,9 +1976,11 @@ async fn run_with_deadline(
                         call,
                         cancel,
                         permissions,
+                        session_sandbox,
                         outside_granted,
                         escalation,
                         cwd,
+                        working_directory,
                     )
                     .await
                 })
@@ -2215,9 +2256,11 @@ async fn run_body(
     execution: ToolExecution,
     cancel: CancellationToken,
     permissions: Option<Arc<crate::credentials::permissions::State>>,
+    session_sandbox: Option<crate::shell::SandboxMode>,
     outside_granted: bool,
     escalation: Option<Arc<crate::sandbox::policy::ApproverBridge>>,
     cwd: Option<std::path::PathBuf>,
+    working_directory: Option<Arc<tokio::sync::Mutex<crate::shell::working_dir::WorkingDirectory>>>,
 ) -> ToolResult {
     if cancel.is_cancelled() {
         return ToolResult::error("cancelled before the tool started");
@@ -2251,9 +2294,11 @@ async fn run_body(
 
     let mut context = ToolRunContext::new(execution, cancel);
     context.permissions = permissions;
+    context.session_sandbox = session_sandbox;
     context.outside_granted = outside_granted;
     context.escalation = escalation;
     context.cwd = cwd;
+    context.working_directory = working_directory;
     match (tool.execute)(arguments, context).await {
         Ok(result) => result,
         Err(error) => ToolResult::error(error.to_string()),

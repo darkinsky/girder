@@ -9,7 +9,7 @@
 //! | --- | --- | --- |
 //! | Reads | `listPlugins`, `listBundles`, `listVersions`, `readBundleDetail`, `inspect`, `registries`, `listVersionExemptions` | A registry |
 //! | Enablement | `setPluginEnabled`, `setBundleEnabled` | The registry. A saved plugin switch waits for the next start |
-//! | Mutations | `installBundle`, `updateBundle`, `removeBundle`, `cancelInstall`, `setVersionExemption` | An installer |
+//! | Mutations | `installBundle`, `updateBundle`, `removeBundle`, `cancelInstall` | An installer |
 //! | Progress | `waitForInstall` | A running install |
 //!
 //! # What this port serves
@@ -107,6 +107,158 @@ fn required_bool(
     })
 }
 
+fn inspect_spec(entries: &Registry, spec: &str) -> Value {
+    let parsed = match crate::boot::install::parse_install_spec(spec) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return json!({
+                "status": "refused",
+                "problem": "invalid-spec",
+                "reason": error.reason,
+            });
+        }
+    };
+    match parsed {
+        crate::boot::install::ParsedSpec::Git { host, .. } => json!({
+            "status": "accepted",
+            "kind": "git",
+            "bundle": null,
+            "registry": null,
+            "host": host,
+        }),
+        crate::boot::install::ParsedSpec::Tarball { path, host, .. } => {
+            if path
+                .as_deref()
+                .is_some_and(|path| !std::path::Path::new(path).exists())
+            {
+                return json!({
+                    "status": "refused",
+                    "problem": "not-a-package",
+                    "reason": "the tarball does not exist",
+                });
+            }
+            let mut answer = json!({
+                "status": "accepted",
+                "kind": "tarball",
+                "bundle": null,
+                "registry": null,
+            });
+            if let Some(host) = host {
+                answer["host"] = json!(host);
+            }
+            answer
+        }
+        crate::boot::install::ParsedSpec::Path { path, .. } => inspect_path(entries, &path),
+        crate::boot::install::ParsedSpec::Registry { name, .. } => {
+            if entries
+                .entries()
+                .iter()
+                .any(|entry| entry.module_name == name)
+            {
+                json!({
+                    "status": "refused",
+                    "problem": "already-installed",
+                    "reason": format!("{name} is already installed"),
+                })
+            } else {
+                json!({
+                    "status": "refused",
+                    "problem": "network",
+                    "reason": "this build does not query a package registry",
+                    "registries": [null],
+                })
+            }
+        }
+    }
+}
+
+fn inspect_path(entries: &Registry, path: &str) -> Value {
+    let directory = std::path::Path::new(path);
+    if !directory.exists() {
+        return json!({
+            "status": "refused",
+            "problem": "not-a-package",
+            "reason": "the path does not exist",
+        });
+    }
+    let manifest = directory.join("package.json");
+    if std::fs::metadata(&manifest).is_ok_and(|metadata| metadata.len() > 1_048_576) {
+        return json!({
+            "status": "refused",
+            "problem": "not-a-package",
+            "reason": "no readable package.json at the path: the manifest is larger than 1MiB",
+        });
+    }
+    let text = match std::fs::read_to_string(&manifest) {
+        Ok(text) => text,
+        Err(error) => {
+            return json!({
+                "status": "refused",
+                "problem": "not-a-package",
+                "reason": format!("no readable package.json at the path: {error}"),
+            });
+        }
+    };
+    let value: Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            return json!({
+                "status": "refused",
+                "problem": "not-a-package",
+                "reason": format!("no readable package.json at the path: {error}"),
+            });
+        }
+    };
+    let Some(name) = value.get("name").and_then(Value::as_str) else {
+        return json!({
+            "status": "refused",
+            "problem": "not-a-package",
+            "reason": "the package.json names no package",
+        });
+    };
+    if entries
+        .entries()
+        .iter()
+        .any(|entry| entry.module_name == name)
+    {
+        return json!({
+            "status": "refused",
+            "problem": "already-installed",
+            "reason": format!("{name} is already installed"),
+        });
+    }
+    let bundle = value
+        .get("dsh")
+        .and_then(|dsh| dsh.get("bundle"))
+        .and_then(Value::as_object)
+        .is_some();
+    if !bundle {
+        return json!({
+            "status": "refused",
+            "problem": "not-a-bundle",
+            "reason": format!("{name} declares no dsh.bundle"),
+        });
+    }
+    let mut answer = json!({
+        "status": "accepted",
+        "kind": "path",
+        "name": name,
+        "bundle": true,
+        "registry": null,
+    });
+    if let Some(version) = value.get("version").and_then(Value::as_str) {
+        answer["version"] = json!(version);
+    }
+    if let Some(description) = value
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|description| !description.is_empty())
+    {
+        answer["description"] = json!(description);
+    }
+    answer
+}
+
 fn no_installer(method: &str) -> Value {
     json!({
         "ok": false,
@@ -125,9 +277,6 @@ pub fn register_plugin_manager_methods(registry: &mut RemoteRegistry, entries: &
         Box::pin(async move { Ok(json!(entries.list())) })
     });
 
-    // The remaining reads answer an empty collection rather than refusing. That is accurate for this
-    // build -- it has no bundles, no version catalogue and no install log -- and it is a shape a
-    // client can render, where a refusal would make a plugins page fail to load entirely.
     let exemptions = Arc::clone(entries);
     registry.register(
         NAMESPACE,
@@ -137,23 +286,50 @@ pub fn register_plugin_manager_methods(registry: &mut RemoteRegistry, entries: &
             Box::pin(async move { Ok(entries.version_exemptions()) })
         },
     );
-    for method in READS
-        .iter()
-        .filter(|method| **method != "listPlugins" && **method != "listVersionExemptions")
-    {
-        let method = (*method).to_owned();
-        let wire = method.clone();
-        registry.register(NAMESPACE, &wire, move |_call: RemoteCall| {
-            let method = method.clone();
-            Box::pin(async move {
-                Ok(json!({
-                    "items": [],
-                    "code": "empty",
-                    "message": format!("this build has no `{method}` inventory; the list is empty by construction"),
-                }))
-            })
-        });
-    }
+    // An empty array is the inventory a plugins page iterates. An object would make that page fail
+    // while trying to read bundle names.
+    registry.register(NAMESPACE, "listBundles", move |_call: RemoteCall| {
+        Box::pin(async move { Ok(json!([])) })
+    });
+    // Nothing is configured, so the first registry is the one the package manager would name itself
+    // and no fallback has been read.
+    registry.register(NAMESPACE, "registries", move |_call: RemoteCall| {
+        Box::pin(async move {
+            Ok(json!({
+                "registry": null,
+                "fallbackRegistries": [],
+                "resolved": null,
+            }))
+        })
+    });
+    registry.register(NAMESPACE, "listVersions", move |call: RemoteCall| {
+        Box::pin(async move {
+            let name = required_text(&call.args, "name", "listVersions")?;
+            Ok(json!({
+                "status": "refused",
+                "problem": "not-updatable",
+                "reason": format!("{name} is not a third-party package installed in this profile"),
+                "attempts": [],
+            }))
+        })
+    });
+    registry.register(NAMESPACE, "readBundleDetail", move |call: RemoteCall| {
+        Box::pin(async move {
+            let name = required_text(&call.args, "name", "readBundleDetail")?;
+            let _language = required_text(&call.args, "language", "readBundleDetail")?;
+            Err(crate::api::remote::RemoteError::Failed(format!(
+                "No such bundle: {name}"
+            )))
+        })
+    });
+    let inspecting = Arc::clone(entries);
+    registry.register(NAMESPACE, "inspect", move |call: RemoteCall| {
+        let entries = Arc::clone(&inspecting);
+        Box::pin(async move {
+            let spec = required_text(&call.args, "spec", "inspect")?;
+            Ok(inspect_spec(&entries, spec))
+        })
+    });
 
     let toggling = Arc::clone(entries);
     registry.register(NAMESPACE, "setPluginEnabled", move |call: RemoteCall| {
@@ -258,14 +434,17 @@ pub fn register_plugin_inventory_methods(registry: &mut RemoteRegistry, entries:
     registry.register("pluginInventory", "list", move |_call: RemoteCall| {
         let entries = Arc::clone(&listing);
         Box::pin(async move {
+            let listed = entries.list();
             Ok(json!({
-                "entries": entries.entries().iter().map(|entry| json!({
-                    "entryId": entry.entry_id,
-                    "moduleName": entry.module_name,
+                // The manager is registered beside this inventory, which is the fact the plugins
+                // page reads before it asks for bundles.
+                "managementAvailable": true,
+                "entries": listed.iter().map(|entry| json!({
+                    "entryId": entry["entryId"],
+                    "moduleName": entry["moduleName"],
+                    "enabled": entry["enabled"],
+                    "fiberPhase": null,
                 })).collect::<Vec<_>>(),
-                // This build has no preset compositions separate from the entries, so the field is
-                // empty rather than absent: a client that iterated it would find nothing, which is
-                // accurate, and a client that checked for the key finds it.
                 "presets": [],
             }))
         })
@@ -390,5 +569,83 @@ mod tests {
             .await
             .expect("bundle");
         assert_eq!(bundle["error"]["code"], "not-bundle");
+    }
+
+    #[tokio::test]
+    async fn the_plugin_page_reads_an_array_of_bundles() {
+        use crate::api::remote::{RemoteCall, RemoteRegistry};
+
+        let entries = Arc::new(Registry::new());
+        let mut registry = RemoteRegistry::new();
+        register_plugin_manager_methods(&mut registry, &entries);
+        register_plugin_inventory_methods(&mut registry, &entries);
+        let call = || RemoteCall {
+            args: json!({}),
+            peer: "test".to_owned(),
+        };
+        let inventory = registry
+            .dispatch("pluginInventory", "list", call())
+            .await
+            .expect("inventory");
+        assert_eq!(inventory["managementAvailable"], true);
+        assert!(inventory["entries"].as_array().expect("entries").is_empty());
+        let bundles = registry
+            .dispatch(NAMESPACE, "listBundles", call())
+            .await
+            .expect("bundles");
+        assert!(bundles.as_array().expect("bundle array").is_empty());
+        let registries = registry
+            .dispatch(NAMESPACE, "registries", call())
+            .await
+            .expect("registries");
+        assert!(registries["registry"].is_null());
+        assert!(
+            registries["fallbackRegistries"]
+                .as_array()
+                .expect("fallbacks")
+                .is_empty()
+        );
+        let versions = registry
+            .dispatch(
+                NAMESPACE,
+                "listVersions",
+                RemoteCall {
+                    args: json!({"name": "some-plugin"}),
+                    peer: "test".to_owned(),
+                },
+            )
+            .await
+            .expect("versions");
+        assert_eq!(versions["status"], "refused");
+        assert_eq!(versions["problem"], "not-updatable");
+        let inspected = registry
+            .dispatch(
+                NAMESPACE,
+                "inspect",
+                RemoteCall {
+                    args: json!({"spec": "https://github.com/a/b.git"}),
+                    peer: "test".to_owned(),
+                },
+            )
+            .await
+            .expect("inspect");
+        assert_eq!(inspected["status"], "accepted");
+        assert_eq!(inspected["kind"], "git");
+        assert_eq!(inspected["host"], "github.com");
+        let detail = registry
+            .dispatch(
+                NAMESPACE,
+                "readBundleDetail",
+                RemoteCall {
+                    args: json!({"name": "missing", "language": "en"}),
+                    peer: "test".to_owned(),
+                },
+            )
+            .await
+            .expect_err("missing bundle");
+        assert!(
+            detail.to_string().contains("No such bundle: missing"),
+            "{detail}"
+        );
     }
 }

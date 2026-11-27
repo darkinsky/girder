@@ -50,9 +50,10 @@
 //!    written twice. Upstream keeps this derivation in one module precisely so the Seatbelt profile
 //!    and the filesystem fence cannot disagree.
 //! 2. **Per-call resolution.** Upstream resolves `approved override → session override → deployment
-//!    default`, with the session's own `cwd` as the boundary. Locally the deployment has a default, a
-//!    session records `sandbox/mode` events, and *nothing reads them back*: the fold that turns those
-//!    events into the effective mode is missing, so a session-scoped switch is write-only.
+//!    default`, with the session's own `cwd` as the boundary. [`PolicyResolver::resolve`] is that
+//!    order. A turn applies [`permissions_for_session`] before its first tool call, so a
+//!    `sandbox/mode` event is what that turn's file tools and `bash` enforce. An approved
+//!    escalation still outranks the recorded mode inside the tool.
 //! 3. **The escalation ladder.** A denial is not the end of the interaction upstream: the model may
 //!    retry the same call once with a strictly wider mode, and the widening is an execution check
 //!    gated on a human's approval. Locally [`crate::escalation_hint_marker`] advertises that lever
@@ -665,6 +666,58 @@ pub fn set_sandbox_mode(mode: SandboxMode, source: Option<&str>) -> SessionEvent
         mode: mode.as_str().to_owned(),
         source: source.map(str::to_owned),
     }
+}
+
+/// The permission state one turn enforces, after the session log is folded in.
+///
+/// The deployment state is the base. A later `sandbox/mode` event replaces the sandbox knob, and a
+/// later `approval/policy` event replaces the approval knob. Events the closed set does not contain
+/// are skipped, so a newer log cannot widen this build to its deployment default by using a name it
+/// does not understand. The returned mode is `Some` only when the log named a sandbox mode: that is
+/// the signal `bash` uses to replace the mode baked into the tool at startup. A session that never
+/// switched leaves the startup policy alone.
+#[must_use]
+pub fn permissions_for_session(
+    base: &girder_core::PermissionState,
+    events: &[SessionEvent],
+) -> (girder_core::PermissionState, Option<SandboxMode>) {
+    let mode = session_override(events);
+    let approval = approval_override(events);
+    if mode.is_none() && approval.is_none() {
+        return (base.clone(), None);
+    }
+    let mut state = base.clone();
+    let mut knobs = state.knobs();
+    if let Some(mode) = mode {
+        knobs.sandbox = mode;
+    }
+    if let Some(approval) = approval {
+        knobs.approval = approval;
+    }
+    state.set_knobs(knobs);
+    (state, mode)
+}
+
+/// The last approval policy this build can enforce.
+///
+/// `ask` is the spelling `permissionPresets.set` writes for the workspace preset, whose knob asks
+/// outside the workspace and proceeds inside it.
+fn approval_override(events: &[SessionEvent]) -> Option<girder_core::Approval> {
+    let mut state = None;
+    for event in events {
+        if let SessionEvent::ApprovalPolicy { policy } = event {
+            let parsed = match policy.as_str() {
+                "never" => Some(girder_core::Approval::Never),
+                "always" => Some(girder_core::Approval::Always),
+                "ask" | "outside-workspace" => Some(girder_core::Approval::OutsideWorkspace),
+                _ => None,
+            };
+            if let Some(parsed) = parsed {
+                state = Some(parsed);
+            }
+        }
+    }
+    state
 }
 
 /// Renders the policy paragraph a session's model requests carry.
