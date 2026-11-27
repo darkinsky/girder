@@ -110,9 +110,9 @@ async fn tree(root: &Path, args: serde_json::Value) -> Result<serde_json::Value,
 async fn read_file(
     registry: &RemoteRegistry,
     args: serde_json::Value,
-) -> Result<serde_json::Value, RemoteError> {
+) -> Result<girder_core::BinaryRemoteResult, RemoteError> {
     registry
-        .dispatch("workspaceFiles", "readBytes", call(args))
+        .dispatch_binary("workspaceFiles", "readBytes", call(args))
         .await
 }
 
@@ -275,14 +275,22 @@ async fn read_file_returns_the_text_and_its_size() {
     .await
     .expect("readFile");
 
-    assert_eq!(value["text"], "fn main() {}\n");
-    assert_eq!(value["path"], "src/main.rs");
-    assert_eq!(value["size"], 13);
-    assert_eq!(value["returnedBytes"], 13);
-    assert_eq!(value["truncated"], false);
-    assert_eq!(value["eof"], true);
-    assert_eq!(value["notice"], serde_json::Value::Null);
-    assert!(value["version"].as_str().is_some_and(|v| !v.is_empty()));
+    assert_eq!(value.value["offset"], 0);
+    assert_eq!(value.value["bytes"], 13);
+    assert_eq!(value.value["data"], serde_json::Value::Null);
+    assert_eq!(value.value["eof"], true);
+    assert!(
+        value.value["absolutePath"]
+            .as_str()
+            .is_some_and(|path| { path.ends_with("/src/main.rs") })
+    );
+    assert!(
+        value.value["version"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+    );
+    assert_eq!(value.attachments.len(), 1);
+    assert_eq!(value.attachments[0].bytes, b"fn main() {}\n");
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -299,13 +307,14 @@ async fn read_file_accepts_a_leading_dot_slash() {
     .await
     .expect("readFile");
 
-    assert_eq!(value["text"], "# readme\n");
-    assert_eq!(value["path"], "README.md");
+    assert_eq!(value.value["offset"], 0);
+    assert_eq!(value.value["bytes"], 9);
+    assert_eq!(value.attachments[0].bytes, b"# readme\n");
     let _ = std::fs::remove_dir_all(&base);
 }
 
 #[tokio::test]
-async fn read_file_cuts_a_large_file_and_says_so() {
+async fn read_file_returns_a_bounded_byte_range() {
     let (base, root) = fixture("read-cut");
     // Well below the preview ceiling, so it is read and cut rather than refused: the point here is
     // the truncation marker, not the ceiling.
@@ -318,26 +327,24 @@ async fn read_file_cuts_a_large_file_and_says_so() {
 
     let value = read_file(
         &registry,
-        serde_json::json!({ "workspaceId": WORKSPACE, "path": "big.txt", "maxBytes": 40 }),
+        serde_json::json!({
+            "workspaceId": WORKSPACE,
+            "path": "big.txt",
+            "options": { "range": { "offset": 0, "length": 40 } },
+        }),
     )
     .await
     .expect("readFile");
 
-    assert_eq!(value["truncated"], true);
-    assert_eq!(value["eof"], false);
-    assert_eq!(value["returnedBytes"], 40);
-    assert_eq!(value["size"], body.len());
-    assert_eq!(value["maxBytes"], 40);
-    // The flag is for a client to branch on; the notice is what a person reads when the client does
-    // not, and it is present so a silently-cut page cannot happen.
-    let notice = value["notice"].as_str().expect("a notice on a cut page");
-    assert!(notice.starts_with("truncated:"), "notice was {notice:?}");
-    assert_eq!(value["text"].as_str(), Some(&body[..40]));
+    assert_eq!(value.value["offset"], 0);
+    assert_eq!(value.value["eof"], false);
+    assert_eq!(value.value["bytes"], body.len());
+    assert_eq!(value.attachments[0].bytes, body.as_bytes()[..40]);
     let _ = std::fs::remove_dir_all(&base);
 }
 
 #[tokio::test]
-async fn read_file_cuts_on_a_character_boundary() {
+async fn read_file_preserves_bytes_without_text_decoding() {
     let (base, root) = fixture("read-utf8");
     // Three-byte characters: a cut at byte 4 would land inside one.
     let body = "日本語のテキスト";
@@ -346,16 +353,13 @@ async fn read_file_cuts_on_a_character_boundary() {
 
     let value = read_file(
         &registry,
-        serde_json::json!({ "workspaceId": WORKSPACE, "path": "jp.txt", "maxBytes": 4 }),
+        serde_json::json!({ "workspaceId": WORKSPACE, "path": "jp.txt" }),
     )
     .await
     .expect("readFile");
 
-    // Cutting at an arbitrary byte would either panic on the slice or put U+FFFD at the end of a
-    // page that is otherwise the file; 3 is the last boundary at or below 4.
-    assert_eq!(value["returnedBytes"], 3);
-    assert_eq!(value["text"], "日");
-    assert_eq!(value["truncated"], true);
+    assert_eq!(value.value["eof"], true);
+    assert_eq!(value.attachments[0].bytes, body.as_bytes());
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -381,7 +385,10 @@ async fn read_file_refuses_a_file_above_the_preview_ceiling() {
     // Refused with its size named, not read whole to be cut: reading eight gigabytes to show the
     // first paragraph is not a preview.
     let message = refusal(&error);
-    assert!(message.contains("preview ceiling"), "message was {message}");
+    assert!(
+        message.contains("workspace-file/too-large"),
+        "message was {message}"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -396,7 +403,7 @@ async fn read_file_refuses_a_directory() {
     )
     .await
     .expect_err("a directory is not a file");
-    assert!(refusal(&error).contains("directory"));
+    assert!(refusal(&error).contains("workspace-file/not-regular-file"));
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -411,55 +418,45 @@ async fn read_file_refuses_a_missing_path() {
     )
     .await
     .expect_err("missing file");
-    assert!(refusal(&error).contains("does not exist"));
+    assert!(refusal(&error).contains("workspace-file/not-found"));
     let _ = std::fs::remove_dir_all(&base);
 }
 
 // ---- binary content ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn read_file_refuses_bytes_carrying_a_nul() {
+async fn read_file_returns_bytes_carrying_a_nul() {
     let (base, root) = fixture("read-nul");
     // Valid UTF-8, but a NUL: the marker a binary file usually leads with. Returning this as text
     // would hand a client something it will render as an empty-looking line.
     std::fs::write(root.join("blob.bin"), b"ELF\0\0\0rest").expect("wrote binary");
     let registry = registry(&root);
 
-    let error = read_file(
+    let value = read_file(
         &registry,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": "blob.bin" }),
     )
     .await
-    .expect_err("binary file");
-    let message = refusal(&error);
-    assert!(
-        message.contains("workspace-file/not-text"),
-        "message was {message}"
-    );
-    assert!(message.contains("NUL"), "message was {message}");
+    .expect("binary file");
+    assert_eq!(value.attachments[0].bytes, b"ELF\0\0\0rest");
     let _ = std::fs::remove_dir_all(&base);
 }
 
 #[tokio::test]
-async fn read_file_refuses_text_that_is_not_utf8() {
+async fn read_file_returns_bytes_that_are_not_utf8() {
     let (base, root) = fixture("read-invalid-utf8");
     // 0xFF is never a valid UTF-8 lead byte, and there is no NUL, so only the UTF-8 check can catch
     // this one.
     std::fs::write(root.join("latin1.txt"), [0x63, 0x61, 0x66, 0xe9, 0x0a]).expect("wrote latin1");
     let registry = registry(&root);
 
-    let error = read_file(
+    let value = read_file(
         &registry,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": "latin1.txt" }),
     )
     .await
-    .expect_err("not UTF-8");
-    let message = refusal(&error);
-    assert!(
-        message.contains("workspace-file/not-text"),
-        "message was {message}"
-    );
-    assert!(message.contains("UTF-8"), "message was {message}");
+    .expect("raw bytes");
+    assert_eq!(value.attachments[0].bytes, [0x63, 0x61, 0x66, 0xe9, 0x0a]);
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -493,22 +490,18 @@ async fn read_file_refuses_a_relative_escape() {
 }
 
 #[tokio::test]
-async fn read_file_refuses_an_absolute_path_outside_the_workspace() {
+async fn read_file_allows_an_absolute_path_outside_the_workspace() {
     let (base, root) = fixture("escape-absolute");
     let registry = registry(&root);
     let outside = base.join("outside.txt").display().to_string();
 
-    let error = read_file(
+    let value = read_file(
         &registry,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": outside }),
     )
     .await
-    .expect_err("absolute escape");
-    let message = refusal(&error);
-    assert!(
-        message.contains("escapes the workspace"),
-        "message was {message}"
-    );
+    .expect("absolute paths are allowed");
+    assert_eq!(value.attachments[0].bytes, b"outside secret");
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -528,7 +521,7 @@ async fn tree_refuses_a_relative_escape() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn read_file_refuses_a_symlink_that_leaves_the_workspace() {
+async fn read_file_refuses_a_symlink() {
     let (base, root) = fixture("escape-symlink");
     // The lexical check sees an ordinary name inside the workspace; only the canonical check can
     // catch where it actually points. This is why containment is checked twice.
@@ -544,7 +537,7 @@ async fn read_file_refuses_a_symlink_that_leaves_the_workspace() {
     .expect_err("symlink escape");
     let message = refusal(&error);
     assert!(
-        message.contains("resolves outside the workspace"),
+        message.contains("workspace-file/not-regular-file"),
         "message was {message}"
     );
     let _ = std::fs::remove_dir_all(&base);
@@ -552,7 +545,7 @@ async fn read_file_refuses_a_symlink_that_leaves_the_workspace() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn read_file_allows_a_symlink_that_stays_inside_the_workspace() {
+async fn read_file_refuses_a_symlink_that_stays_inside_the_workspace() {
     let (base, root) = fixture("symlink-inside");
     // Refusing every symlink would be simpler and wrong: a project that links its own files together
     // is ordinary, and only the target's location matters.
@@ -560,13 +553,13 @@ async fn read_file_allows_a_symlink_that_stays_inside_the_workspace() {
         .expect("created symlink");
     let registry = registry(&root);
 
-    let value = read_file(
+    let error = read_file(
         &registry,
         serde_json::json!({ "workspaceId": WORKSPACE, "path": "alias.md" }),
     )
     .await
-    .expect("readFile");
-    assert_eq!(value["text"], "# readme\n");
+    .expect_err("symlink");
+    assert!(refusal(&error).contains("workspace-file/not-regular-file"));
     let _ = std::fs::remove_dir_all(&base);
 }
 

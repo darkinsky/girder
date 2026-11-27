@@ -194,6 +194,16 @@ impl SessionCatalog for TitledCatalog {
         })
     }
 
+    fn working_directory(&self, id: &str) -> Option<String> {
+        let raw = std::fs::read_to_string(self.root.join(format!("{id}.header"))).ok()?;
+        let value: Value = serde_json::from_str(&raw).ok()?;
+        value
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_owned)
+    }
+
     fn title(&self, id: &str) -> BoxFut<Option<String>> {
         let path = self.root.join(format!("{id}.title"));
         let id = id.to_owned();
@@ -438,6 +448,67 @@ async fn the_folded_projections_are_part_of_the_answer() {
     );
     assert_eq!(value.projections["turnBoundary"]["lastTurn"], 0);
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_working_directory_starts_at_the_session_header() {
+    let dir = scratch("working-directory");
+    seed(&dir, "s1", 1);
+    std::fs::write(
+        dir.join("s1.header"),
+        serde_json::json!({"createdAt": 1, "cwd": "/work/app"}).to_string(),
+    )
+    .expect("header");
+    let mut registry = ProjectionRegistry::new();
+    registry
+        .register(Arc::new(
+            girder_core::shell::working_dir::WorkingDirectoryProjection,
+        ))
+        .expect("workingDirectory");
+    let projections = Arc::new(registry);
+
+    let value = state(
+        &self::registry(&catalog(&dir), &projections),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("describes the session");
+
+    assert_eq!(value.projections["workingDirectory"], "/work/app");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_workspace_root_change_replaces_the_header_directory() {
+    let dir = scratch("working-directory-moved");
+    seed(&dir, "s1", 1);
+    std::fs::write(
+        dir.join("s1.header"),
+        serde_json::json!({"createdAt": 1, "cwd": "/work/app"}).to_string(),
+    )
+    .expect("header");
+    store(&dir, "s1")
+        .append(&SessionEvent::WorkspaceRootChange {
+            cwd: "/work/moved".to_owned(),
+        })
+        .expect("moved");
+    let mut registry = ProjectionRegistry::new();
+    registry
+        .register(Arc::new(
+            girder_core::shell::working_dir::WorkingDirectoryProjection,
+        ))
+        .expect("workingDirectory");
+    let projections = Arc::new(registry);
+
+    let value = state(
+        &self::registry(&catalog(&dir), &projections),
+        json!({"sessionId": "s1"}),
+    )
+    .await
+    .expect("describes the session");
+
+    assert_eq!(value.projections["workingDirectory"], "/work/moved");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

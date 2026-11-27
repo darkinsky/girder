@@ -36,11 +36,12 @@ use sandbox_gap::{
     WINDOWS_ACL_RUNNER_FAILURE_EXIT, approve_escalation, assert_temp_root_outside_workspace,
     bwrap_profile_args, canonical_path, configured_runner_denial_signatures, confine,
     denial_signatures, escalation_audit_reason, escalation_display_reason, host_temp_root,
-    is_execution_world_path, is_strictly_wider, landlock_grants, parse_mode, platform_chain,
-    render_policy_context, runner_failure_rules, sandbox_permissions_description,
-    seatbelt_profile_args, select_runner, session_override, set_sandbox_mode, static_enforcement,
-    temp_root_inside_workspace, unavailable_message, validate_escalation_args,
-    validate_runner_config, wider_modes, workspace_writable_roots, writable_roots,
+    is_execution_world_path, is_strictly_wider, landlock_grants, parse_mode,
+    permissions_for_session, platform_chain, render_policy_context, runner_failure_rules,
+    sandbox_permissions_description, seatbelt_profile_args, select_runner, session_override,
+    set_sandbox_mode, static_enforcement, temp_root_inside_workspace, unavailable_message,
+    validate_escalation_args, validate_runner_config, wider_modes, workspace_writable_roots,
+    writable_roots,
 };
 
 // The policy source is included directly for focused tests, so provide the library namespace it
@@ -555,6 +556,35 @@ fn the_session_identity_travels_with_the_resolved_policy() {
 }
 
 // ---- the session-mode fold ---------------------------------------------------------------------
+
+#[test]
+fn a_recorded_mode_replaces_the_deployment_knobs_and_an_unknown_name_does_not() {
+    let mut base = girder_core::PermissionState::default();
+    base.set_knobs(girder_core::Knobs::unrestricted());
+    let events = vec![
+        set_sandbox_mode(SandboxMode::ReadOnly, None),
+        SessionEvent::ApprovalPolicy {
+            policy: "ask".to_owned(),
+        },
+        SessionEvent::SandboxMode {
+            mode: "not-a-mode".to_owned(),
+            source: None,
+        },
+        SessionEvent::ApprovalPolicy {
+            policy: "not-a-policy".to_owned(),
+        },
+    ];
+    let (applied, mode) = permissions_for_session(&base, &events);
+    assert_eq!(mode, Some(SandboxMode::ReadOnly));
+    assert_eq!(applied.knobs().sandbox, SandboxMode::ReadOnly);
+    assert_eq!(
+        applied.knobs().approval,
+        girder_core::Approval::OutsideWorkspace
+    );
+    let (unchanged, none) = permissions_for_session(&base, &[]);
+    assert_eq!(none, None);
+    assert_eq!(unchanged.knobs(), base.knobs());
+}
 
 #[test]
 fn the_last_recorded_mode_wins() {

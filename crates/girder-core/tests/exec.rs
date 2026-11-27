@@ -563,11 +563,65 @@ async fn a_confined_mode_refuses_when_no_runner_exists() {
     let ExecError::SandboxUnavailable { message } = error else {
         panic!("expected SANDBOX_UNAVAILABLE, got {error}");
     };
-    assert!(message.contains("SANDBOX_UNAVAILABLE") || message.contains("refusing to run"), "{message}");
+    assert!(
+        message.contains("SANDBOX_UNAVAILABLE") || message.contains("refusing to run"),
+        "{message}"
+    );
     assert!(
         !message.contains("should-not-run"),
         "the command text is not a result: {message}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_logged_full_mode_runs_even_when_the_tool_was_built_confined() {
+    let dir = scratch("session-full");
+    let policy = PathPolicy::new(&dir).confined(girder_core::SandboxMode::WorkspaceWrite);
+    let tool = girder_core::bash_tool(policy);
+    let mut state = girder_core::PermissionState::default();
+    state.set_knobs(girder_core::Knobs::unrestricted());
+    let context = girder_core::ToolRunContext {
+        permissions: Some(std::sync::Arc::new(state)),
+        session_sandbox: Some(girder_core::SandboxMode::Full),
+        ..Default::default()
+    };
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "echo session-full" }),
+        context,
+    )
+    .await
+    .expect("ran");
+    assert!(!result.is_error, "{:?}", result.content);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_logged_workspace_mode_refuses_a_tool_that_was_built_unconfined() {
+    if has_program("bwrap") || has_program("landlock-run") || has_program("sandbox-exec") {
+        return;
+    }
+    let dir = scratch("session-confine");
+    let policy = PathPolicy::new(&dir).confined(girder_core::SandboxMode::Full);
+    let tool = girder_core::bash_tool(policy);
+    let context = girder_core::ToolRunContext {
+        permissions: Some(std::sync::Arc::new(girder_core::PermissionState::default())),
+        session_sandbox: Some(girder_core::SandboxMode::WorkspaceWrite),
+        ..Default::default()
+    };
+    let result = (tool.execute)(
+        serde_json::json!({ "command": "echo should-not-run" }),
+        context,
+    )
+    .await
+    .expect("a refusal is a result");
+    assert!(result.is_error);
+    let text = result.to_text();
+    assert!(
+        text.contains("SANDBOX_UNAVAILABLE") || text.contains("refusing to run"),
+        "{text}"
+    );
+    assert!(!text.contains("should-not-run"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

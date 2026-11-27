@@ -51,6 +51,33 @@ impl girder_core::LlmProvider for Silent {
     }
 }
 
+struct Echo;
+
+impl girder_core::LlmProvider for Echo {
+    fn stream(
+        &self,
+        _request: girder_core::LlmRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> girder_core::BoxFut<Result<girder_core::ChunkStream, girder_core::LlmError>> {
+        let chunks = vec![
+            girder_core::StreamChunk::BlockStart {
+                index: 0,
+                block_type: "text".to_owned(),
+            },
+            girder_core::StreamChunk::TextDelta {
+                index: 0,
+                text: "echoed".to_owned(),
+            },
+            girder_core::StreamChunk::Finish {
+                reason: girder_core::FinishReason::Stop,
+            },
+        ];
+        Box::pin(
+            async move { Ok(Box::pin(futures::stream::iter(chunks)) as girder_core::ChunkStream) },
+        )
+    }
+}
+
 /// Writes `count` events into one session.
 fn seed(dir: &std::path::Path, id: &str, count: usize) {
     let store = SessionStore::new(dir.join(format!("{id}.jsonl.zst")));
@@ -136,6 +163,306 @@ async fn the_opening_snapshot_contains_the_log() {
     assert_eq!(event["data"]["role"], "user");
     assert!(event.get("message").is_none());
     girder_core::session::client::assert_session_wire_event(event).expect("wire envelope");
+    assert!(snapshot.get("assistantStream").is_none());
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_opted_in_opening_carries_an_idle_assistant_baseline() {
+    let dir = scratch("assistant");
+    seed(&dir, "s1", 1);
+    let registry = registry(&dir);
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "assistantStream": true,
+        }),
+    )
+    .await;
+
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["assistantStream"], json!({ "revision": 0 }));
+    assert!(snapshot["assistantStream"].get("activeAttempt").is_none());
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn live_text_is_followed_by_the_message_and_then_the_end() {
+    let dir = scratch("live");
+    seed(&dir, "s1", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let runtime = Arc::new(girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
+        provider: Arc::new(Silent),
+        tools: Arc::new(girder_core::ToolRegistry::new()),
+        bus: Arc::new(girder_core::EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
+    }));
+    let registry = girder_core::registry_with_runtime(catalog, Arc::clone(&runtime));
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "assistantStream": true,
+        }),
+    )
+    .await;
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["assistantStream"]["revision"], 0);
+
+    runtime.assistant().begin("s1", 1, 0, 0);
+    runtime.assistant().push_chunk(
+        "s1",
+        json!({"type": "text-delta", "index": 0, "text": "hi"}),
+    );
+    let start = next_frame(&mut frames).await;
+    assert_eq!(start["type"], "assistant-stream");
+    assert_eq!(start["frame"]["type"], "start");
+    assert_eq!(start["frame"]["revision"], 1);
+    let chunk = next_frame(&mut frames).await;
+    assert_eq!(chunk["frame"]["type"], "chunk");
+    assert_eq!(chunk["frame"]["revision"], 2);
+    assert_eq!(chunk["frame"]["index"], 0);
+    assert_eq!(chunk["frame"]["chunk"]["text"], "hi");
+
+    SessionStore::new(dir.join("s1.jsonl.zst"))
+        .append(&SessionEvent::assistant_text("a1", "hi", "test"))
+        .expect("appended");
+    runtime.assistant().commit("s1", 1);
+    let event = next_frame(&mut frames).await;
+    assert_eq!(event["type"], "event");
+    assert_eq!(event["event"]["type"], "assistant/message");
+    assert_eq!(event["event"]["seq"], 1);
+    let end = next_frame(&mut frames).await;
+    assert_eq!(end["frame"]["type"], "end");
+    assert_eq!(end["frame"]["revision"], 3);
+    assert_eq!(end["frame"]["index"], 1);
+    assert_eq!(end["frame"]["outcome"]["kind"], "committed");
+    assert_eq!(end["frame"]["outcome"]["eventType"], "assistant/message");
+    assert_eq!(end["frame"]["outcome"]["seq"], 1);
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_late_follower_folds_the_open_attempt_and_does_not_replay_its_start() {
+    let dir = scratch("late");
+    seed(&dir, "s1", 1);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let runtime = Arc::new(girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
+        provider: Arc::new(Silent),
+        tools: Arc::new(girder_core::ToolRegistry::new()),
+        bus: Arc::new(girder_core::EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
+    }));
+    runtime.assistant().begin("s1", 1, 0, 0);
+    runtime.assistant().push_chunk(
+        "s1",
+        json!({"type": "text-delta", "index": 0, "text": "hi"}),
+    );
+    let registry = girder_core::registry_with_runtime(catalog, Arc::clone(&runtime));
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "assistantStream": true,
+        }),
+    )
+    .await;
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["assistantStream"]["revision"], 2);
+    assert_eq!(snapshot["assistantStream"]["activeAttempt"]["nextIndex"], 1);
+    assert_eq!(
+        snapshot["assistantStream"]["activeAttempt"]["stream"][0]["type"],
+        "text-chunks"
+    );
+    assert_eq!(
+        snapshot["assistantStream"]["activeAttempt"]["stream"][0]["texts"],
+        json!(["hi"])
+    );
+
+    SessionStore::new(dir.join("s1.jsonl.zst"))
+        .append(&SessionEvent::assistant_text("a1", "hi", "test"))
+        .expect("appended");
+    runtime.assistant().commit("s1", 1);
+    let event = next_frame(&mut frames).await;
+    assert_eq!(event["type"], "event");
+    assert_eq!(event["event"]["seq"], 1);
+    let mut end = None;
+    for _ in 0..20 {
+        let frame = next_frame(&mut frames).await;
+        if frame["type"] == "assistant-stream" && frame["frame"]["type"] == "end" {
+            end = Some(frame);
+            break;
+        }
+    }
+    let end = end.expect("assistant stream ended");
+    assert_eq!(end["frame"]["revision"], 3);
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn prompt_runtime_reaches_follow_as_live_assistant_frames() {
+    let dir = scratch("runtime-live");
+    seed(&dir, "s1", 0);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
+        provider: Arc::new(Echo),
+        tools: Arc::new(girder_core::ToolRegistry::new()),
+        bus: Arc::new(girder_core::EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
+    });
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), runtime);
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "assistantStream": true,
+        }),
+    )
+    .await;
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["cursor"], -1);
+
+    let accepted = registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s1", "text": "hello"})),
+        )
+        .await
+        .expect("prompt accepted");
+    assert_eq!(accepted["accepted"], true);
+
+    let start = next_frame(&mut frames).await;
+    assert_eq!(start["type"], "assistant-stream");
+    assert_eq!(start["frame"]["type"], "start");
+    let chunk = next_frame(&mut frames).await;
+    assert_eq!(chunk["frame"]["type"], "chunk");
+    assert_eq!(chunk["frame"]["chunk"]["type"], "text-delta");
+    assert_eq!(chunk["frame"]["chunk"]["text"], "echoed");
+
+    let mut assistant_event = None;
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        let frame = next_frame(&mut frames).await;
+        seen.push(frame.clone());
+        if frame["type"] == "event" && frame["event"]["type"] == "assistant/message" {
+            assistant_event = Some(frame);
+            break;
+        }
+    }
+    let assistant_event =
+        assistant_event.unwrap_or_else(|| panic!("assistant message reached follow: {seen:?}"));
+    let mut end = None;
+    for _ in 0..20 {
+        let frame = next_frame(&mut frames).await;
+        if frame["type"] == "assistant-stream" && frame["frame"]["type"] == "end" {
+            end = Some(frame);
+            break;
+        }
+    }
+    let end = end.expect("assistant stream ended");
+    assert_eq!(end["type"], "assistant-stream");
+    assert_eq!(end["frame"]["type"], "end");
+    assert_eq!(end["frame"]["outcome"]["kind"], "committed");
+    assert_eq!(
+        end["frame"]["outcome"]["seq"],
+        assistant_event["event"]["seq"]
+    );
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn consecutive_attempts_keep_each_end_before_the_next_start() {
+    let dir = scratch("consecutive");
+    seed(&dir, "s1", 0);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
+        provider: Arc::new(Silent),
+        tools: Arc::new(girder_core::ToolRegistry::new()),
+        bus: Arc::new(girder_core::EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
+    });
+    let registry = girder_core::registry_with_runtime(Arc::clone(&catalog), Arc::clone(&runtime));
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "assistantStream": true,
+        }),
+    )
+    .await;
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["cursor"], -1);
+
+    runtime.assistant().begin("s1", 1, 0, -1);
+    runtime.assistant().push_chunk(
+        "s1",
+        json!({"type": "text-delta", "index": 0, "text": "one"}),
+    );
+    SessionStore::new(dir.join("s1.jsonl.zst"))
+        .append(&SessionEvent::assistant_text("a1", "one", "test"))
+        .expect("first message appended");
+    runtime.assistant().commit("s1", 0);
+
+    runtime.assistant().begin("s1", 1, 1, 0);
+    runtime.assistant().push_chunk(
+        "s1",
+        json!({"type": "text-delta", "index": 0, "text": "two"}),
+    );
+    SessionStore::new(dir.join("s1.jsonl.zst"))
+        .append(&SessionEvent::assistant_text("a2", "two", "test"))
+        .expect("second message appended");
+    runtime.assistant().commit("s1", 1);
+
+    let mut received = Vec::new();
+    for _ in 0..8 {
+        received.push(next_frame(&mut frames).await);
+    }
+    let kinds = received
+        .iter()
+        .map(|frame| {
+            if frame["type"] == "assistant-stream" {
+                frame["frame"]["type"].as_str().unwrap_or("invalid")
+            } else {
+                frame["event"]["type"].as_str().unwrap_or("invalid")
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "start",
+            "chunk",
+            "assistant/message",
+            "end",
+            "start",
+            "chunk",
+            "assistant/message",
+            "end",
+        ]
+    );
+    assert_eq!(received[3]["frame"]["revision"], 3);
+    assert_eq!(received[4]["frame"]["revision"], 4);
+    assert_eq!(received[7]["frame"]["revision"], 6);
     cancel.cancel();
     let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);

@@ -665,6 +665,55 @@ async fn create_records_an_absolute_cwd_on_the_list() {
 }
 
 #[tokio::test]
+async fn list_keeps_the_original_directory_and_projects_a_move() {
+    let dir = std::env::temp_dir().join(format!(
+        "girder-list-move-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let original = dir.join("original");
+    let moved = dir.join("moved");
+    std::fs::create_dir_all(&original).expect("original");
+    std::fs::create_dir_all(&moved).expect("moved");
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let registry = default_registry(Arc::clone(&catalog));
+    registry
+        .dispatch(
+            "session",
+            "create",
+            call(json!({
+                "sessionId": "moved-session",
+                "cwd": original.to_string_lossy(),
+            })),
+        )
+        .await
+        .expect("created");
+    girder_core::SessionStore::new(dir.join("moved-session.jsonl.zst"))
+        .append(&SessionEvent::WorkspaceRootChange {
+            cwd: moved.to_string_lossy().into_owned(),
+        })
+        .expect("move");
+
+    let listed = registry
+        .dispatch("session", "list", call(json!({})))
+        .await
+        .expect("listed");
+    let row = &listed["items"][0];
+    assert_eq!(row["cwd"], original.to_string_lossy().as_ref());
+    assert_eq!(row["projections"]["kind"], "cached");
+    assert_eq!(
+        row["projections"]["values"]["workingDirectory"],
+        moved.to_string_lossy().as_ref()
+    );
+    assert!(row["projections"]["values"].get("turnOutline").is_none());
+    assert!(row["projections"]["values"].get("sessionStats").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn create_refuses_a_relative_cwd_and_a_mixed_location() {
     let registry = default_registry(Arc::new(FixedCatalog(vec![])));
     let relative = registry
