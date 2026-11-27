@@ -283,6 +283,88 @@ pub fn default_catalogue() -> Arc<Catalogue> {
 /// This is the builtin `workspace-write` entry. A name outside the catalogue cannot be selected.
 pub const DEFAULT_PRESET: &str = "workspace-write";
 
+/// The `permissions` projection a session's selector reads.
+///
+/// The fold keeps the last preset, sandbox mode, and approval policy. The published value is only
+/// `{ currentValue }`. A log that has not recorded a knob uses the process defaults: workspace
+/// writes, and a person is asked.
+pub struct PermissionsProjection;
+
+impl crate::session::projection::Projection for PermissionsProjection {
+    fn key(&self) -> &'static str {
+        "permissions"
+    }
+
+    fn init(&self) -> Value {
+        json!({
+            "preset": Value::Null,
+            "sandbox": Value::Null,
+            "approval": Value::Null,
+        })
+    }
+
+    fn apply(
+        &self,
+        mut state: Value,
+        event: &crate::session::SessionEvent,
+        _seq: crate::session::projection::Seq,
+    ) -> Value {
+        match event {
+            crate::session::SessionEvent::PermissionPreset { preset } => {
+                state["preset"] = json!(preset);
+            }
+            crate::session::SessionEvent::SandboxMode { mode, .. } => {
+                state["sandbox"] = json!(mode);
+            }
+            crate::session::SessionEvent::ApprovalPolicy { policy } => {
+                state["approval"] = json!(policy);
+            }
+            _ => {}
+        }
+        state
+    }
+
+    fn wire(&self, state: &Value) -> Value {
+        json!({
+            "currentValue": permission_view(
+                optional_string(state, "preset").as_deref(),
+                optional_string(state, "sandbox").as_deref(),
+                optional_string(state, "approval").as_deref(),
+            ),
+        })
+    }
+}
+
+fn optional_string(state: &Value, key: &str) -> Option<String> {
+    state.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// The selector value for one folded knob triple.
+///
+/// A recorded preset wins when its bundle still matches the effective knobs. Otherwise the first
+/// builtin bundle that matches wins. Nothing matching is `custom`.
+fn permission_view(preset: Option<&str>, sandbox: Option<&str>, approval: Option<&str>) -> String {
+    let sandbox = sandbox.unwrap_or("workspace-write");
+    let approval = approval.unwrap_or("ask");
+    let catalogue = Catalogue::builtin();
+    if let Some(name) = preset
+        && let Some(entry) = catalogue.get(name)
+        && entry.available
+        && entry.preset.knobs.sandbox.as_str() == sandbox
+        && approval_name(entry.preset.knobs.approval) == approval
+    {
+        return name.to_owned();
+    }
+    for preset in crate::credentials::permissions::Preset::builtin() {
+        if preset.knobs.sandbox.as_str() == sandbox
+            && approval_name(preset.knobs.approval) == approval
+        {
+            return preset.name;
+        }
+    }
+    "custom".to_owned()
+}
+
 /// An error for a deployment whose configured default names no preset.
 ///
 /// Checked at registration rather than at call time: a catalogue whose default is unknown would
@@ -333,6 +415,57 @@ mod tests {
     fn the_builtin_default_is_a_selectable_preset() {
         let catalogue = Catalogue::builtin();
         assert!(validate_default(&catalogue, DEFAULT_PRESET).is_none());
+    }
+
+    #[test]
+    fn the_permissions_projection_publishes_the_effective_preset() {
+        use crate::session::SessionEvent;
+        use crate::session::projection::ProjectionRegistry;
+
+        let mut registry = ProjectionRegistry::new();
+        registry
+            .register(Arc::new(PermissionsProjection))
+            .expect("registered");
+        let fresh = registry.project(&[]);
+        assert_eq!(
+            fresh.values["permissions"],
+            json!({ "currentValue": "workspace-write" })
+        );
+
+        let selected = registry.project(&[
+            SessionEvent::PermissionPreset {
+                preset: "danger-full-access".to_owned(),
+            },
+            SessionEvent::SandboxMode {
+                mode: "danger-full-access".to_owned(),
+                source: None,
+            },
+            SessionEvent::ApprovalPolicy {
+                policy: "never".to_owned(),
+            },
+        ]);
+        assert_eq!(
+            selected.values["permissions"]["currentValue"],
+            "danger-full-access"
+        );
+
+        let drifted = registry.project(&[
+            SessionEvent::PermissionPreset {
+                preset: "workspace-write".to_owned(),
+            },
+            SessionEvent::SandboxMode {
+                mode: "read-only".to_owned(),
+                source: None,
+            },
+            SessionEvent::ApprovalPolicy {
+                policy: "never".to_owned(),
+            },
+        ]);
+        assert_eq!(drifted.values["permissions"]["currentValue"], "read-only");
+        assert_eq!(
+            permission_view(None, Some("read-only"), Some("ask")),
+            "custom"
+        );
     }
 
     #[test]

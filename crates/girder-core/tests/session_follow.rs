@@ -51,6 +51,48 @@ impl girder_core::LlmProvider for Silent {
     }
 }
 
+struct ToolCall {
+    calls: std::sync::atomic::AtomicU32,
+}
+
+impl girder_core::LlmProvider for ToolCall {
+    fn stream(
+        &self,
+        _request: girder_core::LlmRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> girder_core::BoxFut<Result<girder_core::ChunkStream, girder_core::LlmError>> {
+        let call = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let chunks = if call == 0 {
+            vec![
+                girder_core::StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: girder_core::ToolCallId::new("call-1").expect("id"),
+                    name: Some("read".to_owned()),
+                    arguments_delta: "{\"path\":\"a.rs\"}".to_owned(),
+                },
+                girder_core::StreamChunk::Finish {
+                    reason: girder_core::FinishReason::ToolCalls,
+                },
+            ]
+        } else {
+            vec![
+                girder_core::StreamChunk::TextDelta {
+                    index: 0,
+                    text: "done".to_owned(),
+                },
+                girder_core::StreamChunk::Finish {
+                    reason: girder_core::FinishReason::Stop,
+                },
+            ]
+        };
+        Box::pin(
+            async move { Ok(Box::pin(futures::stream::iter(chunks)) as girder_core::ChunkStream) },
+        )
+    }
+}
+
 struct Echo;
 
 impl girder_core::LlmProvider for Echo {
@@ -389,6 +431,66 @@ async fn prompt_runtime_reaches_follow_as_live_assistant_frames() {
 }
 
 #[tokio::test]
+async fn a_tool_call_delta_reaches_follow_with_the_browser_field_names() {
+    let dir = scratch("tool-live");
+    seed(&dir, "s1", 0);
+    let catalog: Arc<dyn SessionCatalog> = Arc::new(DirectoryCatalog::new(&dir));
+    let runtime = girder_core::AgentRuntime::new(girder_core::RuntimeConfig {
+        provider: Arc::new(ToolCall {
+            calls: std::sync::atomic::AtomicU32::new(0),
+        }),
+        tools: Arc::new(girder_core::ToolRegistry::new()),
+        bus: Arc::new(girder_core::EventBus::new()),
+        model: "test".to_owned(),
+        max_turns: 1,
+        token_budget: girder_core::Ceiling::Unlimited,
+    });
+    let registry = girder_core::registry_with_runtime(catalog, runtime);
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "assistantStream": true,
+        }),
+    )
+    .await;
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["cursor"], -1);
+    registry
+        .dispatch(
+            "session",
+            "prompt",
+            call(json!({"sessionId": "s1", "text": "read it"})),
+        )
+        .await
+        .expect("prompt accepted");
+
+    let mut tool_chunk = None;
+    for _ in 0..24 {
+        let frame = next_frame(&mut frames).await;
+        if frame["frame"]["chunk"]["type"] == "tool-call-delta" {
+            tool_chunk = Some(frame);
+            break;
+        }
+    }
+    let tool_chunk = tool_chunk.expect("tool delta reached follow");
+    assert_eq!(tool_chunk["frame"]["chunk"]["id"], "call-1");
+    assert_eq!(tool_chunk["frame"]["chunk"]["name"], "read");
+    assert_eq!(
+        tool_chunk["frame"]["chunk"]["argumentsDelta"],
+        "{\"path\":\"a.rs\"}"
+    );
+    assert!(
+        tool_chunk["frame"]["chunk"]
+            .get("arguments_delta")
+            .is_none()
+    );
+    cancel.cancel();
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn consecutive_attempts_keep_each_end_before_the_next_start() {
     let dir = scratch("consecutive");
     seed(&dir, "s1", 0);
@@ -544,6 +646,81 @@ async fn a_missing_session_id_is_refused() {
         error,
         girder_core::RemoteError::InvalidArguments { .. }
     ));
+    let _ = running.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_turn_window_stops_on_the_second_turn_and_pages_back_without_a_gap() {
+    let dir = scratch("turns");
+    let store = SessionStore::new(dir.join("s1.jsonl.zst"));
+    store.touch().expect("created");
+    for turn in 1..=3 {
+        store
+            .append(&SessionEvent::TurnStart { turn })
+            .expect("turn");
+        store
+            .append(&SessionEvent::user_text(
+                &format!("u{turn}"),
+                format!("ask {turn}"),
+            ))
+            .expect("user");
+        store
+            .append(&SessionEvent::assistant_text(
+                &format!("a{turn}"),
+                format!("answer {turn}"),
+                "test",
+            ))
+            .expect("assistant");
+    }
+    let registry = registry(&dir);
+    let (cancel, mut frames, running) = opened(
+        &registry,
+        json!({
+            "address": {"kind": "session", "sessionId": "s1"},
+            "maxMessages": 50,
+            "turnWindow": {"minMessages": 2, "minTurns": 2},
+        }),
+    )
+    .await;
+
+    let snapshot = next_frame(&mut frames).await;
+    assert_eq!(snapshot["cursor"], 8);
+    assert_eq!(snapshot["hasMore"], true);
+    let records = snapshot["records"].as_array().expect("records");
+    assert_eq!(
+        records.len(),
+        6,
+        "the last two turns, including their start"
+    );
+    assert_eq!(records[0]["event"]["seq"], 3);
+    assert_eq!(records[0]["event"]["type"], "turn/start");
+    assert_eq!(records[5]["event"]["seq"], 8);
+
+    let older = registry
+        .dispatch(
+            "session",
+            "page",
+            call(json!({
+                "address": {"kind": "session", "sessionId": "s1"},
+                "beforeSeq": records[0]["event"]["seq"].as_u64().unwrap(),
+                "maxMessages": 50,
+                "turnWindow": {"minMessages": 2, "minTurns": 2},
+            })),
+        )
+        .await
+        .expect("older page");
+    let older_records = older["records"].as_array().expect("older records");
+    assert_eq!(older_records.len(), 3);
+    assert_eq!(older_records[0]["event"]["seq"], 0);
+    assert_eq!(older_records[2]["event"]["seq"], 2);
+    assert_eq!(older["hasMore"], false);
+    assert_eq!(
+        older_records[2]["event"]["seq"].as_u64().unwrap() + 1,
+        records[0]["event"]["seq"].as_u64().unwrap(),
+        "the older page ends on the event immediately before the open window"
+    );
+    cancel.cancel();
     let _ = running.await;
     let _ = std::fs::remove_dir_all(&dir);
 }

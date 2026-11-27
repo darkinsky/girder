@@ -902,8 +902,24 @@ fn visible_chunk(chunk: &StreamChunk) -> Option<serde_json::Value> {
             "index": index,
             "text": text,
         })),
+        StreamChunk::ToolCallDelta {
+            index,
+            id,
+            name,
+            arguments_delta,
+        } => {
+            let mut chunk = serde_json::json!({
+                "type": "tool-call-delta",
+                "index": index,
+                "id": id.as_str(),
+                "argumentsDelta": arguments_delta,
+            });
+            if let Some(name) = name {
+                chunk["name"] = serde_json::Value::String(name.clone());
+            }
+            Some(chunk)
+        }
         StreamChunk::BlockStart { .. }
-        | StreamChunk::ToolCallDelta { .. }
         | StreamChunk::BlockEnd { .. }
         | StreamChunk::Usage(_)
         | StreamChunk::Finish { .. } => None,

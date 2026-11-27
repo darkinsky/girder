@@ -443,7 +443,8 @@ pub fn register_session_state_method_observing(
                 };
                 let projected = projections
                     .project(&full.events)
-                    .with_header_directory(catalog.working_directory(&full.id).as_deref());
+                    .with_header_directory(catalog.working_directory(&full.id).as_deref())
+                    .with_header_preset(catalog.agent_preset(&full.id).as_deref());
                 blocks.insert(
                     full.id,
                     serde_json::json!({
@@ -485,7 +486,8 @@ pub fn register_session_state_method_observing(
                         };
                         let projected = projections
                             .project(&full.events)
-                            .with_header_directory(catalog.working_directory(&full.id).as_deref());
+                            .with_header_directory(catalog.working_directory(&full.id).as_deref())
+                            .with_header_preset(catalog.agent_preset(&full.id).as_deref());
                         blocks.insert(
                             full.id.clone(),
                             serde_json::json!({
@@ -534,12 +536,15 @@ async fn push_control_diffs(
             for index in start..full.events.len() {
                 let seq = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
                 let directory = catalog.working_directory(&full.id);
+                let preset = catalog.agent_preset(&full.id);
                 let before = projections
                     .project(&full.events[..index])
-                    .with_header_directory(directory.as_deref());
+                    .with_header_directory(directory.as_deref())
+                    .with_header_preset(preset.as_deref());
                 let after = projections
                     .project(&full.events[..=index])
-                    .with_header_directory(directory.as_deref());
+                    .with_header_directory(directory.as_deref())
+                    .with_header_preset(preset.as_deref());
                 let changes = changed_projection_keys(&before.values, &after.values);
                 if changes.is_empty() {
                     continue;
@@ -592,11 +597,16 @@ async fn observe_event_stream(open: girder_core::StreamOpen, catalog: Arc<dyn Se
         };
         let start = usize::try_from(cursor).unwrap_or(usize::MAX);
         if start < record.events.len() {
-            for (offset, event) in record.events[start..].iter().enumerate() {
+            for (offset, _event) in record.events[start..].iter().enumerate() {
                 let seq = cursor
                     .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX))
                     .saturating_add(1);
-                let Some(frame) = girder_core::api::remote::session_wire_record(event, seq) else {
+                let index = start.saturating_add(offset);
+                let Some(frame) = girder_core::api::remote::session_wire_record_at_index(
+                    &record.events,
+                    index,
+                    seq,
+                ) else {
                     continue;
                 };
                 if !open.push(frame) {
@@ -652,12 +662,15 @@ async fn observe_projections_stream(
             for index in start..record.events.len() {
                 let seq = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
                 let directory = catalog.working_directory(&session_id);
+                let preset = catalog.agent_preset(&session_id);
                 let before = projections
                     .project(&record.events[..index])
-                    .with_header_directory(directory.as_deref());
+                    .with_header_directory(directory.as_deref())
+                    .with_header_preset(preset.as_deref());
                 let after = projections
                     .project(&record.events[..=index])
-                    .with_header_directory(directory.as_deref());
+                    .with_header_directory(directory.as_deref())
+                    .with_header_preset(preset.as_deref());
                 let changes = changed_projection_keys(&before.values, &after.values);
                 if changes.is_empty() {
                     continue;
@@ -1056,8 +1069,9 @@ fn assistant_output(
                 truncated = true;
                 break;
             }
-            if let Some(record) = girder_core::api::remote::session_wire_record(
-                event,
+            if let Some(record) = girder_core::api::remote::session_wire_record_at_index(
+                events,
+                usize::try_from(seq).unwrap_or(usize::MAX),
                 u64::try_from(seq).unwrap_or(0),
             ) {
                 records.push(record);
@@ -1224,7 +1238,8 @@ async fn state(
     // two are open. The sequence matches `last_seq`: one-based, empty is 0.
     let projected = projections
         .project(&record.events)
-        .with_header_directory(catalog.working_directory(session_id).as_deref());
+        .with_header_directory(catalog.working_directory(session_id).as_deref())
+        .with_header_preset(catalog.agent_preset(session_id).as_deref());
     let mut folded = serde_json::Map::new();
     for (key, value) in projected.values {
         folded.insert(key, value);

@@ -116,7 +116,8 @@ pub async fn observe_projections(
     };
     let projected = projections
         .project_summary(&record.events)
-        .with_header_directory(catalog.working_directory(&session_id).as_deref());
+        .with_header_directory(catalog.working_directory(&session_id).as_deref())
+        .with_header_preset(catalog.agent_preset(&session_id).as_deref());
     Ok(json!({
         "frames": [{
             "sessionId": session_id,

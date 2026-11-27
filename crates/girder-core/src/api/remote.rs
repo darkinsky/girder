@@ -851,6 +851,13 @@ pub trait SessionCatalog: Send + Sync {
         self.session_header(id).and_then(|header| header.cwd)
     }
 
+    /// Returns the creation preset recorded in the session header.
+    fn agent_preset(&self, id: &str) -> Option<String> {
+        self.session_header(id)
+            .and_then(|header| header.agent_preset)
+            .filter(|preset| !preset.is_empty())
+    }
+
     /// Returns the durable creation time for a session, when the catalog records one.
     fn created_at(&self, id: &str) -> Option<u64> {
         self.session_header(id).map(|header| header.created_at)
@@ -972,7 +979,8 @@ pub struct SessionEventsPage {
 /// The request to `session.page` and `session.events`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionPageRequest {
-    /// Which session to read.
+    /// Which session to read. Omitted on `session.follow` calls that pass `sessionId` directly.
+    #[serde(default)]
     pub address: SessionAddress,
     /// Stop at this sequence, inclusive. Omitted means the current end.
     #[serde(
@@ -984,13 +992,35 @@ pub struct SessionPageRequest {
     /// Read records strictly before this sequence.
     #[serde(rename = "beforeSeq", default, skip_serializing_if = "Option::is_none")]
     pub before_seq: Option<u64>,
-    /// Maximum records to return.
+    /// Maximum append-origin user and assistant messages to return.
     #[serde(
         rename = "maxMessages",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub max_messages: Option<usize>,
+    /// Stop at a `turn/start` once both minima are met.
+    #[serde(
+        rename = "turnWindow",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub turn_window: Option<SessionTurnWindow>,
+}
+
+/// The turn-boundary stop rule the browser sends with a history page.
+///
+/// Upstream `SessionPageRequest['turnWindow']`. The page keeps walking until it has covered
+/// `min_messages` messages and `min_turns` turns, then cuts on the `turn/start` that completed
+/// the second minimum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTurnWindow {
+    /// Minimum append-origin user and assistant messages.
+    #[serde(rename = "minMessages")]
+    pub min_messages: usize,
+    /// Minimum `turn/start` events the walk must cross.
+    #[serde(rename = "minTurns")]
+    pub min_turns: usize,
 }
 
 /// A durable session address.
@@ -1714,7 +1744,8 @@ fn register_list(
                         let directory = catalog.working_directory(&record.id);
                         let projected = registry
                             .project_summary(&full.events)
-                            .with_header_directory(directory.as_deref());
+                            .with_header_directory(directory.as_deref())
+                            .with_header_preset(catalog.agent_preset(&record.id).as_deref());
                         if !projected.values.is_empty() {
                             summary.projections = Some(SessionProjectionHints {
                                 kind: "cached".to_owned(),
@@ -1921,12 +1952,11 @@ fn register_history(registry: &mut RemoteRegistry, catalog: &Arc<dyn SessionCata
                 let Some(record) = catalog.read(&request.address.session_id).await else {
                     // An unknown session is an empty page, not an error: a client opening a session
                     // another host deleted should render nothing rather than a failure banner.
-                    return serde_json::to_value(SessionEventsPage::default())
-                        .map_err(|error| RemoteError::Failed(error.to_string()));
+                    return Ok(empty_history_page());
                 };
 
-                serde_json::to_value(page_of(&record.events, &request))
-                    .map_err(|error| RemoteError::Failed(error.to_string()))
+                let page = history_slice(&record.events, &request).map_err(history_remote_error)?;
+                Ok(history_value(&record.events, &page))
             })
         });
     }
@@ -2024,13 +2054,22 @@ fn register_follow(
                 });
                 return;
             };
-            let max_messages = open
-                .call
-                .args
-                .get("maxMessages")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .filter(|value| *value > 0);
+            let history_request: SessionPageRequest =
+                match serde_json::from_value(open.call.args.clone()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        let _ = open.fail(RemoteError::InvalidArguments {
+                            namespace: "session".to_owned(),
+                            method: "follow".to_owned(),
+                            message: error.to_string(),
+                        });
+                        return;
+                    }
+                };
+            if let Err(error) = validate_history_window(&history_request) {
+                let _ = open.fail(history_remote_error(error));
+                return;
+            }
             let assistant = if open.call.args.get("assistantStream") == Some(&Value::Bool(true)) {
                 assistant
             } else {
@@ -2045,22 +2084,27 @@ fn register_follow(
                     return;
                 }
                 let assistant_wait = assistant_notify.as_ref().map(|notify| notify.notified());
+                tokio::pin!(assistant_wait);
+                if let Some(waiting) = assistant_wait.as_mut().as_pin_mut() {
+                    waiting.enable();
+                }
+                let catalog_notify = catalog.changes();
+                let catalog_wait = catalog_notify.as_ref().map(|notify| notify.notified());
+                tokio::pin!(catalog_wait);
+                if let Some(waiting) = catalog_wait.as_mut().as_pin_mut() {
+                    waiting.enable();
+                }
                 if let Some(record) = catalog.read(&session_id).await {
                     if !opened {
-                        let page = page_of(
-                            &record.events,
-                            &SessionPageRequest {
-                                address: SessionAddress {
-                                    kind: "session".to_owned(),
-                                    session_id: session_id.clone(),
-                                },
-                                max_messages,
-                                ..SessionPageRequest::default()
-                            },
-                        );
+                        let page = match history_slice(&record.events, &history_request) {
+                            Ok(page) => page,
+                            Err(error) => {
+                                let _ = open.fail(history_remote_error(error));
+                                return;
+                            }
+                        };
                         // `session.follow` uses the upstream SessionSeq space: the first event
-                        // is seq 0 and an empty log is cursor -1. `page.cursor` is the local
-                        // history-page count, so keep the next physical offset separately.
+                        // is seq 0 and an empty log is cursor -1.
                         cursor = u64::try_from(record.events.len()).unwrap_or(u64::MAX);
                         let wire_cursor = record
                             .events
@@ -2069,20 +2113,20 @@ fn register_follow(
                             .and_then(|index| u64::try_from(index).ok())
                             .map_or(-1_i64, |seq| i64::try_from(seq).unwrap_or(i64::MAX));
                         let records = page
-                            .records
+                            .events
                             .iter()
                             .enumerate()
-                            .filter_map(|(index, record)| {
-                                let seq = page
-                                    .cursor
-                                    .saturating_sub(page.records.len() as u64)
-                                    .saturating_add(index as u64);
-                                session_wire_record(&record.event, seq)
+                            .filter_map(|(index, _event)| {
+                                let seq = page.start.saturating_add(index as u64);
+                                session_wire_record_at(&record.events, seq)
                             })
                             .collect::<Vec<_>>();
-                        let projected = projections.project(&record.events).with_header_directory(
-                            catalog.working_directory(&session_id).as_deref(),
-                        );
+                        let projected = projections
+                            .project(&record.events)
+                            .with_header_directory(
+                                catalog.working_directory(&session_id).as_deref(),
+                            )
+                            .with_header_preset(catalog.agent_preset(&session_id).as_deref());
                         let stored = catalog.session_header(&session_id);
                         let mut header = serde_json::json!({
                             "version": 4,
@@ -2179,17 +2223,15 @@ fn register_follow(
                         return;
                     }
                     opened = true;
-                } else {
-                    if !forward_follow_progress(
-                        &open,
-                        assistant.as_ref(),
-                        &session_id,
-                        &mut sent_revision,
-                        &[],
-                        &mut cursor,
-                    ) {
-                        return;
-                    }
+                } else if !forward_follow_progress(
+                    &open,
+                    assistant.as_ref(),
+                    &session_id,
+                    &mut sent_revision,
+                    &[],
+                    &mut cursor,
+                ) {
+                    return;
                 }
                 tokio::select! {
                     () = open.cancel.cancelled() => return,
@@ -2199,15 +2241,20 @@ fn register_follow(
                         }
                     }
                     () = async {
-                        if let Some(wait) = assistant_wait {
-                            tokio::select! {
-                                _ = wait => {}
-                                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
-                            }
+                        if let Some(wait) = assistant_wait.as_mut().as_pin_mut() {
+                            wait.await;
                         } else {
-                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            std::future::pending::<()>().await;
                         }
                     } => {}
+                    () = async {
+                        if let Some(wait) = catalog_wait.as_mut().as_pin_mut() {
+                            wait.await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {}
+                    () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
                 }
             }
         })
@@ -2308,9 +2355,9 @@ fn push_follow_events(
     let end = requested_end.min(len);
     let start = usize::try_from((*cursor).min(end)).unwrap_or(usize::MAX);
     let end_index = usize::try_from(end).unwrap_or(events.len());
-    for (offset, event) in events.iter().enumerate().take(end_index).skip(start) {
+    for (offset, _event) in events.iter().enumerate().take(end_index).skip(start) {
         let seq = u64::try_from(offset).unwrap_or(u64::MAX);
-        let Some(frame) = session_wire_record(event, seq) else {
+        let Some(frame) = session_wire_record_at(events, seq) else {
             continue;
         };
         if !open.push(frame) {
@@ -2358,23 +2405,58 @@ fn follow_session_id(args: &Value) -> Option<String> {
 
 /// One `{ type: "event", event }` record whose event is a `SessionWireEvent`.
 ///
-/// Surface events carry `surfaceOp: "append"`. `user/message` puts the message itself in `data`;
-/// every other type keeps its typed fields there. The sequence is the upstream zero-based
-/// `SessionSeq`; event time is currently unavailable in Girder's compact event enum and remains
-/// the stable placeholder `0`. Returns `None` when the event cannot be serialized.
+/// Surface events carry `surfaceOp: "append"`. `user/message` puts the message itself in `data`.
+/// `tool/call` publishes `callId`, and `tool/result` publishes `message.source.callId` plus
+/// `message.isError`, which is how the chat panel joins a call to its result. Every other type
+/// keeps its typed fields in `data`. The sequence is the upstream zero-based `SessionSeq`; event
+/// time is currently unavailable in Girder's compact event enum and remains the stable placeholder
+/// `0`. Returns `None` when the event cannot be serialized.
 pub fn session_wire_record(event: &SessionEvent, seq: u64) -> Option<Value> {
+    session_wire_record_with_location(event, seq, None)
+}
+
+/// Serializes one event with the turn/step coordinates recovered from its surrounding log.
+///
+/// The compact durable variants intentionally do not duplicate these coordinates. The browser
+/// session protocol does duplicate them on assistant and tool records, so page/follow callers use
+/// this helper at the boundary.
+pub fn session_wire_record_at(events: &[SessionEvent], seq: u64) -> Option<Value> {
+    let index = usize::try_from(seq).ok()?;
+    session_wire_record_at_index(events, index, seq)
+}
+
+/// Serializes an event by its log index while allowing the caller to retain another wire sequence
+/// space, as `session.observeEvent` does.
+pub fn session_wire_record_at_index(
+    events: &[SessionEvent],
+    index: usize,
+    seq: u64,
+) -> Option<Value> {
+    let event = events.get(index)?;
+    session_wire_record_with_location(event, seq, event_location(events, index))
+}
+
+fn session_wire_record_with_location(
+    event: &SessionEvent,
+    seq: u64,
+    location: Option<(u64, u64)>,
+) -> Option<Value> {
     let mut value = serde_json::to_value(event).ok()?;
     let object = value.as_object_mut()?;
     let event_type = object.remove("type")?.as_str()?.to_owned();
-    // `user/message` carries the message itself as `data`. The other surface events keep their
-    // typed fields, including `message`, inside `data`.
-    let data = if event_type == "user/message" {
-        object
-            .remove("message")
-            .unwrap_or_else(|| Value::Object(std::mem::take(object)))
-    } else {
-        Value::Object(std::mem::take(object))
-    };
+    let mut data =
+        camelize_known_wire_fields(browser_event_data(&event_type, std::mem::take(object)));
+    if let Some((turn, step)) = location {
+        if matches!(
+            event_type.as_str(),
+            "assistant/message" | "tool/call" | "tool/result"
+        ) {
+            if let Some(data) = data.as_object_mut() {
+                data.insert("turn".to_owned(), Value::from(turn));
+                data.insert("step".to_owned(), Value::from(step));
+            }
+        }
+    }
     let mut wire = serde_json::Map::new();
     wire.insert("type".to_owned(), Value::String(event_type.clone()));
     wire.insert("seq".to_owned(), Value::from(seq));
@@ -2394,6 +2476,117 @@ pub fn session_wire_record(event: &SessionEvent, seq: u64) -> Option<Value> {
         "type": "event",
         "event": Value::Object(wire),
     }))
+}
+
+fn event_location(events: &[SessionEvent], target: usize) -> Option<(u64, u64)> {
+    let mut turn = None;
+    let mut step = None;
+    for (index, event) in events.iter().enumerate() {
+        match event {
+            SessionEvent::TurnStart { turn: next } => {
+                turn = Some(*next);
+                step = None;
+            }
+            SessionEvent::StepStart {
+                turn: event_turn,
+                step: event_step,
+            } => {
+                turn = Some(*event_turn);
+                step = Some(*event_step);
+            }
+            _ => {}
+        }
+        if index == target {
+            return turn.zip(step);
+        }
+    }
+    None
+}
+
+/// The `data` object the browser conversation nodes read.
+///
+/// The stored event keeps Girder's compact field names. This rewrite is only for the follow and
+/// page records: a tool card matches `tool/call.data.callId` to
+/// `tool/result.data.message.source.callId`, and a failed result is `message.isError`.
+fn browser_event_data(event_type: &str, mut object: serde_json::Map<String, Value>) -> Value {
+    if event_type == "user/message" {
+        return object
+            .remove("message")
+            .unwrap_or_else(|| Value::Object(object));
+    }
+    if event_type == "tool/call" {
+        if let Some(id) = object.remove("id") {
+            object.insert("callId".to_owned(), id);
+        }
+        return Value::Object(object);
+    }
+    if event_type == "tool/result" {
+        let id = object.remove("id").unwrap_or(Value::Null);
+        let content = object
+            .remove("content")
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let is_error = object
+            .remove("is_error")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        return serde_json::json!({
+            "message": {
+                "id": id,
+                "role": "tool",
+                "source": { "kind": "tool", "callId": id },
+                "toolCallId": id,
+                "isError": is_error,
+                "content": content,
+            }
+        });
+    }
+    Value::Object(object)
+}
+
+/// Rename fields whose Rust representation is intentionally snake case but whose session protocol
+/// representation is camel case.
+///
+/// This is deliberately a small allow-list instead of a recursive snake-case converter: arbitrary
+/// JSON in message content and request headers belongs to its producer and must not be rewritten
+/// merely because it happens to contain an underscore.
+fn camelize_known_wire_fields(value: Value) -> Value {
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(camelize_known_wire_fields).collect())
+        }
+        Value::Object(mut object) => {
+            for (key, child) in &mut object {
+                // These values are producer-owned JSON. Their internal keys are not session
+                // envelope fields, even when they happen to contain an underscore.
+                if matches!(
+                    key.as_str(),
+                    "content" | "data" | "header" | "task" | "replay_state"
+                ) {
+                    continue;
+                }
+                let current = std::mem::take(child);
+                *child = camelize_known_wire_fields(current);
+            }
+            for (from, to) in [
+                ("call_id", "callId"),
+                ("replay_state", "replayState"),
+                ("context_window", "contextWindow"),
+                ("message_seqs", "messageSeqs"),
+                ("input_tokens", "inputTokens"),
+                ("output_tokens", "outputTokens"),
+                ("is_error", "isError"),
+                ("message_id", "messageId"),
+                ("created_at", "createdAt"),
+                ("updated_at", "updatedAt"),
+            ] {
+                if let Some(value) = object.remove(from) {
+                    object.insert(to.to_owned(), value);
+                }
+            }
+            Value::Object(object)
+        }
+        scalar => scalar,
+    }
 }
 
 /// How many events one `session.follow` poll returns.
@@ -2772,51 +2965,119 @@ fn register_prompt_with_runtime(
     });
 }
 
-/// Selects one page of records from a session's events.
-///
-/// Sequence numbers are 1-based positions in the log, which is what a client pins into
-/// `throughSeq`. A page is built backwards from the cut so `hasMore` describes what remains
-/// *before* it, matching how a history view scrolls up.
-fn page_of(events: &[SessionEvent], request: &SessionPageRequest) -> SessionEventsPage {
-    if events.is_empty() {
-        return SessionEventsPage::default();
-    }
+/// One history page in the same sequence space `session.follow` already uses.
+struct HistorySlice {
+    /// Zero-based index of `events[0]` in the log.
+    start: u64,
+    /// The page, oldest first.
+    events: Vec<SessionEvent>,
+    /// Whether older events remain before `start`.
+    has_more: bool,
+    /// Inclusive cut the page was read through. An empty log is `-1`.
+    cursor: i64,
+}
 
-    // The inclusive cut defaults to the end of the log.
+/// Checks the message budget and turn window before a page is cut.
+fn validate_history_window(
+    request: &SessionPageRequest,
+) -> Result<(), crate::session::controller::HistoryError> {
+    crate::session::controller::ResolvedHistoryRequest::new(
+        crate::session::controller::SessionCursor::LogEnd,
+        request.before_seq,
+        request.max_messages,
+        turn_window_of(request.turn_window),
+    )
+    .map(|_| ())
+}
+
+fn turn_window_of(
+    window: Option<SessionTurnWindow>,
+) -> Option<crate::session::controller::TurnWindow> {
+    window.map(|window| crate::session::controller::TurnWindow {
+        min_messages: window.min_messages,
+        min_turns: window.min_turns,
+    })
+}
+
+fn history_remote_error(error: crate::session::controller::HistoryError) -> RemoteError {
+    RemoteError::Failed(format!("{}: {}", error.code(), error.detail()))
+}
+
+fn empty_history_page() -> Value {
+    serde_json::json!({
+        "records": [],
+        "hasMore": false,
+        "cursor": -1,
+    })
+}
+
+/// Cuts one backwards page the way the browser's history reader does.
+///
+/// `throughSeq` and `beforeSeq` are zero-based log offsets, the same numbers `session.follow`
+/// writes on each record. `maxMessages` counts append-origin user and assistant messages, and a
+/// `turnWindow` may stop earlier on a `turn/start`. Events that are not messages stay in the
+/// slice; they do not spend the budget.
+fn history_slice(
+    events: &[SessionEvent],
+    request: &SessionPageRequest,
+) -> Result<HistorySlice, crate::session::controller::HistoryError> {
+    if events.is_empty() {
+        return Ok(HistorySlice {
+            start: 0,
+            events: Vec::new(),
+            has_more: false,
+            cursor: -1,
+        });
+    }
+    let observed_end = u64::try_from(events.len().saturating_sub(1)).unwrap_or(u64::MAX);
     let through = request
         .through_seq
-        .and_then(|seq| usize::try_from(seq).ok())
-        .map_or(events.len(), |seq| seq.min(events.len()));
-    // `beforeSeq` excludes that record and everything after it.
-    let end = request
-        .before_seq
-        .and_then(|seq| usize::try_from(seq).ok())
-        .map_or(through, |seq| seq.saturating_sub(1).min(through));
-
-    if end == 0 {
-        return SessionEventsPage {
-            records: Vec::new(),
-            has_more: false,
-            cursor: 0,
-        };
-    }
-
-    // The budget defaults to the whole remaining log; a caller asking for a page gets the newest
-    // `max_messages` records ending at the cut.
-    let budget = request.max_messages.filter(|max| *max > 0).unwrap_or(end);
-    let start = end.saturating_sub(budget);
-
-    let records: Vec<SessionHistoryRecord> = events[start..end]
+        .map_or(observed_end, |seq| seq.min(observed_end));
+    let envelopes = events
         .iter()
-        .cloned()
-        .map(SessionHistoryRecord::event)
-        .collect();
+        .enumerate()
+        .map(|(index, event)| history_envelope(event, u64::try_from(index).unwrap_or(u64::MAX)))
+        .collect::<Vec<_>>();
+    let resolved = crate::session::controller::ResolvedHistoryRequest::new(
+        crate::session::controller::SessionCursor::At(through),
+        request.before_seq,
+        request.max_messages,
+        turn_window_of(request.turn_window),
+    )?;
+    let page = crate::session::controller::paginate(events, &envelopes, &resolved, observed_end)?;
+    let end = through
+        .saturating_add(1)
+        .min(request.before_seq.unwrap_or(u64::MAX));
+    let len = u64::try_from(page.events.len()).unwrap_or(0);
+    Ok(HistorySlice {
+        start: end.saturating_sub(len),
+        events: page.events,
+        has_more: page.has_more,
+        cursor: i64::try_from(through).unwrap_or(i64::MAX),
+    })
+}
 
-    SessionEventsPage {
-        has_more: start > 0,
-        // The cursor is the inclusive position of the last returned record, 1-based.
-        cursor: u64::try_from(end).unwrap_or(u64::MAX),
-        records,
+fn history_value(all_events: &[SessionEvent], page: &HistorySlice) -> Value {
+    let records = page
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _event)| {
+            session_wire_record_at(all_events, page.start.saturating_add(index as u64))
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "records": records,
+        "hasMore": page.has_more,
+        "cursor": page.cursor,
+    })
+}
+
+fn history_envelope(event: &SessionEvent, seq: u64) -> crate::core::surface::SurfaceEnvelope {
+    if matches!(event.type_name(), "user/message" | "assistant/message") {
+        crate::core::surface::SurfaceEnvelope::appended(event.clone(), seq)
+    } else {
+        crate::core::surface::SurfaceEnvelope::log_only(event.clone(), seq)
     }
 }
 

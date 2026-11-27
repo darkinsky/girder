@@ -32,17 +32,35 @@ struct Attempt {
     step: u64,
     started_after: i64,
     next_index: u64,
-    stream: Vec<CompactRun>,
+    stream: Vec<CompactRecord>,
 }
 
-/// One packed run of text or reasoning deltas, the shape a reconnecting client folds in.
-struct CompactRun {
+/// One packed run a reconnecting client can expand back into deltas.
+enum CompactRecord {
+    Text(TextRun),
+    Tool(ToolRun),
+    Raw { time: u64, chunk: Value },
+}
+
+/// One packed run of text or reasoning deltas.
+struct TextRun {
     kind: &'static str,
     time0: u64,
     index: u64,
     last: u64,
     dt: Vec<u64>,
     texts: Vec<String>,
+}
+
+/// One packed run of tool-call argument deltas.
+struct ToolRun {
+    time0: u64,
+    index: u64,
+    last: u64,
+    dt: Vec<u64>,
+    id: String,
+    name: Option<String>,
+    args: Vec<String>,
 }
 
 impl AssistantHub {
@@ -76,7 +94,7 @@ impl AssistantHub {
                 "turn": attempt.turn,
                 "step": attempt.step,
                 "nextIndex": attempt.next_index,
-                "stream": attempt.stream.iter().map(CompactRun::snapshot).collect::<Vec<_>>(),
+                "stream": attempt.stream.iter().map(CompactRecord::snapshot).collect::<Vec<_>>(),
             });
         }
         baseline
@@ -221,10 +239,21 @@ impl AssistantHub {
 
 impl Attempt {
     fn fold(&mut self, time: u64, chunk: &Value) {
-        let kind = match chunk.get("type").and_then(Value::as_str) {
-            Some("text-delta") => "text-chunks",
-            Some("reasoning-delta") => "reasoning-chunks",
-            _ => return,
+        match chunk.get("type").and_then(Value::as_str) {
+            Some("text-delta" | "reasoning-delta") => self.fold_text(time, chunk),
+            Some("tool-call-delta") => self.fold_tool(time, chunk),
+            _ => self.stream.push(CompactRecord::Raw {
+                time,
+                chunk: chunk.clone(),
+            }),
+        }
+    }
+
+    fn fold_text(&mut self, time: u64, chunk: &Value) {
+        let kind = if chunk.get("type").and_then(Value::as_str) == Some("reasoning-delta") {
+            "reasoning-chunks"
+        } else {
+            "text-chunks"
         };
         let index = chunk.get("index").and_then(Value::as_u64).unwrap_or(0);
         let text = chunk
@@ -232,7 +261,7 @@ impl Attempt {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        if let Some(run) = self.stream.last_mut() {
+        if let Some(CompactRecord::Text(run)) = self.stream.last_mut() {
             if run.kind == kind && run.index == index {
                 if let Some(gap) = time.checked_sub(run.last) {
                     run.dt.push(gap);
@@ -242,26 +271,90 @@ impl Attempt {
                 }
             }
         }
-        self.stream.push(CompactRun {
+        self.stream.push(CompactRecord::Text(TextRun {
             kind,
             time0: time,
             index,
             last: time,
             dt: Vec::new(),
             texts: vec![text],
-        });
+        }));
+    }
+
+    fn fold_tool(&mut self, time: u64, chunk: &Value) {
+        let id = chunk
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let name = chunk.get("name").and_then(Value::as_str).map(str::to_owned);
+        let arguments = chunk
+            .get("argumentsDelta")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        // An empty id or an empty name cannot be packed; the client keeps it raw.
+        if id.is_empty() || name.as_deref() == Some("") {
+            self.stream.push(CompactRecord::Raw {
+                time,
+                chunk: chunk.clone(),
+            });
+            return;
+        }
+        let index = chunk.get("index").and_then(Value::as_u64).unwrap_or(0);
+        if let Some(CompactRecord::Tool(run)) = self.stream.last_mut() {
+            let same_name = run.name.is_some() == name.is_some() && run.name == name;
+            if run.index == index && run.id == id && same_name {
+                if let Some(gap) = time.checked_sub(run.last) {
+                    run.dt.push(gap);
+                    run.args.push(arguments);
+                    run.last = time;
+                    return;
+                }
+            }
+        }
+        self.stream.push(CompactRecord::Tool(ToolRun {
+            time0: time,
+            index,
+            last: time,
+            dt: Vec::new(),
+            id,
+            name,
+            args: vec![arguments],
+        }));
     }
 }
 
-impl CompactRun {
+impl CompactRecord {
     fn snapshot(&self) -> Value {
-        json!({
-            "type": self.kind,
-            "time0": self.time0,
-            "index": self.index,
-            "dt": self.dt,
-            "texts": self.texts,
-        })
+        match self {
+            Self::Text(run) => json!({
+                "type": run.kind,
+                "time0": run.time0,
+                "index": run.index,
+                "dt": run.dt,
+                "texts": run.texts,
+            }),
+            Self::Tool(run) => {
+                let mut value = json!({
+                    "type": "tool-call-chunks",
+                    "time0": run.time0,
+                    "index": run.index,
+                    "dt": run.dt,
+                    "id": run.id,
+                    "args": run.args,
+                });
+                if let Some(name) = &run.name {
+                    value["name"] = Value::String(name.clone());
+                }
+                value
+            }
+            Self::Raw { time, chunk } => json!({
+                "type": "chunk",
+                "time": time,
+                "chunk": chunk,
+            }),
+        }
     }
 }
 
@@ -313,5 +406,39 @@ mod tests {
             json!({"kind": "committed", "eventType": "assistant/message", "seq": 4})
         );
         assert!(hub.baseline("s1").get("activeAttempt").is_none());
+    }
+
+    #[test]
+    fn tool_deltas_pack_into_one_reconnect_run() {
+        let hub = AssistantHub::new();
+        hub.begin("s1", 1, 0, -1);
+        hub.push_chunk(
+            "s1",
+            json!({
+                "type": "tool-call-delta",
+                "index": 1,
+                "id": "call-1",
+                "name": "read",
+                "argumentsDelta": "{\"path\":",
+            }),
+        );
+        hub.push_chunk(
+            "s1",
+            json!({
+                "type": "tool-call-delta",
+                "index": 1,
+                "id": "call-1",
+                "name": "read",
+                "argumentsDelta": "\"a.rs\"}",
+            }),
+        );
+        let stream = &hub.baseline("s1")["activeAttempt"]["stream"];
+        assert_eq!(stream[0]["type"], "tool-call-chunks");
+        assert_eq!(stream[0]["id"], "call-1");
+        assert_eq!(stream[0]["name"], "read");
+        assert_eq!(stream[0]["index"], 1);
+        assert_eq!(stream[0]["args"], json!(["{\"path\":", "\"a.rs\"}"]));
+        assert_eq!(stream[0]["dt"].as_array().map(Vec::len), Some(1));
+        assert_eq!(hub.baseline("s1")["activeAttempt"]["nextIndex"], 2);
     }
 }

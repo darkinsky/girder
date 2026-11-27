@@ -99,8 +99,9 @@ pub const DEFAULT_READ_MAX_BYTES: u64 = 256 * 1024;
 
 /// The largest complete binary file read accepted by this endpoint.
 ///
-/// A complete `readBytes` call is refused above this ceiling before the file is read.
-pub const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
+/// Upstream's `maxFileBytes` default is 32 MiB. A complete `readBytes` call is refused above this
+/// ceiling before the file is read, and a caller that sends that default is accepted.
+pub const MAX_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Registers the workspace tree, raw byte read, and change stream over one filesystem and workspace registry.
 pub fn register_workspace_file_methods(
@@ -740,20 +741,24 @@ async fn follow_changes(
         (Some(guard), Some(receiver))
     });
     loop {
-        let notified = if let Some(receiver) = native_rx.as_mut() {
+        // A kernel event is an invalidation by itself. Polling has no such
+        // event, so it stays quiet until the tree fingerprint actually moves.
+        let kernel_event = if let Some(receiver) = native_rx.as_mut() {
             tokio::select! {
                 () = open.cancel.cancelled() => return,
                 incoming = open.uplink.recv() => {
                     if !matches!(incoming, Ok(Some(_))) {
                         return;
                     }
-                    false
+                    None
                 }
                 notification = receiver.recv() => {
                     if notification.is_none() {
                         native_rx = None;
+                        None
+                    } else {
+                        Some(true)
                     }
-                    true
                 }
             }
         } else {
@@ -763,35 +768,35 @@ async fn follow_changes(
                     if !matches!(incoming, Ok(Some(_))) {
                         return;
                     }
-                    false
+                    None
                 }
-                () = tokio::time::sleep(std::time::Duration::from_millis(250)) => true
+                () = tokio::time::sleep(std::time::Duration::from_millis(250)) => Some(false)
             }
         };
-        if !notified {
+        let Some(from_kernel) = kernel_event else {
             continue;
-        }
+        };
         let next = fingerprint(&plan.process_path);
-        if next == previous {
+        if !from_kernel && next == previous {
             continue;
         }
-        let frame = match &next {
+        previous = next;
+        let frame = match stat_version(&plan.process_path) {
             Some(version) => json!({
                 "kind": "change",
                 "change": {
-                    "absolutePath": plan.process_path,
+                    "absolutePath": reported_path(&plan.process_path),
                     "version": version,
                 },
             }),
             None => json!({
                 "kind": "change",
                 "change": {
-                    "absolutePath": plan.process_path,
+                    "absolutePath": reported_path(&plan.process_path),
                     "absent": true,
                 }
             }),
         };
-        previous = next;
         if !open.push(frame) {
             return;
         }
@@ -812,6 +817,28 @@ fn target_info(path: &Path) -> Option<girder_core::FsInfo> {
         file_type,
         size: metadata.len(),
     })
+}
+
+/// The `version` string `stat` reports for this path.
+///
+/// A directory keeps this token while a child changes. The change frame still
+/// has to go out: directory consumers relist on every frame, and file consumers
+/// compare the token with the last `stat`.
+/// The absolute path `stat` reports, so a follower can match the frame to its file.
+fn reported_path(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.replace('\\', "/"))
+}
+
+fn stat_version(path: &str) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_nanos());
+    Some(format!("{}:{}", metadata.len(), modified))
 }
 
 fn fingerprint(path: &str) -> Option<String> {

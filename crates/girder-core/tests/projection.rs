@@ -43,6 +43,7 @@ fn a_registered_projection_starts_at_its_initial_state() {
 
     assert_eq!(state["lastTurn"], 0);
     assert!(state["openTurnStartSeq"].is_null());
+    assert!(state["lastStepBoundary"].is_null());
 }
 
 #[test]
@@ -108,6 +109,24 @@ fn a_step_start_records_its_sequence() {
         registry.read("turnBoundary").unwrap()["lastStepStartSeq"],
         2
     );
+    assert_eq!(
+        registry.read("turnBoundary").unwrap()["lastStepBoundary"],
+        serde_json::json!({ "kind": "start", "seq": 2 })
+    );
+}
+
+#[test]
+fn a_step_end_keeps_the_start_and_marks_the_boundary_closed() {
+    let registry = registry();
+    registry.observe(&step_start(1, 1), 2);
+    registry.observe(&SessionEvent::StepEnd { turn: 1, step: 1 }, 4);
+
+    let state = registry.read("turnBoundary").unwrap();
+    assert_eq!(state["lastStepStartSeq"], 2);
+    assert_eq!(
+        state["lastStepBoundary"],
+        serde_json::json!({ "kind": "end", "seq": 4 })
+    );
 }
 
 #[test]
@@ -135,6 +154,7 @@ fn the_model_selection_projection_records_the_last_selection() {
 
     let state = registry.read("modelSelection").unwrap();
     assert_eq!(state["lastUsed"]["model"], "deepseek-reasoner");
+    assert_eq!(state["next"]["model"], "deepseek-reasoner");
 }
 
 #[test]

@@ -66,6 +66,14 @@ pub trait Projection: Send + Sync {
     fn in_summary(&self) -> bool {
         true
     }
+
+    /// The value a client reads.
+    ///
+    /// `apply` keeps the fold state, which the next event has to read back. The published value can
+    /// be a smaller view of that state. The default publishes the fold unchanged.
+    fn wire(&self, state: &serde_json::Value) -> serde_json::Value {
+        state.clone()
+    }
 }
 
 /// Why a projection operation failed.
@@ -170,12 +178,11 @@ impl ProjectionRegistry {
                     .get(&key)
                     .cloned()
                     .unwrap_or_else(|| definition.init());
+                let before = state.get(&key).map(|value| definition.wire(value));
                 let next = definition.apply(current, event, seq);
-                if state.get(&key) != Some(&next) {
-                    changes.push(crate::session::change_feed::Change::new(
-                        key.clone(),
-                        next.clone(),
-                    ));
+                let after = definition.wire(&next);
+                if before.as_ref() != Some(&after) {
+                    changes.push(crate::session::change_feed::Change::new(key.clone(), after));
                 }
                 state.insert(key.clone(), next);
                 cursor.insert(key, seq);
@@ -206,7 +213,12 @@ impl ProjectionRegistry {
     /// Reads one projection's state.
     #[must_use]
     pub fn read(&self, key: &str) -> Option<serde_json::Value> {
-        self.lock_state().get(key).cloned()
+        let value = self.lock_state().get(key).cloned()?;
+        let definition = self
+            .definitions
+            .iter()
+            .find(|definition| definition.key() == key)?;
+        Some(definition.wire(&value))
     }
 
     /// The summary view: every projection that declares itself part of one.
@@ -219,7 +231,7 @@ impl ProjectionRegistry {
             .filter_map(|definition| {
                 state
                     .get(definition.key())
-                    .map(|value| (definition.key().to_owned(), value.clone()))
+                    .map(|value| (definition.key().to_owned(), definition.wire(value)))
             })
             .collect()
     }
@@ -227,7 +239,15 @@ impl ProjectionRegistry {
     /// Every projection's state, for a full view.
     #[must_use]
     pub fn view(&self) -> BTreeMap<String, serde_json::Value> {
-        self.lock_state().clone()
+        let state = self.lock_state();
+        self.definitions
+            .iter()
+            .filter_map(|definition| {
+                state
+                    .get(definition.key())
+                    .map(|value| (definition.key().to_owned(), definition.wire(value)))
+            })
+            .collect()
     }
 
     /// Folds `events` through the registered definitions without writing this registry.
@@ -270,6 +290,15 @@ impl ProjectionRegistry {
                 let key = definition.key().to_owned();
                 let current = values.remove(&key).unwrap_or_else(|| definition.init());
                 values.insert(key, definition.apply(current, event, seq));
+            }
+        }
+        for definition in &self.definitions {
+            if summary_only && !definition.in_summary() {
+                continue;
+            }
+            let key = definition.key();
+            if let Some(state) = values.get(key).cloned() {
+                values.insert(key.to_owned(), definition.wire(&state));
             }
         }
         Projected { as_of, values }
@@ -343,6 +372,28 @@ impl Projected {
         }
         self
     }
+
+    /// Fills `agentPreset` from the session header when the log has not selected another.
+    ///
+    /// Upstream starts the fold at `header.agentPreset`. This build does not yet record
+    /// `agent-preset/selected`, so a still-null value is the creation preset.
+    #[must_use]
+    pub fn with_header_preset(mut self, header_preset: Option<&str>) -> Self {
+        let Some(preset) = header_preset.filter(|preset| !preset.is_empty()) else {
+            return self;
+        };
+        if self
+            .values
+            .get("agentPreset")
+            .is_some_and(serde_json::Value::is_null)
+        {
+            self.values.insert(
+                "agentPreset".to_owned(),
+                serde_json::Value::String(preset.to_owned()),
+            );
+        }
+        self
+    }
 }
 
 /// A projection over the turn boundaries in a log.
@@ -360,6 +411,7 @@ impl Projection for TurnBoundary {
         serde_json::json!({
             "openTurnStartSeq": serde_json::Value::Null,
             "lastStepStartSeq": serde_json::Value::Null,
+            "lastStepBoundary": serde_json::Value::Null,
             "lastTurn": 0,
         })
     }
@@ -383,6 +435,16 @@ impl Projection for TurnBoundary {
                 }
                 SessionEvent::StepStart { .. } => {
                     object.insert("lastStepStartSeq".to_owned(), serde_json::json!(seq));
+                    object.insert(
+                        "lastStepBoundary".to_owned(),
+                        serde_json::json!({ "kind": "start", "seq": seq }),
+                    );
+                }
+                SessionEvent::StepEnd { .. } => {
+                    object.insert(
+                        "lastStepBoundary".to_owned(),
+                        serde_json::json!({ "kind": "end", "seq": seq }),
+                    );
                 }
                 _ => {}
             }
@@ -402,6 +464,7 @@ impl Projection for ModelSelectionProjection {
     fn init(&self) -> serde_json::Value {
         serde_json::json!({
             "lastUsed": serde_json::Value::Null,
+            "next": serde_json::Value::Null,
         })
     }
 
@@ -414,7 +477,10 @@ impl Projection for ModelSelectionProjection {
         if let (crate::session::SessionEvent::ModelSelection { selection }, Some(object)) =
             (event, state.as_object_mut())
         {
-            object.insert("lastUsed".to_owned(), serde_json::json!(selection));
+            let selection = serde_json::json!(selection);
+            object.insert("lastUsed".to_owned(), selection.clone());
+            // No pending override is stored, so the next step uses the selection just recorded.
+            object.insert("next".to_owned(), selection);
         }
         state
     }
@@ -612,6 +678,32 @@ mod tests {
         assert_eq!(
             kept.with_header_directory(None).values["workingDirectory"],
             "/work/moved"
+        );
+    }
+
+    #[test]
+    fn a_header_preset_fills_only_a_null_agent_preset() {
+        let empty = Projected {
+            as_of: 0,
+            values: BTreeMap::from([("agentPreset".to_owned(), serde_json::Value::Null)]),
+        };
+        let filled = empty.clone().with_header_preset(Some("reviewer"));
+        assert_eq!(filled.values["agentPreset"], "reviewer");
+        assert_eq!(
+            empty.with_header_preset(Some("")).values["agentPreset"],
+            serde_json::Value::Null
+        );
+
+        let selected = Projected {
+            as_of: 1,
+            values: BTreeMap::from([(
+                "agentPreset".to_owned(),
+                serde_json::Value::String("writer".to_owned()),
+            )]),
+        };
+        assert_eq!(
+            selected.with_header_preset(Some("reviewer")).values["agentPreset"],
+            "writer"
         );
     }
 }

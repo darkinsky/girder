@@ -420,7 +420,10 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
         8,
         "the whole log fits in one page"
     );
-    assert_eq!(page["cursor"], 8, "the cursor is the last record returned");
+    assert_eq!(
+        page["cursor"], 7,
+        "the cursor is the zero-based log end follow already uses"
+    );
     assert_eq!(page["hasMore"], false, "nothing remains before this page");
     assert_eq!(
         page["records"][0]["type"], "event",
@@ -431,21 +434,26 @@ async fn a_full_lifecycle_produces_the_same_conversation_in_every_view() {
         "records are chronological, and the prompt is durable before the turn opened"
     );
 
-    // A two-record window ends at the same cursor and says more remains: the cut is what a client
-    // pins, and `hasMore` describes what is *before* it.
+    // One message budget starts at the assistant message and keeps the bookkeeping after it.
+    // The user message is older, so `hasMore` is true, and the cursor stays the log end.
     let window = harness
         .dispatch(
             "page",
-            json!({"address": {"kind": "session", "sessionId": "s1"}, "maxMessages": 2}),
+            json!({"address": {"kind": "session", "sessionId": "s1"}, "maxMessages": 1}),
         )
         .await
         .expect("a window reads");
-    assert_eq!(window["records"].as_array().expect("records").len(), 2);
+    assert_eq!(window["records"].as_array().expect("records").len(), 4);
+    assert_eq!(window["records"][0]["event"]["type"], "assistant/message");
+    assert_eq!(window["records"][0]["event"]["seq"], 4);
     assert_eq!(
-        window["cursor"], 8,
+        window["cursor"], 7,
         "the window still ends at the log's end"
     );
-    assert_eq!(window["hasMore"], true, "six records precede the window");
+    assert_eq!(
+        window["hasMore"], true,
+        "the user message precedes the window"
+    );
 
     // -- session.export, markdown: what a person pastes into a ticket ---------------------------
     let markdown = export_markdown(&harness, "s1").await;

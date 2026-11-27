@@ -351,6 +351,7 @@ fn an_absent_reasoning_effort_is_omitted_from_the_wire() {
     let selection = girder_core::ModelSelection::new("ds", "m");
     let text = serde_json::to_string(&selection).unwrap();
 
+    assert!(!text.contains("reasoningEffort"), "{text}");
     assert!(!text.contains("reasoning_effort"), "{text}");
 }
 
@@ -358,9 +359,14 @@ fn an_absent_reasoning_effort_is_omitted_from_the_wire() {
 fn a_reasoning_effort_round_trips() {
     let selection = girder_core::ModelSelection::new("ds", "m").with_reasoning("high");
     let text = serde_json::to_string(&selection).unwrap();
+    assert!(text.contains(r#""reasoningEffort":"high""#), "{text}");
     let restored: girder_core::ModelSelection = serde_json::from_str(&text).unwrap();
 
     assert_eq!(restored.reasoning_effort.as_deref(), Some("high"));
+
+    let legacy: girder_core::ModelSelection =
+        serde_json::from_str(r#"{"provider":"ds","model":"m","reasoning_effort":"low"}"#).unwrap();
+    assert_eq!(legacy.reasoning_effort.as_deref(), Some("low"));
 }
 
 #[test]

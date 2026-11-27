@@ -840,10 +840,8 @@ async fn create_twice_on_a_directory_reuses_the_existing_log() {
 // ---- session.page / session.events --------------------------------------------------------------
 
 fn catalog_with_events(id: &str, count: usize) -> Arc<dyn SessionCatalog> {
-    let events: Vec<SessionEvent> = (1..=count)
-        .map(|turn| SessionEvent::TurnStart {
-            turn: u64::try_from(turn).unwrap(),
-        })
+    let events: Vec<SessionEvent> = (0..count)
+        .map(|index| SessionEvent::user_text(&format!("m{index}"), format!("body {index}")))
         .collect();
     Arc::new(FixedCatalog(vec![SessionRecord {
         id: id.to_owned(),
@@ -869,7 +867,103 @@ async fn page_returns_every_record_by_default() {
 
     assert_eq!(value["records"].as_array().unwrap().len(), 5);
     assert_eq!(value["hasMore"], false);
-    assert_eq!(value["cursor"], 5);
+    assert_eq!(value["cursor"], 4);
+    assert_eq!(value["records"][0]["event"]["seq"], 0);
+    assert_eq!(value["records"][0]["event"]["surfaceOp"], "append");
+    assert!(value["records"][0]["event"].get("message").is_none());
+}
+
+#[test]
+fn a_tool_pair_uses_the_browser_field_names() {
+    let call = SessionEvent::ToolCall {
+        id: girder_core::ToolCallId::new("call-1").expect("id"),
+        name: "read".to_owned(),
+        arguments: "{}".to_owned(),
+    };
+    let call_wire = girder_core::api::remote::session_wire_record(&call, 4).expect("call");
+    assert_eq!(call_wire["event"]["data"]["callId"], "call-1");
+    assert!(call_wire["event"]["data"].get("id").is_none());
+    assert_eq!(call_wire["event"]["data"]["name"], "read");
+    assert_eq!(call_wire["event"]["data"]["arguments"], "{}");
+
+    let result = SessionEvent::ToolResult {
+        id: girder_core::ToolCallId::new("call-1").expect("id"),
+        content: vec![girder_core::llm::ContentBlock::Text {
+            text: "ok".to_owned(),
+        }],
+        is_error: true,
+    };
+    let result_wire = girder_core::api::remote::session_wire_record(&result, 5).expect("result");
+    let message = &result_wire["event"]["data"]["message"];
+    assert_eq!(message["source"]["kind"], "tool");
+    assert_eq!(message["source"]["callId"], "call-1");
+    assert_eq!(message["toolCallId"], "call-1");
+    assert_eq!(message["isError"], true);
+    assert_eq!(message["role"], "tool");
+    assert_eq!(message["content"][0]["text"], "ok");
+    assert_eq!(result_wire["event"]["surfaceOp"], "append");
+    assert!(result_wire["event"]["data"].get("is_error").is_none());
+    girder_core::session::client::assert_session_wire_event(&result_wire["event"])
+        .expect("tool result envelope");
+}
+
+#[test]
+fn message_wire_fields_use_camel_case_without_rewriting_content() {
+    let message = girder_core::SessionEvent::AssistantMessage {
+        message: girder_core::session::message::Message {
+            id: girder_core::MessageId::new("assistant-1").expect("id"),
+            role: girder_core::session::message::Role::Assistant,
+            source: girder_core::session::message::MessageSource::Model {
+                provider: "provider".to_owned(),
+                model: "model".to_owned(),
+                replay_state: Some(json!({"provider_state": "opaque"})),
+            },
+            content: vec![girder_core::llm::ContentBlock::Text {
+                text: "body".to_owned(),
+            }],
+        },
+    };
+    let wire = girder_core::api::remote::session_wire_record(&message, 0).expect("message");
+    let data = &wire["event"]["data"];
+    assert_eq!(
+        data["message"]["source"]["replayState"]["provider_state"],
+        "opaque"
+    );
+    assert!(data["message"]["source"].get("replay_state").is_none());
+    assert_eq!(data["message"]["content"][0]["text"], "body");
+}
+
+#[test]
+fn trajectory_events_receive_their_recovered_turn_and_step() {
+    let events = vec![
+        SessionEvent::TurnStart { turn: 3 },
+        SessionEvent::StepStart { turn: 3, step: 2 },
+        SessionEvent::assistant_text("assistant-1", "answer", "provider"),
+        SessionEvent::ToolCall {
+            id: girder_core::ToolCallId::new("call-1").expect("id"),
+            name: "read".to_owned(),
+            arguments: "{}".to_owned(),
+        },
+        SessionEvent::ToolResult {
+            id: girder_core::ToolCallId::new("call-1").expect("id"),
+            content: vec![],
+            is_error: false,
+        },
+    ];
+
+    let assistant =
+        girder_core::api::remote::session_wire_record_at(&events, 2).expect("assistant");
+    assert_eq!(assistant["event"]["data"]["turn"], 3);
+    assert_eq!(assistant["event"]["data"]["step"], 2);
+
+    let tool = girder_core::api::remote::session_wire_record_at(&events, 3).expect("tool");
+    assert_eq!(tool["event"]["data"]["callId"], "call-1");
+    assert_eq!(tool["event"]["data"]["turn"], 3);
+    assert_eq!(tool["event"]["data"]["step"], 2);
+
+    let result = girder_core::api::remote::session_wire_record_at(&events, 4).expect("result");
+    assert_eq!(result["event"]["data"]["turn"], 3);
+    assert_eq!(result["event"]["data"]["step"], 2);
 }
 
 #[tokio::test]
@@ -888,8 +982,9 @@ async fn page_honours_the_message_budget_from_the_end() {
 
     let records = value["records"].as_array().unwrap();
     assert_eq!(records.len(), 3);
-    assert_eq!(value["hasMore"], true, "older records remain");
-    assert_eq!(value["cursor"], 10, "the cut is still the log end");
+    assert_eq!(value["hasMore"], true, "older messages remain");
+    assert_eq!(value["cursor"], 9, "the cut is still the log end");
+    assert_eq!(records[0]["event"]["seq"], 7);
 }
 
 #[tokio::test]
@@ -906,8 +1001,10 @@ async fn page_before_a_sequence_excludes_that_record() {
         .unwrap();
 
     let records = value["records"].as_array().unwrap();
-    assert_eq!(records.len(), 2, "records 1 and 2 precede 3");
-    assert_eq!(value["cursor"], 2);
+    assert_eq!(records.len(), 3, "seq 0, 1, and 2 precede 3");
+    assert_eq!(records[0]["event"]["seq"], 0);
+    assert_eq!(records[2]["event"]["seq"], 2);
+    assert_eq!(value["cursor"], 4, "the cut stays at the log end");
 }
 
 #[tokio::test]
@@ -923,7 +1020,8 @@ async fn page_through_a_sequence_stops_there() {
         .await
         .unwrap();
 
-    assert_eq!(value["records"].as_array().unwrap().len(), 2);
+    assert_eq!(value["records"].as_array().unwrap().len(), 3);
+    assert_eq!(value["records"][2]["event"]["seq"], 2);
     assert_eq!(value["cursor"], 2);
 }
 
@@ -960,7 +1058,7 @@ async fn page_of_an_unknown_session_is_empty_not_an_error() {
 
     assert_eq!(value["records"], json!([]));
     assert_eq!(value["hasMore"], false);
-    assert_eq!(value["cursor"], 0);
+    assert_eq!(value["cursor"], -1);
 }
 
 #[tokio::test]
@@ -1037,7 +1135,7 @@ async fn page_of_an_empty_log_is_empty() {
         .unwrap();
 
     assert_eq!(value["records"], json!([]));
-    assert_eq!(value["cursor"], 0);
+    assert_eq!(value["cursor"], -1);
 }
 
 // ---- prompt actually runs a turn ----------------------------------------------------------------

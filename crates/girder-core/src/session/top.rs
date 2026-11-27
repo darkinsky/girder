@@ -697,6 +697,12 @@ impl Projection for ContinuationProjection {
         // number and it saves the composer a projection read per rendered row.
         true
     }
+
+    fn wire(&self, state: &Value) -> Value {
+        ContinuationState::from_json(state)
+            .map(ContinuationState::to_wire)
+            .unwrap_or(Value::Null)
+    }
 }
 
 impl VersionedProjection for ContinuationProjection {

@@ -82,6 +82,16 @@ pub fn base_projections() -> Vec<Arc<dyn crate::session::projection::Projection>
         Arc::new(crate::shell::working_dir::WorkingDirectoryProjection),
         // Cards offered in assistant answers, and the decisions taken on them.
         Arc::new(crate::interaction::action_card_projection::ActionCardsProjection),
+        // Whether plan mode is on, which the composer uses to pick a run mode.
+        Arc::new(crate::core::plan_mode::PlanProjection),
+        // The permission preset in effect, which the selector highlights.
+        Arc::new(crate::credentials::permission_presets_rpc::PermissionsProjection),
+        // The capability preset the composer sends with the next prompt.
+        Arc::new(crate::preset::agent_presets::AgentPresetProjection),
+        // Timed questions still waiting for a person.
+        Arc::new(crate::interaction::questions_projection::UserQuestionsProjection),
+        // Pending prompts. The log has no splices yet, so both queues start empty.
+        Arc::new(crate::api::inbox::InboxProjection),
     ]
 }
 
@@ -99,6 +109,11 @@ mod tests {
         assert!(keys.contains(&"title"), "{keys:?}");
         assert!(keys.contains(&"sessionStats"), "{keys:?}");
         assert!(keys.contains(&"turnOutline"), "{keys:?}");
+        assert!(keys.contains(&"plan"), "{keys:?}");
+        assert!(keys.contains(&"permissions"), "{keys:?}");
+        assert!(keys.contains(&"agentPreset"), "{keys:?}");
+        assert!(keys.contains(&"userQuestions"), "{keys:?}");
+        assert!(keys.contains(&"inbox"), "{keys:?}");
     }
 
     #[test]

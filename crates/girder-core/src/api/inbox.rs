@@ -30,7 +30,32 @@
 //! model would see the same instruction as two separate messages — or, worse, a re-sent message would
 //! look like the user repeating themselves.
 
+use serde_json::{Value, json};
+
+use crate::session::SessionEvent;
 use crate::session::message::Message;
+use crate::session::projection::{Projection, Seq};
+
+/// The `inbox` projection the queue dock reads.
+///
+/// The published value is `{ "next-turn", "next-step" }`. This log has no `agent/inbox/spliced`
+/// event, so a replay stays empty. The key is still published: a missing inbox is not the same as
+/// an empty one to a client waiting to retire an admitted prompt.
+pub struct InboxProjection;
+
+impl Projection for InboxProjection {
+    fn key(&self) -> &'static str {
+        "inbox"
+    }
+
+    fn init(&self) -> Value {
+        json!({ "next-turn": [], "next-step": [] })
+    }
+
+    fn apply(&self, state: Value, _event: &SessionEvent, _seq: Seq) -> Value {
+        state
+    }
+}
 
 /// Which queue a splice targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -230,4 +255,28 @@ pub fn replay(splices: &[Splice]) -> Result<Inbox, (usize, InboxError)> {
         inbox.apply(splice).map_err(|error| (index, error))?;
     }
     Ok(inbox)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::InboxProjection;
+    use crate::session::SessionEvent;
+    use crate::session::projection::ProjectionRegistry;
+
+    #[test]
+    fn the_inbox_projection_publishes_two_empty_queues() {
+        let mut registry = ProjectionRegistry::new();
+        registry
+            .register(Arc::new(InboxProjection))
+            .expect("registered");
+        let projected = registry.project(&[SessionEvent::TurnStart { turn: 1 }]);
+        assert_eq!(
+            projected.values["inbox"],
+            json!({ "next-turn": [], "next-step": [] })
+        );
+    }
 }

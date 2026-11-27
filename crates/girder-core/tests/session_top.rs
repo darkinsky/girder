@@ -518,6 +518,29 @@ fn only_an_appended_human_or_retry_message_admits_work() {
 }
 
 #[test]
+fn a_served_continuation_is_the_ending_seq() {
+    let projection = girder_core::session::top::ContinuationProjection;
+    assert_eq!(
+        projection.wire(&projection.init()),
+        Value::Null,
+        "an empty log publishes null"
+    );
+    assert_eq!(
+        projection.wire(&ContinuationState::with(Some(7), true, true).to_json()),
+        json!(7)
+    );
+
+    let mut registry = girder_core::ProjectionRegistry::new();
+    registry
+        .register(std::sync::Arc::new(
+            girder_core::session::top::ContinuationProjection,
+        ))
+        .expect("registered");
+    let projected = registry.project(&[]);
+    assert_eq!(projected.values["conversationContinuation"], Value::Null);
+}
+
+#[test]
 fn the_wire_carries_only_the_ending() {
     let state = ContinuationState::with(Some(7), true, true);
     assert_eq!(state.to_wire(), json!(7));
@@ -993,7 +1016,6 @@ fn the_block_and_the_content_helpers_are_public_surface() {
     );
     assert_eq!(human_input("x", 2).clone(), mapped(&event));
 }
-
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.
 mod session {

@@ -45,7 +45,15 @@ pub struct ModelSelection {
     ///
     /// Omitted from the wire when absent rather than serialized as null: a log entry that names a
     /// null effort is indistinguishable from one where the field was never set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// The published name is `reasoningEffort`. `reasoning_effort` still deserializes so a log
+    /// written before the rename keeps its effort.
+    #[serde(
+        rename = "reasoningEffort",
+        alias = "reasoning_effort",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reasoning_effort: Option<String>,
 }
 

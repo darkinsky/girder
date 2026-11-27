@@ -19,7 +19,8 @@
 //!
 //! Upstream *lists* pending questions not through a method but through a Session projection
 //! (`faceOf('userQuestions')` → `{active, settled}`, see `AskUserQuestionItem` and
-//! `UserQuestionProjectionView`). This build has no projection pipeline for it, so [`LIST_METHOD`]
+//! `UserQuestionProjectionView`). [`crate::interaction::questions_projection`] folds that view
+//! from the log. [`LIST_METHOD`]
 //! is added: without it a client could answer a question it had no way to discover. [`CANCEL_METHOD`]
 //! is added for the same reason from the other side — see below.
 //!

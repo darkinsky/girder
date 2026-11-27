@@ -7,11 +7,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::Session;
 use crate::interaction::approval::{Approver, Decision, Request};
 use crate::session::SessionEvent;
+use crate::session::projection::{Projection, Seq};
 
 /// Guidance included in the system prompt while plan mode is active.
 ///
@@ -80,6 +81,30 @@ pub fn switch_notice(active: bool) -> &'static str {
         "The user switched this session to plan mode."
     } else {
         "The user switched this session back to the default mode."
+    }
+}
+
+/// The `plan` projection the composer reads to choose a run mode.
+///
+/// The published value is `{ active, pending }`. This log has no `command/run`, so a mode change is
+/// already committed when `plan/mode` is written and `pending` stays false.
+pub struct PlanProjection;
+
+impl Projection for PlanProjection {
+    fn key(&self) -> &'static str {
+        "plan"
+    }
+
+    fn init(&self) -> Value {
+        json!({ "active": false, "pending": false })
+    }
+
+    fn apply(&self, mut state: Value, event: &SessionEvent, _seq: Seq) -> Value {
+        if let SessionEvent::PlanMode { active } = event {
+            state["active"] = json!(*active);
+            state["pending"] = json!(false);
+        }
+        state
     }
 }
 
@@ -280,8 +305,13 @@ pub fn exit_plan_mode_tool(
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanCommand, active_from, has_plan_heading, plan_command};
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::{PlanCommand, PlanProjection, active_from, has_plan_heading, plan_command};
     use crate::session::SessionEvent;
+    use crate::session::projection::ProjectionRegistry;
 
     #[test]
     fn a_plan_line_enters_and_off_leaves() {
@@ -319,6 +349,28 @@ mod tests {
         assert!(!active_from(&events));
         assert!(active_from(&[SessionEvent::PlanMode { active: true }]));
         assert!(!active_from(&[]));
+    }
+
+    #[test]
+    fn the_plan_projection_publishes_the_committed_mode() {
+        let mut registry = ProjectionRegistry::new();
+        registry
+            .register(Arc::new(PlanProjection))
+            .expect("registered");
+        let idle = registry.project(&[]);
+        assert_eq!(
+            idle.values["plan"],
+            json!({ "active": false, "pending": false })
+        );
+        let planning = registry.project(&[SessionEvent::PlanMode { active: true }]);
+        assert_eq!(planning.values["plan"]["active"], json!(true));
+        assert_eq!(planning.values["plan"]["pending"], json!(false));
+        let left = registry.project(&[
+            SessionEvent::PlanMode { active: true },
+            SessionEvent::TurnStart { turn: 1 },
+            SessionEvent::PlanMode { active: false },
+        ]);
+        assert_eq!(left.values["plan"]["active"], json!(false));
     }
 
     #[test]

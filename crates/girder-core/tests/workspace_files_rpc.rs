@@ -364,6 +364,27 @@ async fn read_file_preserves_bytes_without_text_decoding() {
 }
 
 #[tokio::test]
+async fn read_file_accepts_the_upstream_full_file_budget() {
+    let (base, root) = fixture("read-budget");
+    std::fs::write(root.join("note.txt"), "ok").expect("wrote");
+    let registry = registry(&root);
+
+    let value = read_file(
+        &registry,
+        serde_json::json!({
+            "workspaceId": WORKSPACE,
+            "path": "note.txt",
+            "options": { "maxFileBytes": workspace_files_rpc::MAX_PREVIEW_BYTES },
+        }),
+    )
+    .await
+    .expect("the 32 MiB budget is a legal request");
+
+    assert_eq!(value.attachments[0].bytes, b"ok");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test]
 async fn read_file_refuses_a_file_above_the_preview_ceiling() {
     let (base, root) = fixture("read-ceiling");
     // A sparse file would still report its length without costing the disk; a real one keeps the test
@@ -653,9 +674,76 @@ async fn changes_opens_ready_then_reports_a_written_file() {
         .expect("frame")
         .expect("change ok");
     assert_eq!(change["kind"], "change");
-    assert!(change["change"]["version"].is_string());
+    assert_eq!(
+        change["change"]["version"],
+        version_of(&root.join("README.md"))
+    );
     running.abort();
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[tokio::test]
+async fn a_directory_watch_reports_a_child_attribute_change() {
+    let (base, root) = fixture("dir-attrib");
+    let registry = registry(&root);
+    let request = call(serde_json::json!({
+        "workspaceId": WORKSPACE,
+        "path": ".",
+    }));
+    let handler = registry
+        .stream_method("workspaceFiles", "changes", &request)
+        .expect("changes is a stream");
+    let (open, mut frames) = girder_core::StreamOpen::pair(
+        request,
+        Arc::new(girder_core::api::extra::UplinkInbox::new(
+            1024,
+            "workspaceFiles/changes",
+        )),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let running = tokio::spawn(async move {
+        handler(open).await;
+    });
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+        .await
+        .expect("ready arrived")
+        .expect("open")
+        .expect("frame");
+    assert_eq!(ready["kind"], "ready");
+
+    let file = root.join("README.md");
+    let mut permissions = std::fs::metadata(&file).expect("metadata").permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&file, permissions).expect("chmod");
+    let change = tokio::time::timeout(std::time::Duration::from_secs(1), frames.recv())
+        .await
+        .expect("change arrived")
+        .expect("frame")
+        .expect("change ok");
+    assert_eq!(change["kind"], "change");
+    assert_eq!(
+        change["change"]["absolutePath"],
+        std::fs::canonicalize(&root)
+            .expect("canonical root")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(change["change"]["version"], version_of(&root));
+    let mut permissions = std::fs::metadata(&file).expect("metadata").permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&file, permissions).expect("restored");
+    running.abort();
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+fn version_of(path: &Path) -> String {
+    let metadata = std::fs::metadata(path).expect("metadata");
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |time| time.as_nanos());
+    format!("{}:{}", metadata.len(), modified)
 }
 
 // Path aliases so a file compiled with #[path] still resolves crate::<domain>::<module>.

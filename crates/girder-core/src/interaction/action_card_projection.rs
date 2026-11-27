@@ -63,6 +63,13 @@ impl Projection for ActionCardsProjection {
     fn in_summary(&self) -> bool {
         false
     }
+
+    fn wire(&self, state: &Value) -> Value {
+        json!({
+            "proposals": state.get("proposals").cloned().unwrap_or_else(|| json!({})),
+            "decisions": state.get("decisions").cloned().unwrap_or_else(|| json!({})),
+        })
+    }
 }
 
 /// Folds `events` the same way [`crate::session::projection::ProjectionRegistry::project`] does.
@@ -296,11 +303,13 @@ fn card_fields(text: &str) -> Option<CardFields> {
 
 #[cfg(test)]
 mod tests {
-    use super::{action_card_fences, fold};
+    use super::{ActionCardsProjection, action_card_fences, fold};
     use crate::llm::ContentBlock;
     use crate::session::SessionEvent;
     use crate::session::message::{Message, MessageSource, Role};
+    use crate::session::projection::Projection;
     use crate::util::brand::MessageId;
+    use serde_json::json;
 
     fn assistant(id: &str, text: &str) -> SessionEvent {
         SessionEvent::AssistantMessage {
@@ -357,5 +366,24 @@ mod tests {
         }]);
         assert_eq!(state["decisions"]["m2"]["phase"], "dismissed");
         assert!(state["decisions"]["m2"].get("data").is_none());
+    }
+
+    #[test]
+    fn the_wire_view_excludes_fold_bookkeeping() {
+        let projection = ActionCardsProjection;
+        let state = json!({
+            "proposals": {"card-1": {"cardId": "card-1"}},
+            "decisions": {"card-1": {"cardId": "card-1", "phase": "dismissed"}},
+            "turn": 3,
+            "admittedTurn": 3,
+        });
+
+        assert_eq!(
+            projection.wire(&state),
+            json!({
+                "proposals": {"card-1": {"cardId": "card-1"}},
+                "decisions": {"card-1": {"cardId": "card-1", "phase": "dismissed"}},
+            })
+        );
     }
 }

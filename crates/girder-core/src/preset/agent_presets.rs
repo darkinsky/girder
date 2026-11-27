@@ -28,9 +28,31 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::api::remote::{RemoteCall, RemoteError, RemoteRegistry};
+use crate::session::projection::{Projection, Seq};
 
 /// The namespace these methods register under, as upstream spells it.
 pub const NAMESPACE: &str = "agentPresets";
+
+/// The `agentPreset` projection the composer reads.
+///
+/// The published value is the preset id, or `null` before one is known. A later
+/// `agent-preset/selected` event is not in this log yet, so a null fold is filled from the
+/// creation header by [`crate::session::projection::Projected::with_header_preset`].
+pub struct AgentPresetProjection;
+
+impl Projection for AgentPresetProjection {
+    fn key(&self) -> &'static str {
+        "agentPreset"
+    }
+
+    fn init(&self) -> Value {
+        Value::Null
+    }
+
+    fn apply(&self, state: Value, _event: &crate::session::SessionEvent, _seq: Seq) -> Value {
+        state
+    }
+}
 
 /// One preset.
 #[derive(Clone, Debug, PartialEq, Eq)]

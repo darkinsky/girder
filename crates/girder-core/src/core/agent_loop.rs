@@ -1066,17 +1066,47 @@ pub fn run(
             // shrinking it.
             compact_history(&context, &mut messages);
 
-            // Each step is forwarded as it is produced: a caller that renders the answer incrementally
-            // would otherwise see nothing until the whole turn finished.
-            let steps = match run_steps(&context, &mut messages, turn, cancel.clone()).await {
-                Ok(steps) => steps,
-                Err(error) => {
-                    yield Err(error);
-                    return;
+            // Each step is forwarded as it is produced. `run_steps` used to return the whole
+            // step, so a tool call that never finished hid the deltas that had already arrived.
+            // The producer borrows `messages`, so it has to end before this turn reads them again.
+            {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                let mut producer = std::pin::pin!(run_steps(
+                    &context,
+                    &mut messages,
+                    turn,
+                    cancel.clone(),
+                    tx,
+                ));
+                loop {
+                    tokio::select! {
+                        biased;
+                        step = rx.recv() => {
+                            match step {
+                                Some(step) => yield Ok(step),
+                                None => match producer.await {
+                                    Ok(()) => break,
+                                    Err(error) => {
+                                        yield Err(error);
+                                        return;
+                                    }
+                                },
+                            }
+                        }
+                        result = &mut producer => {
+                            while let Ok(step) = rx.try_recv() {
+                                yield Ok(step);
+                            }
+                            match result {
+                                Ok(()) => break,
+                                Err(error) => {
+                                    yield Err(error);
+                                    return;
+                                }
+                            }
+                        }
+                    }
                 }
-            };
-            for step in steps {
-                yield Ok(step);
             }
             // The turn is over: every step finished. Written here rather than inside the step, which
             // is the only place that knows whether another step follows.
@@ -1160,20 +1190,21 @@ fn merge_cancel(first: CancellationToken, second: Option<CancellationToken>) -> 
     merged
 }
 
-/// Runs one turn's steps, returning the steps it produced.
+/// Runs one turn's steps, sending each step on `tx` as soon as it exists.
 ///
 /// A separate function because `run` had grown past the point where the order of its decisions was
 /// readable. The steps of one turn are the part that must stay together: each is one model call plus
 /// the tools it requested, and whether another follows depends on whether this one ran tools.
+/// Sending as they arrive is what lets a follower render a tool call before the tool returns.
 async fn run_steps(
     context: &Arc<LoopContext>,
     messages: &mut Vec<Message>,
     turn: u64,
     cancel: CancellationToken,
-) -> Result<Vec<LoopStep>, LoopError> {
+    tx: tokio::sync::mpsc::UnboundedSender<LoopStep>,
+) -> Result<(), LoopError> {
     use futures::StreamExt as _;
 
-    let mut produced = Vec::new();
     let mut step_index = 0u64;
     loop {
         step_index += 1;
@@ -1207,7 +1238,9 @@ async fn run_steps(
                 LoopStep::ToolFinished { .. } => ran_tools = true,
                 _ => {}
             }
-            produced.push(step);
+            if tx.send(step).is_err() {
+                return Ok(());
+            }
             if finished {
                 break;
             }
@@ -1223,7 +1256,7 @@ async fn run_steps(
 
         if !finished || !ran_tools {
             // No terminal step, or a step with no tools: the turn is over either way.
-            return Ok(produced);
+            return Ok(());
         }
     }
 }
